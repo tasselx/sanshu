@@ -126,9 +126,14 @@ async function handleCodeExecution(lang: string, code: string, triggerEl: HTMLEl
   try {
     const normalizedLang = lang.toLowerCase()
 
-    // HTML 预览 — 使用 iframe
+    // HTML 预览 — 使用 iframe（确保 UTF-8 编码）
     if (normalizedLang === 'html') {
-      const blob = new Blob([code], { type: 'text/html' })
+      // 如果代码中没有 charset 声明，自动添加 UTF-8 meta 标签
+      let htmlCode = code
+      if (!code.includes('charset') && !code.includes('CHARSET')) {
+        htmlCode = `<meta charset="UTF-8">\n${code}`
+      }
+      const blob = new Blob([htmlCode], { type: 'text/html;charset=utf-8' })
       const blobUrl = URL.createObjectURL(blob)
       outputPanel.innerHTML = `<div class="output-header"><span>HTML 预览</span><button class="code-block-copy" style="border:none;background:none;cursor:pointer;padding:2px;" onclick="this.closest('.code-execution-output').remove()"><div class="i-carbon-close" style="width:14px;height:14px;display:block;color:#9ca3af;"></div></button></div>`
       const iframe = document.createElement('iframe')
