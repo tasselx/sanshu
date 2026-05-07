@@ -539,20 +539,107 @@ function getCodeAnalysisInstruction() {
   }
 }
 
+// 中文注释：根据已启用的 MCP 工具动态生成增强指令段，让 AI 按需调用工具辅助增强
+function buildToolGuidanceSection(): string {
+  const hasProject = !!props.request?.project_root_path?.trim()
+  const toolSections: string[] = []
+
+  // 中文注释：遍历已加载的 MCP 工具列表，只为已启用的工具生成指令
+  const isToolEnabled = (id: string) => mcpTools.value.some(t => t.id === id && t.enabled)
+
+  // sou — 代码语义搜索
+  if (isToolEnabled('sou') && hasProject) {
+    toolSections.push(
+      '### sou（代码语义搜索）',
+      '- 用途：搜索项目代码上下文，理解用户口语化输入涉及的真实代码结构',
+      '- 使用方式：以原始输入的关键语义为查询词调用 sou，获取相关代码片段',
+      '- 增强指引：基于搜索结果中的函数名、类名、文件结构来改写口语化输入为精确的代码操作指令',
+    )
+  }
+
+  // uiux — UI/UX 设计工具
+  if (isToolEnabled('uiux')) {
+    toolSections.push(
+      '### uiux（UI/UX 设计工具）',
+      '- 用途：获取 UI/UX 设计规范和项目现有页面上下文',
+      '- 触发条件：当原始输入涉及 UI 美化、页面改造、样式调整、组件设计时',
+      '- 增强指引：基于 uiux 返回的设计规范和项目上下文，让增强后的提示词包含具体的 UI 约束和审美要求',
+    )
+  }
+
+  // context7 — 框架/库文档查询
+  if (isToolEnabled('context7')) {
+    toolSections.push(
+      '### context7（框架/库文档查询）',
+      '- 用途：查询框架/库的最新官方文档和 API 用法',
+      '- 触发条件：当原始输入涉及特定框架/库的 API 调用或配置时',
+      '- 增强指引：基于最新文档确保增强后的提示词中引用的 API、方法名、配置项是准确的',
+    )
+  }
+
+  // ji — 项目记忆
+  if (isToolEnabled('ji') && hasProject) {
+    toolSections.push(
+      '### ji（项目记忆）',
+      '- 用途：加载项目的编码规则、偏好和上下文',
+      '- 使用方式：查询项目记忆，了解项目的代码规范和偏好',
+      '- 增强指引：确保增强后的提示词符合项目已建立的规则和约定',
+    )
+  }
+
+  if (toolSections.length === 0) {
+    return ''
+  }
+
+  return [
+    '## 可用 MCP 工具与使用指引',
+    '在增强过程中，你可以（且建议）主动调用以下已启用的工具来获取额外上下文，从而提升增强质量：',
+    '',
+    ...toolSections,
+  ].join('\n')
+}
+
+// 中文注释：获取已启用的工具名称列表，供 UI 展示
+function getEnabledToolNames(): string[] {
+  const hasProject = !!props.request?.project_root_path?.trim()
+  const names: string[] = []
+  const isToolEnabled = (id: string) => mcpTools.value.some(t => t.id === id && t.enabled)
+
+  if (isToolEnabled('sou') && hasProject) names.push('sou')
+  if (isToolEnabled('uiux')) names.push('uiux')
+  if (isToolEnabled('context7')) names.push('context7')
+  if (isToolEnabled('ji') && hasProject) names.push('ji')
+  return names
+}
+
 function buildLocalEnhancePrompt(rawInput: string) {
   const projectRoot = props.request?.project_root_path?.trim() || '未提供'
   const background = conditionalContext.value.trim()
+  const toolGuidance = buildToolGuidanceSection()
+
   const sections = [
     '# 本地提示词增强请求',
-    '这是一次“本地提示词增强”操作，不是对当前弹窗问题的直接答复。',
-    '你的唯一任务：基于真实代码分析，将“原始口语化输入”改写为结构化、清晰、可执行的高质量提示词。',
+    '这是一次”本地提示词增强”操作，不是对当前弹窗问题的直接答复。',
+    '你的唯一任务：基于真实代码分析，将”原始口语化输入”改写为结构化、清晰、可执行的高质量提示词。',
     '## 强制规则',
     '1. 必须先做真实代码分析，禁止凭空补全或脑补实现。',
     `2. ${getCodeAnalysisInstruction()}`,
     '3. 如果没有项目路径、无法检索真实代码、或检索结果不足以支撑结论，必须明确返回失败，不要静默降级。',
-    '4. 只允许改写“原始口语化输入”；附加背景仅供理解，不能直接并入最终增强正文。',
-    '5. 输出语言以中文为主。',
+    '4. 只允许改写”原始口语化输入”；附加背景仅供理解，不能直接并入最终增强正文。',
+    '5. 输出语言和思考过程以中文为主。',
     '6. 不要解释分析过程，不要回答原弹窗问题，不要输出多余寒暄。',
+  ]
+
+  // 中文注释：动态注入已启用 MCP 工具的使用指引
+  if (toolGuidance) {
+    sections.push(toolGuidance)
+    sections.push(
+      '## 工具降级说明',
+      '如果你当前环境无法使用上述工具（如工具未注册或不可调用），请跳过工具调用步骤，仅基于已有的附加背景和原始输入进行增强。不要因为工具不可用而报错或拒绝增强。',
+    )
+  }
+
+  sections.push(
     '## 成功输出格式（必须严格遵守）',
     '### BEGIN RESPONSE ###',
     '<augment-enhanced-prompt>这里放增强后的结构化提示词</augment-enhanced-prompt>',
@@ -564,7 +651,7 @@ function buildLocalEnhancePrompt(rawInput: string) {
     '## 项目分析条件',
     `- 项目根路径：${projectRoot}`,
     `- sou 工具前端检测状态：${souStatusText.value}`,
-  ]
+  )
 
   if (background) {
     sections.push(
@@ -690,6 +777,7 @@ function handleOpenIndexStatus() {
         :can-enhance="canEnhance"
         :continue-reply-enabled="continueReplyEnabled" :input-status-text="inputStatusText"
         :enhance-enabled="localEnhanceEnabled"
+        :enhance-tool-names="getEnabledToolNames()"
         @submit="handleSubmit" @continue="handleContinue" @enhance="handleEnhance"
         @open-mcp-tools-tab="handleOpenMcpToolsTab"
       />

@@ -13,6 +13,8 @@ interface Props {
   continueReplyEnabled?: boolean
   inputStatusText?: string
   enhanceEnabled?: boolean
+  // 中文注释：已启用且可用于增强的 MCP 工具名称列表
+  enhanceToolNames?: string[]
 }
 
 interface Emits {
@@ -31,6 +33,7 @@ const props = withDefaults(defineProps<Props>(), {
   continueReplyEnabled: true,
   inputStatusText: '',
   enhanceEnabled: false,
+  enhanceToolNames: () => [],
 })
 
 const emit = defineEmits<Emits>()
@@ -47,6 +50,12 @@ const {
 } = useShortcuts()
 
 const shortcutText = quickSubmitShortcutText
+
+// 中文注释：增强按钮的工具辅助提示文本
+const enhanceToolHint = computed(() => {
+  if (!props.enhanceToolNames || props.enhanceToolNames.length === 0) return ''
+  return `增强时将引导 AI 使用 ${props.enhanceToolNames.join('、')} 辅助`
+})
 
 const statusText = computed(() => {
   // 如果可以提交，直接显示快捷键提示
@@ -146,7 +155,12 @@ onMounted(() => {
                 本地增强
               </n-button>
             </template>
-            {{ canEnhance ? enhanceShortcutText : '请先输入要增强的文本' }}
+            <div>
+              <div>{{ canEnhance ? enhanceShortcutText : '请先输入要增强的文本' }}</div>
+              <div v-if="enhanceToolHint && canEnhance" class="mt-1 text-xs opacity-75">
+                {{ enhanceToolHint }}
+              </div>
+            </div>
           </n-tooltip>
           <n-tooltip v-else trigger="hover" placement="top">
             <template #trigger>
