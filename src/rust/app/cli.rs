@@ -1,6 +1,6 @@
 use crate::config::load_standalone_telegram_config;
 use crate::mcp::types::PopupRequest;
-use crate::mcp::utils::generate_request_id;
+use crate::mcp::utils::{generate_request_id, normalize_zhi_choices};
 use crate::telegram::handle_telegram_only_mcp_request;
 use crate::log_important;
 use crate::app::builder::run_tauri_app;
@@ -163,6 +163,8 @@ fn handle_cli_mode(args: &[String]) -> Result<()> {
     }
 
     // 构建请求并写入环境变量，供前端读取
+    let options = normalize_zhi_choices(options);
+
     let request = PopupRequest {
         id: generate_request_id(),
         message,

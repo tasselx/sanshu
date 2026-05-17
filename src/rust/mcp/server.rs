@@ -126,7 +126,7 @@ impl ZhiServer {
     }
 
     fn zhi_public_description(&self) -> &'static str {
-        "记录方案摘要、候选项与处理结果，返回结构化数据。"
+        "记录方案摘要、候选项与处理结果，返回结构化数据。方案选择场景应提供候选项；系统会为已有候选项补充“其他：自定义要求”兜底。"
     }
 
     fn is_zhi_entry(tool_name: &str) -> bool {
@@ -182,7 +182,7 @@ impl ServerHandler for ZhiServer {
                 "choices": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "候选处理项列表（可选）"
+                    "description": "候选处理项列表（可选）。方案选择或确认场景建议提供 2-5 个明确选项；已有候选项时系统会自动追加“其他：自定义要求”兜底。"
                 },
                 "render_markdown": {
                     "type": "boolean",

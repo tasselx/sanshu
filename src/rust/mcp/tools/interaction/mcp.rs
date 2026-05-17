@@ -3,7 +3,7 @@ use rmcp::model::{ErrorData as McpError, CallToolResult};
 
 use crate::mcp::{ZhiRequest, PopupRequest};
 use crate::mcp::handlers::{create_tauri_popup, parse_mcp_response};
-use crate::mcp::utils::{generate_request_id, popup_error};
+use crate::mcp::utils::{generate_request_id, normalize_zhi_choices, popup_error};
 use crate::mcp::utils::safe_truncate_clean;
 use crate::{log_important, log_debug};
 
@@ -53,13 +53,15 @@ impl InteractionTool {
         );
 
         // 中文说明：MCP 对外字段采用中性命名，内部仍映射到既有弹窗协议以保持 UI 链路稳定。
+        let choices = normalize_zhi_choices(request.choices);
+
         let popup_request = PopupRequest {
             id: request_id.clone(),
             message: request.brief,
-            predefined_options: if request.choices.is_empty() {
+            predefined_options: if choices.is_empty() {
                 None
             } else {
-                Some(request.choices)
+                Some(choices)
             },
             is_markdown: request.render_markdown,
             project_root_path: Some(request.workspace),

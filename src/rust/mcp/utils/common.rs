@@ -7,6 +7,45 @@ use std::path::Path;
 use percent_encoding;
 use regex::Regex;
 
+/// zhi 预设选项中的自定义兜底选项。
+///
+/// 中文说明：当模型给出的候选项不能覆盖用户真实意图时，用户可以明确选择该项，
+/// 并在补充说明中给出最终要求，避免模型误把其他预设选项当作主决策。
+pub const ZHI_CUSTOM_CHOICE: &str = "其他：自定义要求";
+
+/// 规范化 zhi 预设选项。
+///
+/// 中文说明：仅在调用方已经提供候选项时追加自定义兜底；纯自由输入场景不新增选项，
+/// 以保持原有交互的简单性。若调用方已提供同义自定义选项，则不重复追加。
+pub fn normalize_zhi_choices(mut choices: Vec<String>) -> Vec<String> {
+    if choices.is_empty() {
+        return choices;
+    }
+
+    if !choices.iter().any(|choice| is_zhi_custom_choice(choice)) {
+        choices.push(ZHI_CUSTOM_CHOICE.to_string());
+    }
+
+    choices
+}
+
+/// 判断选项是否表示 zhi 的自定义兜底语义。
+pub fn is_zhi_custom_choice(choice: &str) -> bool {
+    let normalized = choice.trim().to_lowercase();
+    normalized == ZHI_CUSTOM_CHOICE.to_lowercase()
+        || normalized == "其他"
+        || normalized.starts_with("其他:")
+        || normalized.starts_with("其他：")
+        || normalized.starts_with("其他/")
+        || normalized.starts_with("其他 /")
+        || normalized.contains("自定义要求")
+        || normalized.contains("以补充说明为准")
+        || normalized == "custom"
+        || normalized == "other"
+        || normalized.starts_with("custom:")
+        || normalized.starts_with("other:")
+}
+
 /// 解码并规范化路径
 ///
 /// 处理 URL 编码、Windows 路径格式转换等问题
@@ -169,6 +208,43 @@ pub fn safe_truncate_clean(text: &str, max_chars: usize) -> String {
     }
     let truncated: String = trimmed.chars().take(max_chars).collect();
     format!("{}...", truncated)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_zhi_custom_choice, normalize_zhi_choices, ZHI_CUSTOM_CHOICE};
+
+    #[test]
+    fn normalize_zhi_choices_adds_custom_choice_once() {
+        let choices = normalize_zhi_choices(vec!["方案 A".to_string(), "方案 B".to_string()]);
+
+        assert_eq!(choices.len(), 3);
+        assert_eq!(choices[2], ZHI_CUSTOM_CHOICE);
+
+        let normalized_again = normalize_zhi_choices(choices);
+        assert_eq!(
+            normalized_again
+                .iter()
+                .filter(|choice| is_zhi_custom_choice(choice))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn normalize_zhi_choices_keeps_free_input_empty() {
+        assert!(normalize_zhi_choices(Vec::new()).is_empty());
+    }
+
+    #[test]
+    fn is_zhi_custom_choice_recognizes_common_labels() {
+        assert!(is_zhi_custom_choice("其他：自定义要求"));
+        assert!(is_zhi_custom_choice("其他 / 自定义要求"));
+        assert!(is_zhi_custom_choice("其他"));
+        assert!(is_zhi_custom_choice("custom"));
+        assert!(is_zhi_custom_choice("other: write my own plan"));
+        assert!(!is_zhi_custom_choice("方案 A"));
+    }
 }
 
 

@@ -2,6 +2,7 @@ use anyhow::Result;
 use rmcp::model::{ErrorData as McpError, Content};
 
 use crate::mcp::types::{McpResponse, McpResponseContent};
+use crate::mcp::utils::is_zhi_custom_choice;
 use crate::log_debug;
 
 /// 解析 MCP 响应内容
@@ -137,15 +138,38 @@ fn parse_structured_response(response: McpResponse) -> Result<Vec<Content>, McpE
     let mut result = Vec::new();
     let mut text_parts = Vec::new();
 
-    // 1. 处理选择的选项
-    if !response.selected_options.is_empty() {
+    let custom_selected = response
+        .selected_options
+        .iter()
+        .any(|option| is_zhi_custom_choice(option));
+
+    // 1. 处理选择的选项。自定义选项需要明确表达“以补充说明为准”，降低模型误读风险。
+    if custom_selected {
+        text_parts.push("用户选择了自定义要求：不采用以上预设选项，以补充说明为最终要求。".to_string());
+        let non_custom_options: Vec<&str> = response
+            .selected_options
+            .iter()
+            .filter(|option| !is_zhi_custom_choice(option))
+            .map(String::as_str)
+            .collect();
+        if !non_custom_options.is_empty() {
+            text_parts.push(format!(
+                "同时选中的其他选项仅供参考，不应优先于自定义要求: {}",
+                non_custom_options.join(", ")
+            ));
+        }
+    } else if !response.selected_options.is_empty() {
         text_parts.push(format!("选择的选项: {}", response.selected_options.join(", ")));
     }
 
     // 2. 处理用户输入文本
     if let Some(user_input) = response.user_input {
         if !user_input.trim().is_empty() {
-            text_parts.push(user_input.trim().to_string());
+            if custom_selected {
+                text_parts.push(format!("用户最终要求: {}", user_input.trim()));
+            } else {
+                text_parts.push(user_input.trim().to_string());
+            }
         }
     }
 
@@ -208,4 +232,61 @@ fn parse_structured_response(response: McpResponse) -> Result<Vec<Content>, McpE
     }
 
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_mcp_response;
+    use rmcp::model::RawContent;
+
+    fn extract_text(response: &str) -> String {
+        let content = parse_mcp_response(response).expect("响应应可解析");
+        content
+            .iter()
+            .find_map(|item| match &item.raw {
+                RawContent::Text(text) => Some(text.text.clone()),
+                _ => None,
+            })
+            .expect("响应应包含文本内容")
+    }
+
+    #[test]
+    fn custom_choice_promotes_user_input_as_final_requirement() {
+        let response = serde_json::json!({
+            "user_input": "不要按选项一执行，改为先补需求访谈。",
+            "selected_options": ["其他：自定义要求"],
+            "images": [],
+            "metadata": {
+                "timestamp": "2026-05-17T00:00:00Z",
+                "request_id": "test",
+                "source": "popup"
+            }
+        });
+
+        let text = extract_text(&response.to_string());
+
+        assert!(text.contains("用户选择了自定义要求"));
+        assert!(text.contains("用户最终要求: 不要按选项一执行，改为先补需求访谈。"));
+        assert!(!text.contains("选择的选项: 其他：自定义要求"));
+    }
+
+    #[test]
+    fn normal_choice_keeps_existing_response_shape() {
+        let response = serde_json::json!({
+            "user_input": "补充说明",
+            "selected_options": ["方案 A"],
+            "images": [],
+            "metadata": {
+                "timestamp": "2026-05-17T00:00:00Z",
+                "request_id": "test",
+                "source": "popup"
+            }
+        });
+
+        let text = extract_text(&response.to_string());
+
+        assert!(text.contains("选择的选项: 方案 A"));
+        assert!(text.contains("补充说明"));
+        assert!(!text.contains("用户最终要求"));
+    }
 }
