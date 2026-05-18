@@ -125,6 +125,9 @@ pub struct McpConfig {
     /// 防止持续小写入导致永远触发不了同步。默认 300000 (5分钟)。
     pub acemcp_watch_max_wait_ms: Option<u64>,
     pub acemcp_auto_index_enabled: Option<bool>, // 全局自动索引开关（默认启用）
+    /// 需要由 MCP 进程长期维护文件监听的项目路径列表。
+    /// GUI 只负责写入监听意图，真正的长期 watcher 由三术 MCP 进程恢复和同步。
+    pub acemcp_watched_projects: Option<Vec<String>>,
     /// 是否自动索引嵌套的 Git 子项目（默认启用）
     /// 当对父目录触发索引或监听时，自动检测并索引/监听所有子项目
     pub acemcp_index_nested_projects: Option<bool>,
@@ -350,6 +353,7 @@ pub fn default_mcp_config() -> McpConfig {
         acemcp_watch_debounce_ms: None, // 未设置时走 watcher 默认 30000ms (30秒)
         acemcp_watch_max_wait_ms: None, // 未设置时走 watcher 默认 300000ms (5分钟)
         acemcp_auto_index_enabled: None, // 默认启用（未设置时视为 true）
+        acemcp_watched_projects: None, // 默认没有持久监听项目
         acemcp_index_nested_projects: None, // 自动索引嵌套项目（默认启用）
         // 代理配置默认值
         acemcp_proxy_enabled: None,

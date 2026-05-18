@@ -1531,6 +1531,14 @@ pub(crate) async fn update_index(config: &AcemcpConfig, project_root_path: &str)
         } else {
             log_important!(info, "所有批次上传成功，共上传 {} 个blobs", uploaded_names.len());
         }
+        let uploaded_files = summarize_blob_file_paths(&new_blobs, 8);
+        log_important!(
+            info,
+            "成功上传文件摘要: project={}, files={}, sample={:?}",
+            project_root_path,
+            uploaded_files.total,
+            uploaded_files.sample
+        );
     } else {
         log_important!(info, "没有新的blob需要上传，使用已有索引");
     }
@@ -1596,6 +1604,26 @@ pub(crate) async fn update_index(config: &AcemcpConfig, project_root_path: &str)
 
     log_important!(info, "索引更新完成，共 {} 个 blobs", blob_names.len());
     Ok(blob_names)
+}
+
+struct UploadedFileSummary {
+    total: usize,
+    sample: Vec<String>,
+}
+
+fn summarize_blob_file_paths(blobs: &[BlobItem], limit: usize) -> UploadedFileSummary {
+    let mut files: Vec<String> = blobs
+        .iter()
+        .map(|blob| strip_chunk_suffix(&blob.path).to_string())
+        .collect();
+    files.sort();
+    files.dedup();
+    let total = files.len();
+    files.truncate(limit);
+    UploadedFileSummary {
+        total,
+        sample: files,
+    }
 }
 
 /// 将索引配置信息写入 ji（记忆）工具

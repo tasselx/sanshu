@@ -21,6 +21,7 @@ use tokio::sync::mpsc;
 
 use super::types::AcemcpConfig;
 use super::mcp::{should_skip_auto_index_for_auth_failure, update_index};
+use crate::config::load_standalone_config;
 use crate::log_important;
 use crate::log_debug;
 
@@ -78,7 +79,7 @@ const ALWAYS_IGNORE_FILE_SUFFIXES: &[&str] = &[
 ///
 /// 说明：notify / canonicalize 在 Windows 下可能返回 `//?/C:/...` 或 `\\?\\C:\\...`，
 /// 这会导致字符串前缀匹配失败（进而无法路由到正确的嵌套子项目）。
-fn normalize_project_path(path: &str) -> String {
+pub(crate) fn normalize_project_path(path: &str) -> String {
     let mut p = path.to_string();
 
     // 处理 //?/ 格式（canonicalize 在某些情况下返回）
@@ -220,6 +221,8 @@ pub struct WatcherManager {
     auto_index_enabled: Arc<Mutex<bool>>,
     /// 父目录 -> 嵌套子项目列表（用于智能路由文件变更到正确的子项目）
     nested_project_map: Arc<Mutex<HashMap<String, Vec<NestedWatchInfo>>>>,
+    /// 上一次由 MCP 持久监听配置接管的项目集合，用于区分临时搜索自动监听。
+    persisted_watch_roots: Arc<Mutex<HashSet<String>>>,
 }
 
 impl WatcherManager {
@@ -237,6 +240,7 @@ impl WatcherManager {
             watchers: Arc::new(Mutex::new(HashMap::new())),
             auto_index_enabled: Arc::new(Mutex::new(enabled_from_config)),
             nested_project_map: Arc::new(Mutex::new(HashMap::new())),
+            persisted_watch_roots: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 
@@ -508,6 +512,86 @@ impl WatcherManager {
         watchers.keys().cloned().collect()
     }
 
+    /// 将当前进程内 watcher 同步到配置中的长期监听意图。
+    /// 说明：配置是 GUI 与 MCP 进程共享的事实源，避免监听生命周期只依赖等一下窗口。
+    pub async fn sync_with_persisted_watch_projects(&self) {
+        let config = match load_standalone_config() {
+            Ok(config) => config,
+            Err(e) => {
+                log_debug!("读取持久监听配置失败: {}", e);
+                return;
+            }
+        };
+
+        let sou_enabled = config
+            .mcp_config
+            .tools
+            .get(crate::constants::mcp::TOOL_SOU)
+            .copied()
+            .unwrap_or(false);
+
+        let desired: HashSet<String> = if sou_enabled {
+            config
+                .mcp_config
+                .acemcp_watched_projects
+                .clone()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|path| {
+                    normalize_project_path(
+                        &PathBuf::from(&path)
+                            .canonicalize()
+                            .unwrap_or_else(|_| PathBuf::from(&path))
+                            .to_string_lossy(),
+                    )
+                })
+                .collect()
+        } else {
+            HashSet::new()
+        };
+
+        let current: HashSet<String> = self.get_watching_projects().into_iter().collect();
+        let previous_persisted = {
+            self.persisted_watch_roots.lock().unwrap().clone()
+        };
+
+        for project_root in desired.difference(&current) {
+            let acemcp_config = match super::mcp::AcemcpTool::get_acemcp_config().await {
+                Ok(config) => config,
+                Err(e) => {
+                    log_important!(warn, "恢复 MCP 持久监听失败，无法读取 acemcp 配置: project={}, error={}", project_root, e);
+                    continue;
+                }
+            };
+
+            match self
+                .start_watching(
+                    project_root.to_string(),
+                    acemcp_config,
+                    config.mcp_config.acemcp_watch_debounce_ms,
+                    config.mcp_config.acemcp_watch_max_wait_ms,
+                )
+                .await
+            {
+                Ok(_) => log_important!(info, "MCP 进程已恢复项目监听: {}", project_root),
+                Err(e) => log_important!(warn, "MCP 进程恢复项目监听失败: project={}, error={}", project_root, e),
+            }
+        }
+
+        // 只停止之前由持久配置恢复的监听，避免误停 sou 搜索触发的临时自动监听。
+        for project_root in previous_persisted.difference(&desired) {
+            if current.contains(project_root) {
+                if let Err(e) = self.stop_watching(project_root) {
+                    log_debug!("停止已移除的持久监听失败: project={}, error={}", project_root, e);
+                } else {
+                    log_important!(info, "MCP 进程已停止已移除的持久监听: {}", project_root);
+                }
+            }
+        }
+
+        *self.persisted_watch_roots.lock().unwrap() = desired;
+    }
+
     /// 检查指定项目是否正在监听
     pub fn is_watching(&self, project_root: &str) -> bool {
         let normalized_root = normalize_project_path(
@@ -609,10 +693,11 @@ async fn debounce_and_index_loop(
 
                     log_important!(
                         info,
-                        "触发自动索引更新: parent_root={}, paths={}, reason={}",
+                        "触发自动索引更新: parent_root={}, paths={}, reason={}, sample={:?}",
                         parent_root,
                         paths.len(),
-                        if max_ok { "max_wait" } else { "quiet" }
+                        if max_ok { "max_wait" } else { "quiet" },
+                        summarize_changed_paths(&parent_root, &paths, 8)
                     );
 
                     flush_index(&parent_root, &paths, &nested_infos, &config_fallback).await;
@@ -675,9 +760,11 @@ async fn flush_index(
             Ok(blob_names) => {
                 log_important!(
                     info,
-                    "自动索引更新成功: project={}, blobs={}",
+                    "自动索引更新成功: project={}, blobs={}, changed_files={}, changed_sample={:?}",
                     project_path,
-                    blob_names.len()
+                    blob_names.len(),
+                    changed_paths.len(),
+                    summarize_changed_paths(&project_path, changed_paths, 8)
                 );
             }
             Err(e) => {
@@ -690,6 +777,25 @@ async fn flush_index(
             }
         }
     }
+}
+
+fn summarize_changed_paths(project_root: &str, changed_paths: &[PathBuf], limit: usize) -> Vec<String> {
+    let normalized_root = normalize_project_path(project_root);
+    let mut files: Vec<String> = changed_paths
+        .iter()
+        .map(|path| {
+            let normalized = normalize_project_path(&path.to_string_lossy());
+            normalized
+                .strip_prefix(&normalized_root)
+                .map(|rel| rel.trim_start_matches('/').to_string())
+                .unwrap_or(normalized)
+        })
+        .filter(|path| !path.trim().is_empty())
+        .collect();
+    files.sort();
+    files.dedup();
+    files.truncate(limit);
+    files
 }
 
 /// 全局监听器管理器实例

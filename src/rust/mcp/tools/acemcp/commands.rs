@@ -106,6 +106,9 @@ pub struct SaveAcemcpConfigArgs {
     /// 是否自动索引嵌套的 Git 子项目
     #[serde(alias = "indexNestedProjects", alias = "index_nested_projects")]
     pub index_nested_projects: Option<bool>,
+    /// 由 MCP 进程长期维护监听的项目路径列表
+    #[serde(alias = "watchedProjects", alias = "watched_projects")]
+    pub watched_projects: Option<Vec<String>>,
     #[serde(alias = "souDefaultBackend", alias = "sou_default_backend")]
     pub sou_default_backend: Option<String>,
     #[serde(alias = "souAutoOrder", alias = "sou_auto_order")]
@@ -271,6 +274,9 @@ pub async fn save_acemcp_config(
         // 仅在前端显式传入时才覆盖，避免其他页面保存配置时将用户设置重置为默认值
         if let Some(v) = args.index_nested_projects {
             config.mcp_config.acemcp_index_nested_projects = Some(v);
+        }
+        if let Some(projects) = args.watched_projects.clone() {
+            config.mcp_config.acemcp_watched_projects = Some(normalize_project_list(projects));
         }
         // 这些字段可能不会由复用 acemcp 配置的旧页面传入，需保留已有后端配置。
         if let Some(v) = args.sou_default_backend.clone() {
@@ -1372,16 +1378,39 @@ pub async fn set_auto_index_enabled(
 
 /// 获取当前正在监听的项目列表
 #[tauri::command]
-pub fn get_watching_projects() -> Result<Vec<String>, String> {
+pub fn get_watching_projects(state: State<'_, AppState>) -> Result<Vec<String>, String> {
     let watcher_manager = super::watcher::get_watcher_manager();
-    Ok(watcher_manager.get_watching_projects())
+    let mut projects = watcher_manager.get_watching_projects();
+    {
+        let config = state.config.lock().map_err(|e| format!("获取配置失败: {}", e))?;
+        projects.extend(
+            config
+                .mcp_config
+                .acemcp_watched_projects
+                .clone()
+                .unwrap_or_default(),
+        );
+    }
+    Ok(normalize_project_list(projects))
 }
 
 /// 检查指定项目是否正在监听
 #[tauri::command]
-pub fn is_project_watching(project_root_path: String) -> Result<bool, String> {
+pub fn is_project_watching(project_root_path: String, state: State<'_, AppState>) -> Result<bool, String> {
+    let normalized_root = normalize_watch_project_path(&project_root_path);
     let watcher_manager = super::watcher::get_watcher_manager();
-    Ok(watcher_manager.is_watching(&project_root_path))
+    if watcher_manager.is_watching(&normalized_root) {
+        return Ok(true);
+    }
+
+    let config = state.config.lock().map_err(|e| format!("获取配置失败: {}", e))?;
+    Ok(config
+        .mcp_config
+        .acemcp_watched_projects
+        .clone()
+        .unwrap_or_default()
+        .into_iter()
+        .any(|path| normalize_watch_project_path(&path) == normalized_root))
 }
 
 /// 启动项目文件监听
@@ -1390,46 +1419,74 @@ pub fn is_project_watching(project_root_path: String) -> Result<bool, String> {
 pub async fn start_project_watching(
     project_root_path: String,
     state: State<'_, AppState>,
+    app: AppHandle,
 ) -> Result<(), String> {
-    // 从配置中读取静默期 + 最大等待时间
-    let (debounce_ms, max_wait_ms) = {
-        let config = state.config.lock().map_err(|e| format!("获取配置失败: {}", e))?;
-        (
-            config.mcp_config.acemcp_watch_debounce_ms,
-            config.mcp_config.acemcp_watch_max_wait_ms,
-        )
-    };
+    let normalized_root = normalize_watch_project_path(&project_root_path);
 
-    // 获取 acemcp 配置
-    let acemcp_config = super::AcemcpTool::get_acemcp_config()
+    // 持久化监听意图，三术 MCP 进程会从配置中恢复和同步 watcher。
+    {
+        let mut config = state.config.lock().map_err(|e| format!("获取配置失败: {}", e))?;
+        let mut projects = config.mcp_config.acemcp_watched_projects.clone().unwrap_or_default();
+        projects.push(normalized_root.clone());
+        config.mcp_config.acemcp_watched_projects = Some(normalize_project_list(projects));
+    }
+    save_config(&state, &app)
         .await
-        .map_err(|e| format!("获取 acemcp 配置失败: {}", e))?;
-
-    log::info!(
-        "启动项目监听: path={}, debounce_ms={:?}, max_wait_ms={:?}",
-        project_root_path, debounce_ms, max_wait_ms
-    );
-
-    // 启动监听
-    let watcher_manager = super::watcher::get_watcher_manager();
-    watcher_manager.start_watching(project_root_path, acemcp_config, debounce_ms, max_wait_ms)
-        .await
-        .map_err(|e| format!("启动监听失败: {}", e))
+        .map_err(|e| format!("保存监听配置失败: {}", e))?;
+    log_important!(info, "已记录 MCP 持久监听项目: {}", normalized_root);
+    Ok(())
 }
 
 /// 停止监听指定项目
 #[tauri::command]
-pub fn stop_project_watching(project_root_path: String) -> Result<(), String> {
+pub async fn stop_project_watching(
+    project_root_path: String,
+    state: State<'_, AppState>,
+    app: AppHandle,
+) -> Result<(), String> {
+    let normalized_root = normalize_watch_project_path(&project_root_path);
+    {
+        let mut config = state.config.lock().map_err(|e| format!("获取配置失败: {}", e))?;
+        let projects = config.mcp_config.acemcp_watched_projects.clone().unwrap_or_default();
+        config.mcp_config.acemcp_watched_projects = Some(
+            normalize_project_list(projects)
+                .into_iter()
+                .filter(|path| path != &normalized_root)
+                .collect(),
+        );
+    }
+    save_config(&state, &app)
+        .await
+        .map_err(|e| format!("保存监听配置失败: {}", e))?;
+    // 当前 GUI 进程可能存在旧版本启动的 watcher，停止本地副本避免配置页继续显示过期状态。
     let watcher_manager = super::watcher::get_watcher_manager();
-    watcher_manager.stop_watching(&project_root_path)
-        .map_err(|e| e.to_string())
+    if watcher_manager.is_watching(&normalized_root) {
+        watcher_manager
+            .stop_watching(&normalized_root)
+            .map_err(|e| e.to_string())?;
+    }
+    log_important!(info, "已移除 MCP 持久监听项目: {}", normalized_root);
+    Ok(())
 }
 
 /// 停止所有项目监听
 #[tauri::command]
-pub fn stop_all_watching() -> Result<(), String> {
+pub async fn stop_all_watching(
+    state: State<'_, AppState>,
+    app: AppHandle,
+) -> Result<(), String> {
+    {
+        let mut config = state.config.lock().map_err(|e| format!("获取配置失败: {}", e))?;
+        config.mcp_config.acemcp_watched_projects = Some(Vec::new());
+    }
+    save_config(&state, &app)
+        .await
+        .map_err(|e| format!("保存监听配置失败: {}", e))?;
+
+    // 清理当前 GUI 进程内可能残留的本地 watcher，三术 MCP 会按空配置停止持久监听。
     let watcher_manager = super::watcher::get_watcher_manager();
     watcher_manager.stop_all();
+    log_important!(info, "已清空 MCP 持久监听项目");
     Ok(())
 }
 
@@ -1448,6 +1505,25 @@ fn normalize_path_key(path: &str) -> String {
     }
     // 统一使用正斜杠
     normalized.replace('\\', "/")
+}
+
+fn normalize_watch_project_path(path: &str) -> String {
+    normalize_path_key(path)
+}
+
+fn normalize_project_list(projects: Vec<String>) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut normalized = Vec::new();
+    for project in projects {
+        let path = normalize_watch_project_path(&project);
+        if path.trim().is_empty() {
+            continue;
+        }
+        if seen.insert(path.clone()) {
+            normalized.push(path);
+        }
+    }
+    normalized
 }
 
 /// 清理指定项目的索引记录

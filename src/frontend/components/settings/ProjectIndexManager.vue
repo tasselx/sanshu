@@ -279,7 +279,7 @@ async function toggleWatching(projectRoot: string) {
     else {
       // 修正：调用启动监听命令而非手动索引
       await invoke('start_project_watching', { projectRootPath: normalizedPath })
-      message.success('已开启监听项目')
+      message.success('已记录 MCP 持久监听，三术进程会按配置接管监听')
     }
     watchingProjects.value = await invoke<string[]>('get_watching_projects')
   }

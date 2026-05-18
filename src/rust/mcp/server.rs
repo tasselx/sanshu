@@ -556,6 +556,9 @@ impl ServerHandler for ZhiServer {
 
 /// 启动MCP服务器
 pub async fn run_server() -> Result<(), Box<dyn std::error::Error>> {
+    // 中文说明：MCP 进程负责长期维护代码监听；GUI 只写入配置中的监听意图。
+    start_acemcp_watch_config_sync();
+
     // 创建并运行服务器
     let service = match ZhiServer::new().serve(stdio()).await {
         Ok(service) => service,
@@ -578,4 +581,17 @@ pub async fn run_server() -> Result<(), Box<dyn std::error::Error>> {
     // 等待服务器关闭
     service.waiting().await?;
     Ok(())
+}
+
+fn start_acemcp_watch_config_sync() {
+    tokio::spawn(async {
+        let watcher_manager = crate::mcp::tools::acemcp::watcher::get_watcher_manager();
+        watcher_manager.sync_with_persisted_watch_projects().await;
+
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(15));
+        loop {
+            interval.tick().await;
+            watcher_manager.sync_with_persisted_watch_projects().await;
+        }
+    });
 }

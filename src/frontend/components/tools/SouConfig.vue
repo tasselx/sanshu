@@ -1252,6 +1252,10 @@ defineExpose({ saveConfig })
         <n-scrollbar class="tab-scrollbar">
           <n-space vertical size="large" class="tab-content">
             <ConfigSection title="全局策略">
+              <n-alert type="info" :bordered="false" class="mb-3">
+                监听索引的长期职责由三术 MCP 进程维护；此页面只记录监听项目并展示状态。等一下窗口关闭后，三术进程会按配置恢复监听。
+              </n-alert>
+
               <div class="auto-index-toggle">
                 <div class="toggle-info">
                   <div class="toggle-icon">

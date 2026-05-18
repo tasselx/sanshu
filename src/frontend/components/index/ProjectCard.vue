@@ -95,6 +95,9 @@ const projectName = computed(() => {
   return parts[parts.length - 1] || displayPath.value
 })
 
+// 最近成功同步的文件用于排查监听是否真正上传了变更。
+const recentIndexedFiles = computed(() => props.project.recent_indexed_files?.slice(0, 5) || [])
+
 // 格式化相对时间
 function formatRelativeTime(timeStr: string | null): string {
   if (!timeStr)
@@ -204,6 +207,18 @@ function formatAbsoluteTime(timeStr: string | null): string {
         <span>{{ staleNotice }}</span>
       </div>
 
+      <div v-if="recentIndexedFiles.length > 0" class="recent-files-section">
+        <div class="recent-files-header">
+          <div class="i-carbon-upload text-green-500" />
+          <span>最近成功同步</span>
+        </div>
+        <div class="recent-files-list">
+          <span v-for="file in recentIndexedFiles" :key="file" class="recent-file">
+            {{ file }}
+          </span>
+        </div>
+      </div>
+
       <!-- 进度条（仅索引中时显示） -->
       <div v-if="project.status === 'indexing'" class="progress-section">
         <n-progress
@@ -298,7 +313,7 @@ function formatAbsoluteTime(timeStr: string | null): string {
               <span class="watch-label">监听</span>
             </div>
           </template>
-          {{ isWatching ? '停止实时监听' : '开启实时监听' }}
+          {{ isWatching ? '停止 MCP 持久监听' : '开启 MCP 持久监听' }}
         </n-tooltip>
 
         <div class="flex-1" />
@@ -482,6 +497,53 @@ function formatAbsoluteTime(timeStr: string | null): string {
   color: #fcd34d;
   background: rgba(245, 158, 11, 0.18);
   border-color: rgba(245, 158, 11, 0.3);
+}
+
+.recent-files-section {
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: rgba(34, 197, 94, 0.08);
+  border: 1px solid rgba(34, 197, 94, 0.18);
+}
+
+.recent-files-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+  font-size: 11px;
+  font-weight: 500;
+  color: #15803d;
+}
+
+.recent-files-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.recent-file {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, monospace;
+  font-size: 10px;
+  line-height: 1.4;
+  color: rgba(22, 101, 52, 0.88);
+}
+
+:root.dark .recent-files-section {
+  background: rgba(34, 197, 94, 0.12);
+  border-color: rgba(34, 197, 94, 0.24);
+}
+
+:root.dark .recent-files-header {
+  color: #86efac;
+}
+
+:root.dark .recent-file {
+  color: rgba(187, 247, 208, 0.88);
 }
 
 /* 操作按钮区域 */
