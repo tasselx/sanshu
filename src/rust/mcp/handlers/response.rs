@@ -11,7 +11,13 @@ use crate::log_debug;
 pub fn parse_mcp_response(response: &str) -> Result<Vec<Content>, McpError> {
     if response.trim() == "CANCELLED" || response.trim() == "用户取消了操作" {
         log_debug!("[parse_mcp_response] 收到取消信号");
-        return Ok(vec![Content::text("用户取消了操作".to_string())]);
+        // 中文说明：把「取消/弹窗关闭」改写为「继续等待」语义，避免 AI 把它当成对话结束信号
+        // 而提前收尾（从而导致 IDE/客户端把下一条消息计为新一轮对话次数）。
+        return Ok(vec![Content::text(
+            "用户暂未给出回应（可能误关闭弹窗或临时离开），未表达任何结束意图。\
+             请再次调用 `zhi` 工具等待用户明确回复，禁止在未获得用户完成指令前主动结束本轮对话。"
+                .to_string(),
+        )]);
     }
 
     // 首先尝试解析为新的结构化格式
@@ -115,7 +121,13 @@ pub fn parse_mcp_response(response: &str) -> Result<Vec<Content>, McpError> {
             }
 
             if result.is_empty() {
-                result.push(Content::text("用户未提供任何内容".to_string()));
+                // 中文说明：空内容同样不能让 AI 把本轮当成结束，统一回写「继续等待」指令。
+                result.push(Content::text(
+                    "用户本次未在弹窗中提供任何内容（既未选择选项，也未输入文本/图片），\
+                     未表达完成或结束意图。请再次调用 `zhi` 工具等待用户回复，\
+                     禁止主动结束本轮对话。"
+                        .to_string(),
+                ));
             }
 
             log_debug!(
@@ -128,6 +140,15 @@ pub fn parse_mcp_response(response: &str) -> Result<Vec<Content>, McpError> {
         Err(_) => {
             // 如果不是JSON格式，作为纯文本处理
             log_debug!("[parse_mcp_response] 非JSON响应，按纯文本处理: len={}", response.len());
+            // 中文说明：纯文本回退分支也要兜底空/纯空白响应，否则 AI 收到空文本会按
+            // 「无内容」直接收尾，从而导致下一条消息被客户端计为新一轮 request。
+            if response.trim().is_empty() {
+                return Ok(vec![Content::text(
+                    "用户本次未在弹窗中提供任何内容（响应为空），未表达完成或结束意图。\
+                     请再次调用 `zhi` 工具等待用户回复，禁止主动结束本轮对话。"
+                        .to_string(),
+                )]);
+            }
             Ok(vec![Content::text(response.to_string())])
         }
     }
@@ -228,7 +249,13 @@ fn parse_structured_response(response: McpResponse) -> Result<Vec<Content>, McpE
 
     // 7. 如果没有任何内容，添加默认响应
     if result.is_empty() {
-        result.push(Content::text("用户未提供任何内容".to_string()));
+        // 中文说明：与旧格式分支保持一致——空响应改写为「继续等待」语义，避免 AI 提前结束对话。
+        result.push(Content::text(
+            "用户本次未在弹窗中提供任何内容（既未选择选项，也未输入文本/图片），\
+             未表达完成或结束意图。请再次调用 `zhi` 工具等待用户回复，\
+             禁止主动结束本轮对话。"
+                .to_string(),
+        ));
     }
 
     Ok(result)
@@ -268,6 +295,50 @@ mod tests {
         assert!(text.contains("用户选择了自定义要求"));
         assert!(text.contains("用户最终要求: 不要按选项一执行，改为先补需求访谈。"));
         assert!(!text.contains("选择的选项: 其他：自定义要求"));
+    }
+
+    #[test]
+    fn cancelled_response_instructs_ai_to_keep_waiting() {
+        // 中文说明：取消/弹窗关闭场景必须返回「继续等待」语义，
+        // 避免被 AI 当成对话结束信号、导致客户端把下一条消息计为新一轮次数。
+        for raw in ["CANCELLED", "用户取消了操作"] {
+            let text = extract_text(raw);
+            assert!(
+                text.contains("请再次调用") && text.contains("zhi"),
+                "取消分支应当提示 AI 重新调用 zhi 等待用户回复，实际: {}",
+                text
+            );
+            assert!(
+                text.contains("禁止"),
+                "取消分支应当明确禁止主动结束对话，实际: {}",
+                text
+            );
+            assert!(
+                !text.contains("用户取消了操作"),
+                "新文案不应再回落到旧的『用户取消了操作』字面值，实际: {}",
+                text
+            );
+        }
+    }
+
+    #[test]
+    fn empty_structured_response_instructs_ai_to_keep_waiting() {
+        // 中文说明：结构化响应里既无选项也无文本/图片时，同样必须发出「继续等待」指令。
+        let response = serde_json::json!({
+            "user_input": "",
+            "selected_options": [],
+            "images": [],
+            "metadata": {
+                "timestamp": "2026-05-17T00:00:00Z",
+                "request_id": "test",
+                "source": "popup"
+            }
+        });
+
+        let text = extract_text(&response.to_string());
+        assert!(text.contains("请再次调用") && text.contains("zhi"));
+        assert!(text.contains("禁止"));
+        assert!(!text.contains("用户未提供任何内容"));
     }
 
     #[test]

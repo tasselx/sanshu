@@ -126,7 +126,26 @@ impl ZhiServer {
     }
 
     fn zhi_public_description(&self) -> &'static str {
-        "记录方案摘要、候选项与处理结果，返回结构化数据。方案选择场景应提供候选项；系统会为已有候选项补充“其他：自定义要求”兜底。"
+        // 中文说明：把「强制交互 / 不可结束对话」硬约束内嵌到 description，
+        // 这样即使 MCP 客户端没有加载 sanshu 提示词模板，AI 也能从工具说明里看到，
+        // 避免因为弹窗取消/空响应/超时把对话提前结束、导致客户端开新 request。
+        // 第一句开门见山声明「本工具=向用户提问/确认的唯一通道」：上下文被压缩、
+        // sanshu 规则掉出有效上下文时，模型仍能仅凭描述首句认出这是提问工具，
+        // 而不是退回到客户端原生的「ask questions」（治标缓解，配合方案A 一起用）。
+        "向用户提问、确认方案、收尾确认并等待用户回复的【唯一交互工具】：\
+         任何需要用户决策、澄清、方案确认或完成确认的场景，都必须调用本工具，\
+         不要在正文里列选项，也不要改用其它提问方式。\
+         本工具记录方案摘要、候选项与处理结果，返回结构化数据。方案选择场景应提供候选项；\
+         已有候选项时系统会自动追加“其他：自定义要求”兜底。\n\
+         【强制交互约束】\n\
+         1) 任何方案确认、计划变更、任务收尾必须通过本工具向用户展示并等待回复；\n\
+         2) 未收到用户明确的「完成/结束/不需要再问」类指令前，禁止主动结束本轮对话；\n\
+         3) 【保活·最重要】若本次返回含「用户仍在思考中」「本次等待已达上限」「弹窗仍开着」\
+         「请再次调用」「继续等待」「用户暂未给出回应」「用户未提供任何内容」等任一字样，\
+         这是正常的防超时保活信号（弹窗还开着、用户没结束），你必须**立即无条件再次调用本工具**\
+         继续等待，禁止把它当作失败或结束理由，禁止输出任何收尾/告别/总结类文本作为本轮最后一条消息；\n\
+         4) 若本工具返回错误（参数错误、弹窗失败等），先按错误提示修正后立刻重试，\
+         不要因一次失败就结束对话。"
     }
 
     fn is_zhi_entry(tool_name: &str) -> bool {
@@ -364,7 +383,16 @@ impl ServerHandler for ZhiServer {
                 match serde_json::from_value::<ZhiRequest>(arguments_value) {
                     Ok(zhi_request) => {
                         // 调用三术工具（将 call_id 作为 request.id 贯穿到 GUI/响应）
-                        InteractionTool::zhi_with_request_id(zhi_request, call_id.clone()).await
+                        // 中文说明：把 peer 与客户端下发的 progressToken 一并传入，
+                        // 让 zhi 在等待用户期间按周期推送 progress 心跳，规避客户端 ~30s 工具超时。
+                        let progress_token = _context.meta.get_progress_token();
+                        InteractionTool::zhi_with_request_id(
+                            zhi_request,
+                            call_id.clone(),
+                            Some(_context.peer.clone()),
+                            progress_token,
+                        )
+                        .await
                     }
                     Err(e) => {
                         log_important!(
@@ -374,7 +402,23 @@ impl ServerHandler for ZhiServer {
                             tool,
                             e
                         );
-                        Err(McpError::invalid_params(format!("参数解析失败: {}", e), None))
+                        // 中文说明：zhi 是强制交互入口，参数错误不能以 hard Err 返回——
+                        // 否则 Cursor 等客户端会直接结束本轮、把后续输入计为新一轮 request。
+                        // 改为 success + is_error + 修正指引，让 AI 立刻在同一轮内重试。
+                        let guidance = format!(
+                            "zhi 参数解析失败: {}\n\n\
+                             【处理指引】\n\
+                             1) 必填字段：`brief`（string）+ `workspace`（绝对路径 string）；\n\
+                             2) 可选字段：`choices`（string 数组）、`render_markdown`（bool）；\n\
+                             3) 请按以上 schema 修正后立即重新调用 `zhi`，禁止因此结束本轮对话。",
+                            e
+                        );
+                        Ok(CallToolResult {
+                            content: vec![Content::text(guidance)],
+                            is_error: Some(true),
+                            meta: None,
+                            structured_content: None,
+                        })
                     }
                 }
             }

@@ -13,6 +13,8 @@ package-lock.json
 dist/
 build/
 gen/
+# 一键编译脚本 build.sh 的集中输出目录（编译产物，不入库）
+dist-bin/
 
 # IDE
 .idea/

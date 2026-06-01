@@ -37,7 +37,8 @@ pnpm build
 
 # 构建MCP CLI工具
 echo "🔨 构建 MCP CLI 工具..."
-cargo build --release
+# 中文说明：必须带 --features custom-protocol，否则 Tauri 走 devUrl 导致 等一下 GUI 白屏。
+cargo build --release --features custom-protocol
 
 # 检查构建结果
 if [[ ! -f "target/release/等一下" ]] || [[ ! -f "target/release/三术" ]]; then

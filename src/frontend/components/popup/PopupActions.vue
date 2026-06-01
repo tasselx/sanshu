@@ -15,6 +15,8 @@ interface Props {
   enhanceEnabled?: boolean
   // 中文注释：已启用且可用于增强的 MCP 工具名称列表
   enhanceToolNames?: string[]
+  // 中文注释：保活已等待时长（mm:ss），为空则不展示保活指示
+  keepAliveText?: string
 }
 
 interface Emits {
@@ -34,6 +36,7 @@ const props = withDefaults(defineProps<Props>(), {
   inputStatusText: '',
   enhanceEnabled: false,
   enhanceToolNames: () => [],
+  keepAliveText: '',
 })
 
 const emit = defineEmits<Emits>()
@@ -133,6 +136,19 @@ onMounted(() => {
           <span class="font-medium">{{ connectionStatus }}</span>
           <span class="opacity-60">|</span>
           <span class="opacity-60">{{ statusText }}</span>
+          <!-- 防超时保活指示：绿色呼吸点 + 已等待时长，告知用户可慢慢想、输入不会丢失 -->
+          <template v-if="keepAliveText">
+            <span class="opacity-60">|</span>
+            <n-tooltip trigger="hover" placement="top">
+              <template #trigger>
+                <span class="flex items-center gap-1.5 opacity-70">
+                  <span class="keepalive-dot" />
+                  <span>防超时保活中 · 已等待 {{ keepAliveText }}</span>
+                </span>
+              </template>
+              正通过心跳 + 短调用重连保活，慢慢想，输入不会丢失
+            </n-tooltip>
+          </template>
         </div>
       </div>
 
@@ -224,3 +240,34 @@ onMounted(() => {
     </div>
   </div>
 </template>
+
+<style scoped>
+/* 保活状态指示点：绿色呼吸动画，低对比不抢眼 */
+.keepalive-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 9999px;
+  background: #22c55e;
+  box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.45);
+  animation: keepalive-breathe 1.8s ease-in-out infinite;
+}
+
+@keyframes keepalive-breathe {
+  0%, 100% {
+    opacity: 0.55;
+    box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.45);
+  }
+  50% {
+    opacity: 1;
+    box-shadow: 0 0 0 4px rgba(34, 197, 94, 0);
+  }
+}
+
+/* 无障碍：尊重系统"减少动态效果"设置 */
+@media (prefers-reduced-motion: reduce) {
+  .keepalive-dot {
+    animation: none;
+    opacity: 0.9;
+  }
+}
+</style>

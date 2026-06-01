@@ -114,6 +114,30 @@ const inputRef = ref()
 const continueReplyEnabled = ref(true)
 const continuePrompt = ref('请按照最佳实践继续')
 
+// 等待保活计时：从弹窗显示开始正计时，向用户表明"正在防超时保活、可慢慢想不会丢失输入"
+// 说明：后端靠 progress 心跳 + 短调用重连保活，弹窗进程不重启，所以这里从打开时刻自己累计即可。
+const waitElapsedSeconds = ref(0)
+let waitTimer: number | null = null
+const keepAliveText = computed(() => {
+  const total = waitElapsedSeconds.value
+  const mm = String(Math.floor(total / 60)).padStart(2, '0')
+  const ss = String(total % 60).padStart(2, '0')
+  return `${mm}:${ss}`
+})
+function startWaitTimer() {
+  stopWaitTimer()
+  waitElapsedSeconds.value = 0
+  waitTimer = window.setInterval(() => {
+    waitElapsedSeconds.value += 1
+  }, 1000)
+}
+function stopWaitTimer() {
+  if (waitTimer !== null) {
+    window.clearInterval(waitTimer)
+    waitTimer = null
+  }
+}
+
 // 计算属性
 const isVisible = computed(() => !!props.request)
 const hasOptions = computed(() => (props.request?.predefined_options?.length ?? 0) > 0)
@@ -173,6 +197,8 @@ watch(() => props.request, (newRequest) => {
   if (newRequest) {
     resetForm()
     loading.value = true
+    // 弹窗显示即开始正计时，配合底部"防超时保活中"指示
+    startWaitTimer()
     // 每次显示弹窗时重新加载配置
     loadReplyConfig()
 
@@ -189,6 +215,10 @@ watch(() => props.request, (newRequest) => {
     setTimeout(() => {
       loading.value = false
     }, 300)
+  }
+  else {
+    // 弹窗关闭时停止计时
+    stopWaitTimer()
   }
 }, { immediate: true })
 
@@ -278,6 +308,8 @@ onUnmounted(() => {
   }
   // 组件卸载时停止索引状态轮询
   stopPolling()
+  // 组件卸载时停止保活计时
+  stopWaitTimer()
 })
 
 // 重置表单
@@ -778,6 +810,7 @@ function handleOpenIndexStatus() {
         :continue-reply-enabled="continueReplyEnabled" :input-status-text="inputStatusText"
         :enhance-enabled="localEnhanceEnabled"
         :enhance-tool-names="getEnabledToolNames()"
+        :keep-alive-text="keepAliveText"
         @submit="handleSubmit" @continue="handleContinue" @enhance="handleEnhance"
         @open-mcp-tools-tab="handleOpenMcpToolsTab"
       />

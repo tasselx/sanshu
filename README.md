@@ -523,17 +523,29 @@ cd sanshu
 # 2. 安装前端依赖
 pnpm install
 
-# 3. 构建项目
-pnpm build
-cargo build --release
+# 3. 一键编译（推荐）：构建前端 + 两个二进制，产物集中收集到 dist-bin/
+./build.sh
+#    可选参数：
+#    ./build.sh --skip-frontend   # 前端没改动时只重编 Rust，更快
+#    ./build.sh --debug           # debug 构建
+#    ./build.sh -h                # 查看帮助
+#
+#    或手动分步构建（注意：cargo build 必须带 --features custom-protocol，
+#    否则 等一下 GUI 会因走 devUrl 而白屏）：
+#    pnpm build
+#    cargo build --release --features custom-protocol
 
-# 4. 安装 CLI 工具
+# 4. 安装 CLI 工具到系统 PATH
 # Linux/macOS
 ./install.sh
 
 # Windows
 ./install-windows.ps1
 ```
+
+> ⚡ **一键编译脚本 `build.sh`**：检查工具链 → （缺失时自动 `pnpm install`）→ `pnpm build` →
+> `cargo build --release --features custom-protocol` → 把 `等一下` / `三术` / `sanshu` 收集到
+> 仓库根的 `dist-bin/` 并打印体积与耗时。详见 [`docs/一键编译脚本.md`](docs/一键编译脚本.md)。
 
 #### 常用开发命令
 
@@ -553,16 +565,20 @@ cargo tauri dev
 ##### 🔨 构建打包
 
 ```bash
+# 一键编译（推荐）：前端 + 二进制，产物收集到 dist-bin/
+./build.sh
+
 # 构建前端（生成 dist 目录）
 pnpm build
 
 # Cargo 构建后端（Debug 模式，快速编译用于开发调试）
-cargo build
+# 注意：裸 cargo build 不带 --features custom-protocol 时，等一下 GUI 会走 devUrl 而白屏
+cargo build --features custom-protocol
 
 # Cargo 构建后端（Release 模式，优化体积和性能）
-cargo build --release
+cargo build --release --features custom-protocol
 
-# Tauri 完整打包（生成安装包，包含前后端）
+# Tauri 完整打包（生成安装包，包含前后端；CLI 会自动启用 custom-protocol）
 pnpm tauri:build
 # 或
 cargo tauri build
