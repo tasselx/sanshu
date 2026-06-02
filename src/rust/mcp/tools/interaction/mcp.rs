@@ -96,6 +96,22 @@ impl InteractionTool {
         // 让 Cursor 等客户端在 ~30s 工具超时前不断重置计时器，从根上解决「长等待被超时丢弃」。
         // token 优先用客户端 _meta.progressToken 下发的（最规范、最可能被客户端关联到本次调用）；
         // 缺失时回退为本次 request_id 自生成，兼容「只认 notifications/progress、不校验 token 来源」的客户端。
+        // 中文说明：client_progress_token 是否由客户端下发，是排查「心跳是否真的有效」的关键信号——
+        // 若为 None，我们只能自造 token，部分客户端（如 Cursor）可能不认、不重置超时计时器，
+        // 导致长等待仍被 ~30s 超时丢弃 → AI 误判失败 → 新开 request。这里在 info 级显式标注。
+        let has_client_token = client_progress_token.is_some();
+        if peer.is_some() {
+            log_important!(
+                info,
+                "[zhi] 心跳已启用: request_id={}, 间隔={}s, client_progress_token={}（token=自造时部分客户端可能不认而失效）",
+                request_id,
+                PROGRESS_HEARTBEAT_INTERVAL.as_secs(),
+                if has_client_token { "客户端下发" } else { "缺失/自造" }
+            );
+        } else {
+            log_important!(info, "[zhi] 未启用心跳（无 peer，CLI/测试场景）: request_id={}", request_id);
+        }
+
         let heartbeat = peer.map(|peer| {
             let token = client_progress_token.unwrap_or_else(|| {
                 ProgressToken(NumberOrString::String(Arc::from(request_id.as_str())))
@@ -106,9 +122,11 @@ impl InteractionTool {
                 // 跳过 interval 立即触发的首个 tick，让第一次心跳在一个周期后再发。
                 ticker.tick().await;
                 let mut elapsed_secs: f64 = 0.0;
+                let mut beat_no: u64 = 0;
                 loop {
                     ticker.tick().await;
                     elapsed_secs += PROGRESS_HEARTBEAT_INTERVAL.as_secs() as f64;
+                    beat_no += 1;
                     if let Err(e) = peer
                         .notify_progress(ProgressNotificationParam {
                             progress_token: token.clone(),
@@ -118,14 +136,24 @@ impl InteractionTool {
                         })
                         .await
                     {
-                        // 通知失败通常意味着连接已关闭，停止心跳即可，无需上报。
-                        log_debug!(
-                            "[zhi] progress 心跳发送失败，停止心跳: request_id={}, error={}",
+                        // 中文说明：通知失败通常意味着客户端连接已关闭（很可能正是「被动新开 request」发生的时刻），
+                        // 升到 warn 便于在日志里直接定位这一根因信号。
+                        log_important!(
+                            warn,
+                            "[zhi] progress 心跳#{}发送失败→连接可能已关闭，停止心跳: request_id={}, 已等待={}s, error={}",
+                            beat_no,
                             heartbeat_request_id,
+                            elapsed_secs as u64,
                             e
                         );
                         break;
                     }
+                    log_debug!(
+                        "[zhi] progress 心跳#{}已发送: request_id={}, 已等待={}s",
+                        beat_no,
+                        heartbeat_request_id,
+                        elapsed_secs as u64
+                    );
                 }
             })
         });
@@ -151,8 +179,9 @@ impl InteractionTool {
 
         match popup_result {
             Ok(PopupPoll::Done(response)) => {
-                log_debug!(
-                    "[zhi] 弹窗响应已收到: request_id={}, response_len={}",
+                log_important!(
+                    info,
+                    "[zhi] 本次返回 Done（已拿到用户响应，正常收口）: request_id={}, response_len={}",
                     request_id,
                     response.len()
                 );
@@ -163,8 +192,9 @@ impl InteractionTool {
             Ok(PopupPoll::Pending) => {
                 // 中文说明：本次等待窗口（≈240s）已到但用户还没操作——在 Cursor ~5 分钟硬上限前主动返回，
                 // 弹窗仍开着。回写「继续等待」语义，触发 AI 立即重连同一弹窗，不结束本轮。
-                log_debug!(
-                    "[zhi] 等待窗口到，弹窗仍开启，提示 AI 重连: request_id={}",
+                log_important!(
+                    info,
+                    "[zhi] 本次返回 Pending（窗口到、用户未响应，提示 AI 重连续等）: request_id={}",
                     request_id
                 );
                 Ok(CallToolResult::success(vec![Content::text(

@@ -600,6 +600,11 @@ impl ServerHandler for ZhiServer {
 
 /// 启动MCP服务器
 pub async fn run_server() -> Result<(), Box<dyn std::error::Error>> {
+    // 中文说明：先打印「启动水印」——记录本二进制的版本/提交/构建时间/关键保活窗口，
+    // 便于排查「源码已更新但 Cursor 仍在跑旧 MCP 二进制」这类问题（旧二进制会因 20s 窗口
+    // 频繁重连、烧光单轮预算而被动新开 request）。
+    log_startup_watermark();
+
     // 中文说明：MCP 进程负责长期维护代码监听；GUI 只写入配置中的监听意图。
     start_acemcp_watch_config_sync();
 
@@ -625,6 +630,31 @@ pub async fn run_server() -> Result<(), Box<dyn std::error::Error>> {
     // 等待服务器关闭
     service.waiting().await?;
     Ok(())
+}
+
+/// 打印 MCP「启动水印」：版本 / git 提交 / 构建时间 / 关键保活窗口（POPUP_POLL_WINDOW）。
+///
+/// 中文说明：`SANSHU_GIT_SHA`、`SANSHU_BUILD_EPOCH` 由 build.rs 在编译期注入；
+/// 非 git 环境或裁剪构建下回退为 unknown/0，不影响启动。
+/// 排查「跑的是不是最新二进制」时，对照日志这一行的 git 与 POPUP_POLL_WINDOW 即可一眼确认。
+fn log_startup_watermark() {
+    let version = env!("CARGO_PKG_VERSION");
+    let git_sha = option_env!("SANSHU_GIT_SHA").unwrap_or("unknown");
+    let build_time = option_env!("SANSHU_BUILD_EPOCH")
+        .and_then(|s| s.parse::<i64>().ok())
+        .filter(|&e| e > 0)
+        .and_then(|e| chrono::DateTime::<chrono::Utc>::from_timestamp(e, 0))
+        .map(|dt| dt.format("%Y-%m-%d %H:%M:%S UTC").to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+
+    log_important!(
+        info,
+        "[启动水印] version={} git={} built={} POPUP_POLL_WINDOW={}s",
+        version,
+        git_sha,
+        build_time,
+        crate::mcp::handlers::POPUP_POLL_WINDOW.as_secs()
+    );
 }
 
 fn start_acemcp_watch_config_sync() {

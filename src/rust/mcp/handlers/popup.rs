@@ -127,6 +127,11 @@ struct PendingPopup {
     temp_file: PathBuf,
     request_id: String,
     started: Instant,
+    /// 本弹窗被 AI 重连（再次调用 zhi 续等）的次数。
+    ///
+    /// 中文说明：用于量化「重连风暴」——一次用户决策若触发大量重连，会烧光 Cursor 单轮
+    /// iteration/tool-call 预算，进而被动新开 request。完成时打印该计数即可一眼看出严重程度。
+    reconnects: u32,
 }
 
 /// 全局「在飞弹窗」注册表，键为 workspace 绝对路径（同一 workspace 同时只允许一个 zhi 弹窗）。
@@ -158,9 +163,13 @@ pub fn poll_or_start_popup(request: &PopupRequest, wait: Duration) -> Result<Pop
         // 顺手回收已遗弃的陈旧弹窗（进程已退出但一直没人重连收集），避免僵尸进程/线程/临时文件堆积。
         reap_abandoned_popups(&mut map, &key);
         match map.remove(&key) {
-            Some(p) => {
-                log_debug!(
-                    "[popup] 重连已有弹窗: key={}, request_id={}, 已等待={}s",
+            Some(mut p) => {
+                // 重连同一弹窗：累加计数并升到 info，便于直接从日志统计「重连风暴」强度。
+                p.reconnects = p.reconnects.saturating_add(1);
+                log_important!(
+                    info,
+                    "[popup] 重连弹窗 #{}: key={}, request_id={}, 已等待={}s（重连越多越接近 Cursor 单轮预算上限→易被动新开 request）",
+                    p.reconnects,
                     key,
                     p.request_id,
                     p.started.elapsed().as_secs()
@@ -182,7 +191,16 @@ pub fn poll_or_start_popup(request: &PopupRequest, wait: Duration) -> Result<Pop
                 temp_file,
                 request_id,
                 started,
+                reconnects,
             } = pending;
+            log_important!(
+                info,
+                "[popup] 弹窗完成: key={}, request_id={}, 总等待={}s, 重连次数={}（重连次数即本次决策额外消耗的 zhi 工具调用数）",
+                key,
+                request_id,
+                started.elapsed().as_secs(),
+                reconnects
+            );
             // 进程已退出，wait() 立即返回退出状态。
             let status = child.wait()?;
             let stdout = stdout_reader
@@ -205,11 +223,14 @@ pub fn poll_or_start_popup(request: &PopupRequest, wait: Duration) -> Result<Pop
 
         if Instant::now() >= deadline {
             // 仍在等用户：放回注册表，下次 zhi 调用重连，不杀弹窗、不丢已输入内容。
-            log_debug!(
-                "[popup] 轮询窗口到，弹窗仍开启，返回 Pending: key={}, request_id={}, 已等待={}s",
+            log_important!(
+                info,
+                "[popup] 等待窗口({}s)到，弹窗仍开启→返回 Pending 待 AI 重连: key={}, request_id={}, 已等待={}s, 当前重连次数={}",
+                wait.as_secs(),
                 key,
                 pending.request_id,
-                pending.started.elapsed().as_secs()
+                pending.started.elapsed().as_secs(),
+                pending.reconnects
             );
             let mut map = PENDING_POPUPS
                 .lock()
@@ -253,6 +274,7 @@ fn reap_abandoned_popups(map: &mut HashMap<String, PendingPopup>, skip: &str) {
                 temp_file,
                 request_id,
                 started,
+                reconnects,
             } = p;
             let _ = child.wait();
             let _ = stdout_reader.join();
@@ -260,10 +282,11 @@ fn reap_abandoned_popups(map: &mut HashMap<String, PendingPopup>, skip: &str) {
             let _ = fs::remove_file(&temp_file);
             log_important!(
                 info,
-                "[popup] 已回收遗弃弹窗: key={}, request_id={}, 存活={}s",
+                "[popup] 已回收遗弃弹窗: key={}, request_id={}, 存活={}s, 重连次数={}（对话很可能已被新开 request 打断，旧弹窗无人重连）",
                 k,
                 request_id,
-                started.elapsed().as_secs()
+                started.elapsed().as_secs(),
+                reconnects
             );
         }
     }
@@ -320,6 +343,13 @@ fn start_popup(request: &PopupRequest) -> Result<PendingPopup> {
         stderr.read_to_end(&mut buf).map(|_| buf)
     });
 
+    log_important!(
+        info,
+        "[popup] 新建弹窗: request_id={}, project={:?}（首次展示，reconnects=0）",
+        request.id,
+        request.project_root_path.as_deref()
+    );
+
     Ok(PendingPopup {
         child,
         stdout_reader,
@@ -327,6 +357,7 @@ fn start_popup(request: &PopupRequest) -> Result<PendingPopup> {
         temp_file,
         request_id: request.id.clone(),
         started: Instant::now(),
+        reconnects: 0,
     })
 }
 
