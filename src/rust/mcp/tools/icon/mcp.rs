@@ -1,21 +1,21 @@
 // MCP 工具定义
 // 定义图标工坊作为 MCP 工具的元数据
 
-use rmcp::model::{Tool, CallToolResult, ErrorData as McpError};
+use rmcp::model::{CallToolResult, ErrorData as McpError, Tool};
 use std::borrow::Cow;
 use std::sync::Arc;
 
-use crate::mcp::types::TuRequest;
 use crate::mcp::handlers::create_icon_popup;
+use crate::mcp::types::TuRequest;
 
 /// 图标工坊 MCP 工具
-/// 
+///
 /// 提供交互式图标选择功能，通过弹窗让用户搜索、预览、选择并保存图标
 pub struct IconTool;
 
 impl IconTool {
     /// 获取 "tu" 工具定义（交互式图标选择）
-    /// 
+    ///
     /// 返回 MCP 协议规范的工具定义
     pub fn get_tool_definition() -> Tool {
         let schema = serde_json::json!({
@@ -60,42 +60,41 @@ impl IconTool {
     }
 
     /// 执行 "tu" 工具 - 打开交互式图标选择弹窗
-    /// 
+    ///
     /// 调用 GUI 进程，让用户在可视化界面中选择和保存图标
     pub async fn tu(request: TuRequest) -> Result<CallToolResult, McpError> {
         match create_icon_popup(&request) {
             Ok(response) => {
                 if response.cancelled {
-                    Ok(CallToolResult::success(vec![
-                        rmcp::model::Content::text("用户取消了图标选择操作")
-                    ]))
+                    Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+                        "用户取消了图标选择操作",
+                    )]))
                 } else if response.saved_count == 0 {
-                    Ok(CallToolResult::success(vec![
-                        rmcp::model::Content::text("用户未选择任何图标")
-                    ]))
+                    Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+                        "用户未选择任何图标",
+                    )]))
                 } else {
                     // 构建详细的成功消息
                     let message = format!(
                         "✅ 已成功保存 {} 个图标到 {}\n\n保存的图标：\n{}",
                         response.saved_count,
                         response.save_path,
-                        response.saved_names
+                        response
+                            .saved_names
                             .iter()
                             .map(|name| format!("• {}", name))
                             .collect::<Vec<_>>()
                             .join("\n")
                     );
-                    Ok(CallToolResult::success(vec![
-                        rmcp::model::Content::text(message)
-                    ]))
+                    Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+                        message,
+                    )]))
                 }
             }
-            Err(e) => {
-                Err(McpError::internal_error(
-                    format!("图标选择失败: {}", e),
-                    None
-                ))
-            }
+            Err(e) => Err(McpError::internal_error(
+                format!("图标选择失败: {}", e),
+                None,
+            )),
         }
     }
 
@@ -137,4 +136,3 @@ pub struct IconToolInfo {
     /// 是否有配置项
     pub has_config: bool,
 }
-

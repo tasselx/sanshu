@@ -105,4 +105,3 @@ pub struct SearchResult {
     #[serde(rename = "benchmarkScore")]
     pub benchmark_score: Option<f64>,
 }
-

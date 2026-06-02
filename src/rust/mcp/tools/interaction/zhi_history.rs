@@ -1,13 +1,13 @@
 // zhi 弹窗交互历史管理
 // 仅保存最小必要信息（文本摘要与时间），不记录图片原始数据
 
+use anyhow::Result;
+use chrono::{DateTime, Utc};
+use ring::digest::{Context, SHA256};
+use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::fs;
 use std::path::PathBuf;
-use anyhow::Result;
-use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
-use ring::digest::{Context, SHA256};
 
 use crate::{log_debug, log_important};
 
@@ -71,10 +71,7 @@ impl ZhiHistoryManager {
 
     /// 计算路径哈希（使用 ring 库）
     fn hash_path(path: &str) -> String {
-        let normalized = path
-            .trim()
-            .to_lowercase()
-            .replace('\\', "/");
+        let normalized = path.trim().to_lowercase().replace('\\', "/");
         let mut context = Context::new(&SHA256);
         context.update(normalized.as_bytes());
         let digest = context.finish();
@@ -106,16 +103,14 @@ impl ZhiHistoryManager {
         }
 
         match fs::read_to_string(&path) {
-            Ok(content) => {
-                serde_json::from_str(&content).unwrap_or_else(|e| {
-                    log_debug!("解析 zhi 历史文件失败: {}", e);
-                    ZhiHistoryFile {
-                        project_path: self.project_path.clone(),
-                        entries: VecDeque::new(),
-                        last_updated: None,
-                    }
-                })
-            }
+            Ok(content) => serde_json::from_str(&content).unwrap_or_else(|e| {
+                log_debug!("解析 zhi 历史文件失败: {}", e);
+                ZhiHistoryFile {
+                    project_path: self.project_path.clone(),
+                    entries: VecDeque::new(),
+                    last_updated: None,
+                }
+            }),
             Err(e) => {
                 log_debug!("读取 zhi 历史文件失败: {}", e);
                 ZhiHistoryFile {
@@ -137,7 +132,13 @@ impl ZhiHistoryManager {
     }
 
     /// 添加一条历史记录
-    pub fn add_entry(&self, request_id: &str, prompt: &str, user_reply: &str, source: &str) -> Result<String> {
+    pub fn add_entry(
+        &self,
+        request_id: &str,
+        prompt: &str,
+        user_reply: &str,
+        source: &str,
+    ) -> Result<String> {
         let mut history = self.load_history();
 
         // 生成唯一ID
@@ -166,14 +167,20 @@ impl ZhiHistoryManager {
         history.last_updated = Some(Utc::now());
         self.save_history(&history)?;
 
-        log_important!(info, "[ZhiHistory] 历史已记录: id={}, source={}", id, source);
+        log_important!(
+            info,
+            "[ZhiHistory] 历史已记录: id={}, source={}",
+            id,
+            source
+        );
         Ok(id)
     }
 
     /// 获取最近 N 条历史
     pub fn get_recent(&self, count: usize) -> Vec<ZhiHistoryEntry> {
         let history = self.load_history();
-        history.entries
+        history
+            .entries
             .iter()
             .rev()
             .take(count)
@@ -198,7 +205,11 @@ impl ZhiHistoryManager {
             last_updated: Some(Utc::now()),
         };
         self.save_history(&history)?;
-        log_important!(info, "[ZhiHistory] 历史已清空: project={}", self.project_path);
+        log_important!(
+            info,
+            "[ZhiHistory] 历史已清空: project={}",
+            self.project_path
+        );
         Ok(())
     }
 }

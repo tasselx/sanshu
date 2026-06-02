@@ -1,17 +1,17 @@
 use anyhow::Result;
-use std::process::{Command, Child, Stdio};
+use std::collections::HashMap;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
-use std::collections::HashMap;
+use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 use once_cell::sync::Lazy;
 
 use crate::mcp::types::PopupRequest;
 use crate::mcp::utils::safe_truncate_clean;
-use crate::{log_important, log_debug};
+use crate::{log_debug, log_important};
 
 /// 创建 Tauri 弹窗
 ///

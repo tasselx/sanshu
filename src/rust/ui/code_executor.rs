@@ -4,7 +4,7 @@ use std::time::Duration;
 // 安全限制常量
 const MAX_EXECUTION_TIMEOUT_SECS: u64 = 30;
 const MAX_OUTPUT_BYTES: usize = 100_000; // 100KB
-const MAX_CODE_LENGTH: usize = 50_000;   // 50KB
+const MAX_CODE_LENGTH: usize = 50_000; // 50KB
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CodeExecutionRequest {
@@ -42,21 +42,22 @@ pub async fn execute_code_snippet(
         return Err("代码不能为空".into());
     }
     if request.code.len() > MAX_CODE_LENGTH {
-        return Err(format!("代码长度超过限制（最大 {}KB）", MAX_CODE_LENGTH / 1024));
+        return Err(format!(
+            "代码长度超过限制（最大 {}KB）",
+            MAX_CODE_LENGTH / 1024
+        ));
     }
 
     let (cmd, extra_args, file_ext) = resolve_command(&request.language)?;
 
     // 创建临时目录和文件
     let temp_dir = std::env::temp_dir().join("sanshu_code_exec");
-    std::fs::create_dir_all(&temp_dir)
-        .map_err(|e| format!("创建临时目录失败: {}", e))?;
+    std::fs::create_dir_all(&temp_dir).map_err(|e| format!("创建临时目录失败: {}", e))?;
 
     let file_name = format!("snippet_{}{}", uuid::Uuid::new_v4().simple(), file_ext);
     let file_path = temp_dir.join(&file_name);
 
-    std::fs::write(&file_path, &request.code)
-        .map_err(|e| format!("写入临时文件失败: {}", e))?;
+    std::fs::write(&file_path, &request.code).map_err(|e| format!("写入临时文件失败: {}", e))?;
 
     // 构建命令
     let mut command = tokio::process::Command::new(cmd);

@@ -2,14 +2,14 @@
 //!
 //! 将旧版 Markdown 格式迁移到新版 JSON 格式
 
-use std::fs;
-use std::path::{Path, PathBuf};
 use anyhow::Result;
 use chrono::Utc;
+use std::fs;
+use std::path::{Path, PathBuf};
 
-use super::types::{MemoryEntry, MemoryCategory, MemoryStore, MemoryConfig};
 use super::dedup::MemoryDeduplicator;
 use super::similarity::TextSimilarity;
+use super::types::{MemoryCategory, MemoryConfig, MemoryEntry, MemoryStore};
 use crate::log_debug;
 
 /// 迁移结果统计

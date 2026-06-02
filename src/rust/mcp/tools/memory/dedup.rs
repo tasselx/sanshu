@@ -154,9 +154,9 @@ impl MemoryDeduplicator {
 
 #[cfg(test)]
 mod tests {
+    use super::super::types::MemoryCategory;
     use super::*;
     use chrono::Utc;
-    use super::super::types::MemoryCategory;
 
     fn make_entry(id: &str, content: &str) -> MemoryEntry {
         MemoryEntry {

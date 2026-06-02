@@ -5,20 +5,29 @@ use teloxide::prelude::*;
 use crate::config::load_standalone_config;
 use crate::mcp::types::{build_continue_response, build_send_response, PopupRequest};
 use crate::telegram::{handle_callback_query, handle_text_message, TelegramCore, TelegramEvent};
-use crate::{log_important, log_debug};
+use crate::{log_debug, log_important};
 
 /// 处理纯Telegram模式的MCP请求（不启动GUI）
 pub async fn handle_telegram_only_mcp_request(request_file: &str) -> Result<()> {
-    log_important!(info, "[telegram-mcp] 处理纯 Telegram 模式请求: file={}", request_file);
+    log_important!(
+        info,
+        "[telegram-mcp] 处理纯 Telegram 模式请求: file={}",
+        request_file
+    );
 
     // 读取MCP请求文件
     let request_json = std::fs::read_to_string(request_file)?;
     let request: PopupRequest = serde_json::from_str(&request_json)?;
 
-    log_debug!("[telegram-mcp] 请求解析成功: id={}, msg_len={}, options={:?}", 
-        request.id, 
+    log_debug!(
+        "[telegram-mcp] 请求解析成功: id={}, msg_len={}, options={:?}",
+        request.id,
         request.message.len(),
-        request.predefined_options.as_ref().map(|o| o.len()).unwrap_or(0)
+        request
+            .predefined_options
+            .as_ref()
+            .map(|o| o.len())
+            .unwrap_or(0)
     );
 
     // 加载完整配置
@@ -31,7 +40,9 @@ pub async fn handle_telegram_only_mcp_request(request_file: &str) -> Result<()> 
     }
 
     if telegram_config.bot_token.trim().is_empty() || telegram_config.chat_id.trim().is_empty() {
-        log_important!(warn, "[telegram-mcp] Telegram 配置不完整: token_empty={}, chat_id_empty={}",
+        log_important!(
+            warn,
+            "[telegram-mcp] Telegram 配置不完整: token_empty={}, chat_id_empty={}",
             telegram_config.bot_token.trim().is_empty(),
             telegram_config.chat_id.trim().is_empty()
         );
@@ -54,7 +65,11 @@ pub async fn handle_telegram_only_mcp_request(request_file: &str) -> Result<()> 
     // 发送消息到Telegram
     let predefined_options = request.predefined_options.clone().unwrap_or_default();
 
-    log_important!(info, "[telegram-mcp] 开始发送消息: options_count={}", predefined_options.len());
+    log_important!(
+        info,
+        "[telegram-mcp] 开始发送消息: options_count={}",
+        predefined_options.len()
+    );
 
     // 发送选项消息
     core.send_options_message(&request.message, &predefined_options, request.is_markdown)
@@ -99,8 +114,12 @@ async fn start_telegram_mcp_listener(
         poll_count += 1;
         if poll_count % 30 == 0 {
             // 每 30 次轮询（约 30 秒）记录一次心跳日志
-            log_debug!("[telegram-mcp] 监听心跳: poll_count={}, offset={}, selected={}", 
-                poll_count, offset, selected_options.len());
+            log_debug!(
+                "[telegram-mcp] 监听心跳: poll_count={}, offset={}, selected={}",
+                poll_count,
+                offset,
+                selected_options.len()
+            );
         }
 
         match core.bot.get_updates().offset(offset).timeout(10).await {
@@ -117,8 +136,14 @@ async fn start_telegram_mcp_listener(
                                 &predefined_options,
                                 &mut selected_options,
                                 &mut options_message_id,
-                            ).await {
-                                log_important!(warn, "[telegram-mcp] 处理 callback query 失败: {}", e);
+                            )
+                            .await
+                            {
+                                log_important!(
+                                    warn,
+                                    "[telegram-mcp] 处理 callback query 失败: {}",
+                                    e
+                                );
                             }
                         }
                         teloxide::types::UpdateKind::Message(message) => {
@@ -132,7 +157,9 @@ async fn start_telegram_mcp_listener(
                                 &mut user_input,
                                 &selected_options,
                                 &request,
-                            ).await {
+                            )
+                            .await
+                            {
                                 if let Some(_result) = e.downcast_ref::<ProcessingComplete>() {
                                     log_important!(info, "[telegram-mcp] 监听完成，退出循环");
                                     return Ok(());
@@ -246,7 +273,9 @@ fn identify_options_message_id(
         let mut contains_our_options = false;
         for row in &inline_keyboard.inline_keyboard {
             for button in row {
-                if let teloxide::types::InlineKeyboardButtonKind::CallbackData(callback_data) = &button.kind {
+                if let teloxide::types::InlineKeyboardButtonKind::CallbackData(callback_data) =
+                    &button.kind
+                {
                     if callback_data.starts_with("toggle:") {
                         contains_our_options = true;
                         break;
@@ -271,8 +300,13 @@ async fn handle_send_pressed(
     user_input: &str,
     request: &PopupRequest,
 ) -> Result<()> {
-    log_important!(info, "[telegram-mcp] 用户点击发送: request_id={}, selected_count={}, input_len={}",
-        request.id, selected_options.len(), user_input.len());
+    log_important!(
+        info,
+        "[telegram-mcp] 用户点击发送: request_id={}, selected_count={}, input_len={}",
+        request.id,
+        selected_options.len(),
+        user_input.len()
+    );
 
     // 使用统一的响应构建函数
     let selected_list: Vec<String> = selected_options.iter().cloned().collect();
@@ -308,17 +342,15 @@ async fn handle_send_pressed(
 }
 
 /// 处理继续按钮按下
-async fn handle_continue_pressed(
-    core: &TelegramCore,
-    request: &PopupRequest,
-) -> Result<()> {
-    log_important!(info, "[telegram-mcp] 用户点击继续: request_id={}", request.id);
+async fn handle_continue_pressed(core: &TelegramCore, request: &PopupRequest) -> Result<()> {
+    log_important!(
+        info,
+        "[telegram-mcp] 用户点击继续: request_id={}",
+        request.id
+    );
 
     // 使用统一的继续响应构建函数
-    let response = build_continue_response(
-        Some(request.id.clone()),
-        "telegram_continue",
-    );
+    let response = build_continue_response(Some(request.id.clone()), "telegram_continue");
 
     // 输出JSON响应到stdout（MCP协议要求）
     log_debug!("[telegram-mcp] 输出继续响应: len={}", response.len());

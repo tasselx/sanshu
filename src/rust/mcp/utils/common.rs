@@ -1,11 +1,10 @@
 /// MCP 通用工具函数模块
 ///
 /// 包含 MCP 相关的通用工具函数和辅助方法
-
 use anyhow::Result;
-use std::path::Path;
 use percent_encoding;
 use regex::Regex;
+use std::path::Path;
 
 /// zhi 预设选项中的自定义兜底选项。
 ///
@@ -246,7 +245,3 @@ mod tests {
         assert!(!is_zhi_custom_choice("方案 A"));
     }
 }
-
-
-
-

@@ -19,11 +19,11 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
-use super::types::AcemcpConfig;
 use super::mcp::{should_skip_auto_index_for_auth_failure, update_index};
+use super::types::AcemcpConfig;
 use crate::config::load_standalone_config;
-use crate::log_important;
 use crate::log_debug;
+use crate::log_important;
 
 /// 默认静默期（毫秒）：从 180s → 30s，更贴近真实开发节奏
 pub const DEFAULT_DEBOUNCE_MS: u64 = 30_000;
@@ -154,7 +154,10 @@ impl PathFilter {
             if seg.is_empty() {
                 continue;
             }
-            if ALWAYS_IGNORE_SEGMENTS.iter().any(|i| i.eq_ignore_ascii_case(seg)) {
+            if ALWAYS_IGNORE_SEGMENTS
+                .iter()
+                .any(|i| i.eq_ignore_ascii_case(seg))
+            {
                 return true;
             }
         }
@@ -195,7 +198,9 @@ fn build_exclude_globset(patterns: &[String]) -> Result<GlobSet> {
             builder.add(g);
         }
     }
-    builder.build().map_err(|e| anyhow::anyhow!("构建 exclude globset 失败: {}", e))
+    builder
+        .build()
+        .map_err(|e| anyhow::anyhow!("构建 exclude globset 失败: {}", e))
 }
 
 /// 单个项目的监听句柄：包含 `notify` 监听器 + 后台 debounce 任务的取消信号
@@ -252,22 +257,25 @@ impl WatcherManager {
     /// 设置全局自动索引开关
     pub fn set_auto_index_enabled(&self, enabled: bool) {
         *self.auto_index_enabled.lock().unwrap() = enabled;
-        log_important!(info, "全局自动索引开关已{}",  if enabled { "启用" } else { "禁用" });
+        log_important!(
+            info,
+            "全局自动索引开关已{}",
+            if enabled { "启用" } else { "禁用" }
+        );
     }
 
     /// 检测项目下的嵌套 Git 子项目
     fn detect_nested_projects(&self, project_root: &str) -> Vec<NestedWatchInfo> {
         // 调用 mcp.rs 中的嵌套项目检测逻辑
         match super::mcp::AcemcpTool::get_project_with_nested_status(project_root.to_string()) {
-            Ok(status) => {
-                status.nested_projects
-                    .into_iter()
-                    .map(|np| NestedWatchInfo {
-                        absolute_path: np.absolute_path,
-                        relative_path: np.relative_path,
-                    })
-                    .collect()
-            }
+            Ok(status) => status
+                .nested_projects
+                .into_iter()
+                .map(|np| NestedWatchInfo {
+                    absolute_path: np.absolute_path,
+                    relative_path: np.relative_path,
+                })
+                .collect(),
             Err(e) => {
                 log_debug!("检测嵌套项目失败: {}", e);
                 Vec::new()
@@ -551,15 +559,18 @@ impl WatcherManager {
         };
 
         let current: HashSet<String> = self.get_watching_projects().into_iter().collect();
-        let previous_persisted = {
-            self.persisted_watch_roots.lock().unwrap().clone()
-        };
+        let previous_persisted = { self.persisted_watch_roots.lock().unwrap().clone() };
 
         for project_root in desired.difference(&current) {
             let acemcp_config = match super::mcp::AcemcpTool::get_acemcp_config().await {
                 Ok(config) => config,
                 Err(e) => {
-                    log_important!(warn, "恢复 MCP 持久监听失败，无法读取 acemcp 配置: project={}, error={}", project_root, e);
+                    log_important!(
+                        warn,
+                        "恢复 MCP 持久监听失败，无法读取 acemcp 配置: project={}, error={}",
+                        project_root,
+                        e
+                    );
                     continue;
                 }
             };
@@ -574,7 +585,12 @@ impl WatcherManager {
                 .await
             {
                 Ok(_) => log_important!(info, "MCP 进程已恢复项目监听: {}", project_root),
-                Err(e) => log_important!(warn, "MCP 进程恢复项目监听失败: project={}, error={}", project_root, e),
+                Err(e) => log_important!(
+                    warn,
+                    "MCP 进程恢复项目监听失败: project={}, error={}",
+                    project_root,
+                    e
+                ),
             }
         }
 
@@ -582,7 +598,11 @@ impl WatcherManager {
         for project_root in previous_persisted.difference(&desired) {
             if current.contains(project_root) {
                 if let Err(e) = self.stop_watching(project_root) {
-                    log_debug!("停止已移除的持久监听失败: project={}, error={}", project_root, e);
+                    log_debug!(
+                        "停止已移除的持久监听失败: project={}, error={}",
+                        project_root,
+                        e
+                    );
                 } else {
                     log_important!(info, "MCP 进程已停止已移除的持久监听: {}", project_root);
                 }
@@ -779,7 +799,11 @@ async fn flush_index(
     }
 }
 
-fn summarize_changed_paths(project_root: &str, changed_paths: &[PathBuf], limit: usize) -> Vec<String> {
+fn summarize_changed_paths(
+    project_root: &str,
+    changed_paths: &[PathBuf],
+    limit: usize,
+) -> Vec<String> {
     let normalized_root = normalize_project_path(project_root);
     let mut files: Vec<String> = changed_paths
         .iter()
@@ -816,10 +840,7 @@ mod tests {
     fn pf() -> PathFilter {
         PathFilter::new(
             "C:/proj",
-            &vec![
-                "*.lock".to_string(),
-                "secrets/*".to_string(),
-            ],
+            &vec!["*.lock".to_string(), "secrets/*".to_string()],
         )
     }
 

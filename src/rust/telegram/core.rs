@@ -11,7 +11,7 @@ use teloxide::{
 };
 
 use super::markdown::process_telegram_markdown;
-use crate::{log_important, log_debug};
+use crate::{log_debug, log_important};
 
 /// Telegram事件类型
 #[derive(Debug, Clone, Serialize)]
@@ -40,15 +40,27 @@ impl TelegramCore {
     }
 
     /// 创建新的Telegram核心实例，支持自定义API URL
-    pub fn new_with_api_url(bot_token: String, chat_id: String, api_url: Option<String>) -> Result<Self> {
+    pub fn new_with_api_url(
+        bot_token: String,
+        chat_id: String,
+        api_url: Option<String>,
+    ) -> Result<Self> {
         // 日志：脱敏显示 token（只显示前后4位）
         let token_masked = if bot_token.len() > 8 {
-            format!("{}...{}", &bot_token[..4], &bot_token[bot_token.len()-4..])
+            format!(
+                "{}...{}",
+                &bot_token[..4],
+                &bot_token[bot_token.len() - 4..]
+            )
         } else {
             "****".to_string()
         };
-        log_debug!("[telegram] 创建 TelegramCore: token={}, chat_id={}, custom_api={}", 
-            token_masked, chat_id, api_url.is_some());
+        log_debug!(
+            "[telegram] 创建 TelegramCore: token={}, chat_id={}, custom_api={}",
+            token_masked,
+            chat_id,
+            api_url.is_some()
+        );
 
         let mut bot = Bot::new(bot_token);
 
@@ -70,7 +82,11 @@ impl TelegramCore {
             ChatId(id)
         };
 
-        log_important!(info, "[telegram] TelegramCore 创建成功: chat_id={}", chat_id.0);
+        log_important!(
+            info,
+            "[telegram] TelegramCore 创建成功: chat_id={}",
+            chat_id.0
+        );
         Ok(Self { bot, chat_id })
     }
 
@@ -90,7 +106,11 @@ impl TelegramCore {
         } else {
             message.to_string()
         };
-        log_debug!("[telegram] 发送消息: markdown={}, preview={}", use_markdown, msg_preview);
+        log_debug!(
+            "[telegram] 发送消息: markdown={}, preview={}",
+            use_markdown,
+            msg_preview
+        );
 
         let mut send_request = self.bot.send_message(self.chat_id, message);
 
@@ -100,14 +120,15 @@ impl TelegramCore {
         }
 
         let start = std::time::Instant::now();
-        send_request
-            .await
-            .map_err(|e| {
-                log_important!(error, "[telegram] 发送消息失败: {}", e);
-                anyhow::anyhow!("发送消息失败: {}", e)
-            })?;
+        send_request.await.map_err(|e| {
+            log_important!(error, "[telegram] 发送消息失败: {}", e);
+            anyhow::anyhow!("发送消息失败: {}", e)
+        })?;
 
-        log_debug!("[telegram] 消息发送成功: elapsed={}ms", start.elapsed().as_millis());
+        log_debug!(
+            "[telegram] 消息发送成功: elapsed={}ms",
+            start.elapsed().as_millis()
+        );
         Ok(())
     }
 
@@ -120,8 +141,13 @@ impl TelegramCore {
     ) -> Result<()> {
         let msg_len = message.len();
         let options_count = predefined_options.len();
-        log_important!(info, "[telegram] 发送选项消息: msg_len={}, options_count={}, markdown={}", 
-            msg_len, options_count, is_markdown);
+        log_important!(
+            info,
+            "[telegram] 发送选项消息: msg_len={}, options_count={}, markdown={}",
+            msg_len,
+            options_count,
+            is_markdown
+        );
 
         // 处理消息内容
         let processed_message = if is_markdown {
@@ -135,7 +161,10 @@ impl TelegramCore {
 
         // 只有当有预定义选项时才添加inline keyboard
         if !predefined_options.is_empty() {
-            log_debug!("[telegram] 创建 inline keyboard: options={:?}", predefined_options);
+            log_debug!(
+                "[telegram] 创建 inline keyboard: options={:?}",
+                predefined_options
+            );
             let inline_keyboard = Self::create_inline_keyboard(predefined_options, &[])?;
             send_request = send_request.reply_markup(inline_keyboard);
         }
@@ -148,7 +177,11 @@ impl TelegramCore {
         let start = std::time::Instant::now();
         match send_request.await {
             Ok(_) => {
-                log_important!(info, "[telegram] 选项消息发送成功: elapsed={}ms", start.elapsed().as_millis());
+                log_important!(
+                    info,
+                    "[telegram] 选项消息发送成功: elapsed={}ms",
+                    start.elapsed().as_millis()
+                );
                 Ok(())
             }
             Err(e) => {
@@ -160,7 +193,10 @@ impl TelegramCore {
 
                 if has_parsing_json && has_ok_true {
                     // 消息实际发送成功
-                    log_debug!("[telegram] 选项消息发送成功（忽略 JSON 解析警告）: elapsed={}ms", start.elapsed().as_millis());
+                    log_debug!(
+                        "[telegram] 选项消息发送成功（忽略 JSON 解析警告）: elapsed={}ms",
+                        start.elapsed().as_millis()
+                    );
                     Ok(())
                 } else {
                     log_important!(error, "[telegram] 选项消息发送失败: {}", e);
@@ -172,7 +208,10 @@ impl TelegramCore {
 
     /// 发送操作消息（消息二）
     pub async fn send_operation_message(&self, continue_reply_enabled: bool) -> Result<i32> {
-        log_debug!("[telegram] 发送操作消息: continue_enabled={}", continue_reply_enabled);
+        log_debug!(
+            "[telegram] 发送操作消息: continue_enabled={}",
+            continue_reply_enabled
+        );
 
         // 创建reply keyboard
         let reply_keyboard = Self::create_reply_keyboard(continue_reply_enabled);
@@ -188,7 +227,11 @@ impl TelegramCore {
             .await
         {
             Ok(msg) => {
-                log_debug!("[telegram] 操作消息发送成功: msg_id={}, elapsed={}ms", msg.id.0, start.elapsed().as_millis());
+                log_debug!(
+                    "[telegram] 操作消息发送成功: msg_id={}, elapsed={}ms",
+                    msg.id.0,
+                    start.elapsed().as_millis()
+                );
                 Ok(msg.id.0)
             }
             Err(e) => {
@@ -196,7 +239,10 @@ impl TelegramCore {
                 // 检查是否是JSON解析错误但消息实际发送成功
                 if error_str.contains("parsing JSON") && error_str.contains("\\\"ok\\\":true") {
                     // 消息实际发送成功，返回默认ID
-                    log_debug!("[telegram] 操作消息发送成功（忽略 JSON 解析警告）: elapsed={}ms", start.elapsed().as_millis());
+                    log_debug!(
+                        "[telegram] 操作消息发送成功（忽略 JSON 解析警告）: elapsed={}ms",
+                        start.elapsed().as_millis()
+                    );
                     Ok(0)
                 } else {
                     log_important!(error, "[telegram] 操作消息发送失败: {}", e);
@@ -376,16 +422,25 @@ pub async fn test_telegram_connection(bot_token: &str, chat_id: &str) -> Result<
 pub async fn test_telegram_connection_with_api_url(
     bot_token: &str,
     chat_id: &str,
-    api_url: Option<&str>
+    api_url: Option<&str>,
 ) -> Result<String> {
     // 日志：脱敏显示 token
     let token_masked = if bot_token.len() > 8 {
-        format!("{}...{}", &bot_token[..4], &bot_token[bot_token.len()-4..])
+        format!(
+            "{}...{}",
+            &bot_token[..4],
+            &bot_token[bot_token.len() - 4..]
+        )
     } else {
         "****".to_string()
     };
-    log_important!(info, "[telegram] 测试连接: token={}, chat_id={}, custom_api={}", 
-        token_masked, chat_id, api_url.is_some());
+    log_important!(
+        info,
+        "[telegram] 测试连接: token={}, chat_id={}, custom_api={}",
+        token_masked,
+        chat_id,
+        api_url.is_some()
+    );
 
     if bot_token.trim().is_empty() {
         log_important!(warn, "[telegram] 测试连接失败: Bot Token 为空");
@@ -420,11 +475,20 @@ pub async fn test_telegram_connection_with_api_url(
     let start = std::time::Instant::now();
     match bot.send_message(ChatId(chat_id_parsed), test_message).await {
         Ok(_) => {
-            log_important!(info, "[telegram] 测试连接成功: elapsed={}ms", start.elapsed().as_millis());
+            log_important!(
+                info,
+                "[telegram] 测试连接成功: elapsed={}ms",
+                start.elapsed().as_millis()
+            );
             Ok("测试消息发送成功！Telegram Bot配置正确。".to_string())
         }
         Err(e) => {
-            log_important!(error, "[telegram] 测试连接失败: {}, elapsed={}ms", e, start.elapsed().as_millis());
+            log_important!(
+                error,
+                "[telegram] 测试连接失败: {}, elapsed={}ms",
+                e,
+                start.elapsed().as_millis()
+            );
             Err(anyhow::anyhow!("发送测试消息失败: {}", e))
         }
     }

@@ -28,7 +28,12 @@ impl TelegramIntegration {
     }
 
     /// 创建新的Telegram集成实例，支持自定义API URL
-    pub fn new_with_api_url(bot_token: String, chat_id: String, app_handle: AppHandle, api_url: Option<String>) -> Result<Self> {
+    pub fn new_with_api_url(
+        bot_token: String,
+        chat_id: String,
+        app_handle: AppHandle,
+        api_url: Option<String>,
+    ) -> Result<Self> {
         let core = TelegramCore::new_with_api_url(bot_token, chat_id, api_url)?;
 
         Ok(Self {
@@ -77,8 +82,6 @@ impl TelegramIntegration {
 
         Ok(())
     }
-
-
 
     /// 启动消息监听
     async fn start_message_listener(&mut self) -> Result<()> {
@@ -219,5 +222,3 @@ impl TelegramIntegration {
         }
     }
 }
-
-

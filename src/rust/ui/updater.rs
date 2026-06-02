@@ -1,12 +1,17 @@
-use tauri::{AppHandle, Emitter, State};
-use serde::{Deserialize, Serialize};
-use std::{fs, io::{Read, Write}, path::PathBuf, process::Command};
 use crate::config::AppState;
+use crate::network::geo::GeoLocation;
 use crate::network::{
     download_with_strategy_with_progress, fetch_announcement_with_strategy,
     fetch_latest_release_with_strategy,
 };
-use crate::network::geo::GeoLocation;
+use serde::{Deserialize, Serialize};
+use std::{
+    fs,
+    io::{Read, Write},
+    path::PathBuf,
+    process::Command,
+};
+use tauri::{AppHandle, Emitter, State};
 
 /// 网络状态信息
 /// 用于向前端展示当前的网络环境和代理状态
@@ -64,13 +69,19 @@ pub struct UpdateProgress {
 
 /// 检查是否有可用更新
 #[tauri::command]
-pub async fn check_for_updates(app: AppHandle, state: State<'_, AppState>) -> Result<UpdateInfo, String> {
+pub async fn check_for_updates(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<UpdateInfo, String> {
     log::info!("🔍 开始检查更新");
 
     // 第一步：检测地理位置（用于网络状态展示）
     let geo_info = detect_geo_location_full().await;
-    log::info!("🌍 地理位置检测完成: country={}, city={:?}",
-        geo_info.country, geo_info.city);
+    log::info!(
+        "🌍 地理位置检测完成: country={}, city={:?}",
+        geo_info.country,
+        geo_info.city
+    );
 
     // 第二步：读取代理配置，交给 GitHub 访问策略统一处理直连、代理站和本地代理兜底。
     let proxy_config = {
@@ -123,10 +134,7 @@ pub async fn check_for_updates(app: AppHandle, state: State<'_, AppState>) -> Re
     log::info!("📦 当前版本: {}", current_version);
 
     // 提取最新版本号，处理中文tag
-    let tag_name = release["tag_name"]
-        .as_str()
-        .unwrap_or("")
-        .to_string();
+    let tag_name = release["tag_name"].as_str().unwrap_or("").to_string();
 
     log::info!("🏷️ GitHub tag: {}", tag_name);
 
@@ -187,26 +195,29 @@ pub async fn check_announcements(state: State<'_, AppState>) -> Result<serde_jso
 fn compare_versions(v1: &str, v2: &str) -> bool {
     let v1_parts: Vec<u32> = v1.split('.').filter_map(|s| s.parse().ok()).collect();
     let v2_parts: Vec<u32> = v2.split('.').filter_map(|s| s.parse().ok()).collect();
-    
+
     let max_len = v1_parts.len().max(v2_parts.len());
-    
+
     for i in 0..max_len {
         let v1_part = v1_parts.get(i).unwrap_or(&0);
         let v2_part = v2_parts.get(i).unwrap_or(&0);
-        
+
         if v1_part > v2_part {
             return true;
         } else if v1_part < v2_part {
             return false;
         }
     }
-    
+
     false
 }
 
 /// 下载并安装更新
 #[tauri::command]
-pub async fn download_and_install_update(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+pub async fn download_and_install_update(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
     log::info!("🚀 开始下载和安装更新");
 
     // 首先检查更新信息
@@ -232,7 +243,7 @@ pub async fn download_and_install_update(app: AppHandle, state: State<'_, AppSta
         Ok(_) => {
             log::info!("✅ 更新下载和安装成功");
             let _ = app.emit("update_install_finished", ());
-            
+
             // Windows 平台：发送自动退出事件，让前端显示倒计时并自动退出
             // 这样批处理脚本才能检测到进程退出并完成文件替换
             #[cfg(target_os = "windows")]
@@ -240,7 +251,7 @@ pub async fn download_and_install_update(app: AppHandle, state: State<'_, AppSta
                 log::info!("🔄 Windows 平台：应用将在3秒后自动退出以完成更新");
                 let _ = app.emit("update_auto_exit", 3i32); // 3秒后退出
             }
-            
+
             Ok(())
         }
         Err(e) => {
@@ -273,7 +284,7 @@ pub async fn restart_app(app: AppHandle) -> Result<(), String> {
 }
 
 /// 更新后退出应用（专门用于 Windows 更新流程）
-/// 
+///
 /// 与 restart_app 不同，此函数会完全退出进程，让批处理脚本能够检测到进程退出
 /// 并执行文件替换和自动重启
 #[tauri::command]
@@ -304,7 +315,8 @@ pub fn get_platform_info() -> String {
 
 /// 获取当前平台对应的下载URL
 fn get_platform_download_url(release: &serde_json::Value) -> Result<String, String> {
-    let assets = release["assets"].as_array()
+    let assets = release["assets"]
+        .as_array()
         .ok_or_else(|| "无法获取release assets".to_string())?;
 
     log::info!("📦 Release assets 总数: {}", assets.len());
@@ -365,14 +377,17 @@ fn get_platform_download_url(release: &serde_json::Value) -> Result<String, Stri
 async fn download_and_install_update_impl(
     app: &AppHandle,
     state: &State<'_, AppState>,
-    update_info: &UpdateInfo
+    update_info: &UpdateInfo,
 ) -> Result<(), String> {
     log::info!("🚀 开始自动更新实现");
     log::info!("📋 更新信息: {:?}", update_info);
 
     // 如果下载URL是GitHub页面而不是直接下载链接，引导用户手动下载
     if update_info.download_url.contains("/releases/tag/") {
-        log::info!("🔗 下载URL是release页面，需要手动下载: {}", update_info.download_url);
+        log::info!(
+            "🔗 下载URL是release页面，需要手动下载: {}",
+            update_info.download_url
+        );
         log::info!("💡 这通常意味着没有找到当前平台的预编译版本");
         return Err("请手动下载最新版本".to_string());
     }
@@ -381,11 +396,11 @@ async fn download_and_install_update_impl(
 
     // 创建临时目录
     let temp_dir = std::env::temp_dir().join("sanshu_update");
-    fs::create_dir_all(&temp_dir)
-        .map_err(|e| format!("创建临时目录失败: {}", e))?;
+    fs::create_dir_all(&temp_dir).map_err(|e| format!("创建临时目录失败: {}", e))?;
 
     // 确定文件名
-    let file_name = update_info.download_url
+    let file_name = update_info
+        .download_url
         .split('/')
         .last()
         .unwrap_or("update_file")
@@ -416,8 +431,13 @@ async fn download_and_install_update_impl(
             };
             let _ = progress_app.emit("update_download_progress", &update_progress);
         },
-    ).await?;
-    log::info!("✅ 文件下载完成: {} route={}", file_path.display(), route.label);
+    )
+    .await?;
+    log::info!(
+        "✅ 文件下载完成: {} route={}",
+        file_path.display(),
+        route.label
+    );
 
     // 开始安装
     let _ = app.emit("update_install_started", ());
@@ -445,9 +465,7 @@ async fn install_update(file_path: &PathBuf) -> Result<(), String> {
 
 /// macOS 安装逻辑
 async fn install_macos_update(file_path: &PathBuf) -> Result<(), String> {
-    let file_name = file_path.file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("");
+    let file_name = file_path.file_name().and_then(|n| n.to_str()).unwrap_or("");
 
     if file_name.ends_with(".tar.gz") {
         // 压缩包文件，需要解压并替换当前可执行文件
@@ -464,9 +482,7 @@ async fn install_macos_update(file_path: &PathBuf) -> Result<(), String> {
 
 /// Windows 安装逻辑
 async fn install_windows_update(file_path: &PathBuf) -> Result<(), String> {
-    let file_name = file_path.file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("");
+    let file_name = file_path.file_name().and_then(|n| n.to_str()).unwrap_or("");
 
     if file_name.ends_with(".zip") {
         // ZIP 压缩包文件，需要解压并替换当前可执行文件
@@ -481,7 +497,10 @@ async fn install_windows_update(file_path: &PathBuf) -> Result<(), String> {
             .map_err(|e| format!("执行 MSI 安装失败: {}", e))?;
 
         if !output.status.success() {
-            return Err(format!("MSI 安装失败: {}", String::from_utf8_lossy(&output.stderr)));
+            return Err(format!(
+                "MSI 安装失败: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
         }
 
         Ok(())
@@ -494,7 +513,10 @@ async fn install_windows_update(file_path: &PathBuf) -> Result<(), String> {
             .map_err(|e| format!("执行 EXE 安装失败: {}", e))?;
 
         if !output.status.success() {
-            return Err(format!("EXE 安装失败: {}", String::from_utf8_lossy(&output.stderr)));
+            return Err(format!(
+                "EXE 安装失败: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
         }
 
         Ok(())
@@ -505,9 +527,7 @@ async fn install_windows_update(file_path: &PathBuf) -> Result<(), String> {
 
 /// Linux 安装逻辑
 async fn install_linux_update(file_path: &PathBuf) -> Result<(), String> {
-    let file_name = file_path.file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("");
+    let file_name = file_path.file_name().and_then(|n| n.to_str()).unwrap_or("");
 
     if file_name.ends_with(".tar.gz") {
         // 压缩包文件，需要解压并替换当前可执行文件
@@ -522,7 +542,10 @@ async fn install_linux_update(file_path: &PathBuf) -> Result<(), String> {
             .map_err(|e| format!("执行 DEB 安装失败: {}", e))?;
 
         if !output.status.success() {
-            return Err(format!("DEB 安装失败: {}", String::from_utf8_lossy(&output.stderr)));
+            return Err(format!(
+                "DEB 安装失败: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
         }
 
         Ok(())
@@ -535,7 +558,10 @@ async fn install_linux_update(file_path: &PathBuf) -> Result<(), String> {
             .map_err(|e| format!("执行 RPM 安装失败: {}", e))?;
 
         if !output.status.success() {
-            return Err(format!("RPM 安装失败: {}", String::from_utf8_lossy(&output.stderr)));
+            return Err(format!(
+                "RPM 安装失败: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
         }
 
         Ok(())
@@ -549,10 +575,11 @@ async fn install_from_archive(file_path: &PathBuf) -> Result<(), String> {
     log::info!("📦 开始从压缩包安装更新: {}", file_path.display());
 
     // 获取当前可执行文件的路径和所在目录
-    let current_exe = std::env::current_exe()
-        .map_err(|e| format!("无法获取当前可执行文件路径: {}", e))?;
+    let current_exe =
+        std::env::current_exe().map_err(|e| format!("无法获取当前可执行文件路径: {}", e))?;
 
-    let app_dir = current_exe.parent()
+    let app_dir = current_exe
+        .parent()
         .ok_or_else(|| "无法获取应用程序目录".to_string())?
         .to_path_buf();
 
@@ -562,18 +589,14 @@ async fn install_from_archive(file_path: &PathBuf) -> Result<(), String> {
     // 创建临时解压目录
     let temp_dir = std::env::temp_dir().join("sanshu_extract");
     if temp_dir.exists() {
-        fs::remove_dir_all(&temp_dir)
-            .map_err(|e| format!("清理临时目录失败: {}", e))?;
+        fs::remove_dir_all(&temp_dir).map_err(|e| format!("清理临时目录失败: {}", e))?;
     }
-    fs::create_dir_all(&temp_dir)
-        .map_err(|e| format!("创建临时解压目录失败: {}", e))?;
+    fs::create_dir_all(&temp_dir).map_err(|e| format!("创建临时解压目录失败: {}", e))?;
 
     log::info!("📂 临时解压目录: {}", temp_dir.display());
 
     // 根据文件类型解压，获取解压后的文件列表
-    let file_name = file_path.file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("");
+    let file_name = file_path.file_name().and_then(|n| n.to_str()).unwrap_or("");
 
     let extracted_files = if file_name.ends_with(".tar.gz") {
         extract_tar_gz(file_path, &temp_dir)?
@@ -608,12 +631,20 @@ fn extract_tar_gz(archive_path: &PathBuf, extract_to: &PathBuf) -> Result<Vec<Pa
     log::info!("📦 解压 tar.gz 文件: {}", archive_path.display());
 
     let output = Command::new("tar")
-        .args(&["-xzf", archive_path.to_str().unwrap(), "-C", extract_to.to_str().unwrap()])
+        .args(&[
+            "-xzf",
+            archive_path.to_str().unwrap(),
+            "-C",
+            extract_to.to_str().unwrap(),
+        ])
         .output()
         .map_err(|e| format!("执行 tar 命令失败: {}", e))?;
 
     if !output.status.success() {
-        return Err(format!("tar 解压失败: {}", String::from_utf8_lossy(&output.stderr)));
+        return Err(format!(
+            "tar 解压失败: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
     }
 
     log::info!("✅ tar.gz 解压完成");
@@ -639,8 +670,8 @@ fn collect_files_in_dir(dir: &PathBuf) -> Result<Vec<PathBuf>, String> {
     }
 
     fn collect_recursive(dir: &PathBuf, files: &mut Vec<PathBuf>) -> Result<(), String> {
-        let entries = fs::read_dir(dir)
-            .map_err(|e| format!("读取目录失败 {}: {}", dir.display(), e))?;
+        let entries =
+            fs::read_dir(dir).map_err(|e| format!("读取目录失败 {}: {}", dir.display(), e))?;
 
         for entry in entries {
             let entry = entry.map_err(|e| format!("读取目录项失败: {}", e))?;
@@ -666,18 +697,18 @@ fn extract_zip(archive_path: &PathBuf, extract_to: &PathBuf) -> Result<Vec<PathB
     log::info!("📂 解压目标目录: {}", extract_to.display());
 
     // 打开 ZIP 文件
-    let file = fs::File::open(archive_path)
-        .map_err(|e| format!("无法打开 ZIP 文件: {}", e))?;
+    let file = fs::File::open(archive_path).map_err(|e| format!("无法打开 ZIP 文件: {}", e))?;
 
-    let mut archive = zip::ZipArchive::new(file)
-        .map_err(|e| format!("无法读取 ZIP 归档: {}", e))?;
+    let mut archive =
+        zip::ZipArchive::new(file).map_err(|e| format!("无法读取 ZIP 归档: {}", e))?;
 
     log::info!("📋 ZIP 文件包含 {} 个条目", archive.len());
 
     let mut extracted_files: Vec<PathBuf> = Vec::new();
 
     for i in 0..archive.len() {
-        let mut file = archive.by_index(i)
+        let mut file = archive
+            .by_index(i)
             .map_err(|e| format!("无法读取 ZIP 条目 {}: {}", i, e))?;
 
         // 获取文件名（正确处理 UTF-8 编码的中文文件名）
@@ -710,7 +741,8 @@ fn extract_zip(archive_path: &PathBuf, extract_to: &PathBuf) -> Result<Vec<PathB
             file.read_to_end(&mut buffer)
                 .map_err(|e| format!("读取 ZIP 条目内容失败: {}", e))?;
 
-            out_file.write_all(&buffer)
+            out_file
+                .write_all(&buffer)
                 .map_err(|e| format!("写入文件失败 {}: {}", out_path.display(), e))?;
 
             let file_size = buffer.len();
@@ -750,14 +782,15 @@ fn mcp_ascii_alias(file_name: &str) -> Option<&'static str> {
 fn replace_all_files_windows(
     app_dir: &PathBuf,
     extract_dir: &PathBuf,
-    files: &[PathBuf]
+    files: &[PathBuf],
 ) -> Result<(), String> {
     log::info!("🔧 Windows 平台：准备批处理脚本替换 {} 个文件", files.len());
 
     // 获取当前可执行文件名（用于重启）
-    let current_exe = std::env::current_exe()
-        .map_err(|e| format!("无法获取当前可执行文件路径: {}", e))?;
-    let exe_name = current_exe.file_name()
+    let current_exe =
+        std::env::current_exe().map_err(|e| format!("无法获取当前可执行文件路径: {}", e))?;
+    let exe_name = current_exe
+        .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("等一下.exe");
 
@@ -778,7 +811,8 @@ fn replace_all_files_windows(
     script_lines.push("set /a WAIT_SEC=0".to_string());
     script_lines.push("echo 等待应用进程退出：%APP_EXE%".to_string());
     script_lines.push(":wait_app_exit".to_string());
-    script_lines.push("tasklist /FI \"IMAGENAME eq %APP_EXE%\" | find /I \"%APP_EXE%\" >nul".to_string());
+    script_lines
+        .push("tasklist /FI \"IMAGENAME eq %APP_EXE%\" | find /I \"%APP_EXE%\" >nul".to_string());
     script_lines.push("if errorlevel 1 goto wait_done".to_string());
     script_lines.push("if !WAIT_SEC! GEQ !WAIT_MAX! goto wait_timeout".to_string());
     script_lines.push("timeout /t 1 /nobreak >nul".to_string());
@@ -791,7 +825,8 @@ fn replace_all_files_windows(
 
     // 备份和复制每个文件
     for file in files {
-        let file_name = file.file_name()
+        let file_name = file
+            .file_name()
             .and_then(|n| n.to_str())
             .ok_or_else(|| format!("无法获取文件名: {}", file.display()))?;
 
@@ -803,11 +838,17 @@ fn replace_all_files_windows(
 
         // 备份旧文件（如果存在）
         script_lines.push(format!("if exist \"{}\" (", target_path_str));
-        script_lines.push(format!("    copy /y \"{}\" \"{}\" >nul", target_path_str, backup_path_str));
+        script_lines.push(format!(
+            "    copy /y \"{}\" \"{}\" >nul",
+            target_path_str, backup_path_str
+        ));
         script_lines.push(")".to_string());
 
         // 复制新文件
-        script_lines.push(format!("copy /y \"{}\" \"{}\"", source_path, target_path_str));
+        script_lines.push(format!(
+            "copy /y \"{}\" \"{}\"",
+            source_path, target_path_str
+        ));
         script_lines.push(format!("if errorlevel 1 ("));
         script_lines.push(format!("    echo 复制 {} 失败", file_name));
         script_lines.push(format!(") else ("));
@@ -815,7 +856,11 @@ fn replace_all_files_windows(
         script_lines.push(format!(")"));
         script_lines.push("".to_string());
 
-        log::info!("📝 添加文件替换命令: {} -> {}", source_path, target_path_str);
+        log::info!(
+            "📝 添加文件替换命令: {} -> {}",
+            source_path,
+            target_path_str
+        );
 
         if let Some(alias_file_name) = mcp_ascii_alias(file_name) {
             let alias_target_path = app_dir.join(alias_file_name);
@@ -827,11 +872,13 @@ fn replace_all_files_windows(
             script_lines.push(format!("if exist \"{}\" (", alias_target_path_str));
             script_lines.push(format!(
                 "    copy /y \"{}\" \"{}\" >nul",
-                alias_target_path_str,
-                alias_backup_path_str
+                alias_target_path_str, alias_backup_path_str
             ));
             script_lines.push(")".to_string());
-            script_lines.push(format!("copy /y \"{}\" \"{}\"", source_path, alias_target_path_str));
+            script_lines.push(format!(
+                "copy /y \"{}\" \"{}\"",
+                source_path, alias_target_path_str
+            ));
             script_lines.push(format!("if errorlevel 1 ("));
             script_lines.push(format!("    echo 复制 {} 失败", alias_file_name));
             script_lines.push(format!(") else ("));
@@ -864,8 +911,8 @@ fn replace_all_files_windows(
     let script_content = script_lines.join("\r\n");
 
     // 写入脚本文件（使用 UTF-8 with BOM 以支持中文）
-    let mut file = fs::File::create(&script_path)
-        .map_err(|e| format!("创建更新脚本失败: {}", e))?;
+    let mut file =
+        fs::File::create(&script_path).map_err(|e| format!("创建更新脚本失败: {}", e))?;
 
     // 写入 UTF-8 BOM
     file.write_all(&[0xEF, 0xBB, 0xBF])
@@ -897,7 +944,8 @@ fn replace_all_files_unix(app_dir: &PathBuf, files: &[PathBuf]) -> Result<(), St
     log::info!("🔧 Unix 平台：直接替换 {} 个文件", files.len());
 
     for file in files {
-        let file_name = file.file_name()
+        let file_name = file
+            .file_name()
             .and_then(|n| n.to_str())
             .ok_or_else(|| format!("无法获取文件名: {}", file.display()))?;
 
@@ -908,12 +956,15 @@ fn replace_all_files_unix(app_dir: &PathBuf, files: &[PathBuf]) -> Result<(), St
             let backup_path = app_dir.join(format!("{}.bak", file_name));
             fs::copy(&target_path, &backup_path)
                 .map_err(|e| format!("备份文件失败 {}: {}", file_name, e))?;
-            log::info!("💾 已备份: {} -> {}", target_path.display(), backup_path.display());
+            log::info!(
+                "💾 已备份: {} -> {}",
+                target_path.display(),
+                backup_path.display()
+            );
         }
 
         // 复制新文件
-        fs::copy(file, &target_path)
-            .map_err(|e| format!("复制文件失败 {}: {}", file_name, e))?;
+        fs::copy(file, &target_path).map_err(|e| format!("复制文件失败 {}: {}", file_name, e))?;
 
         // 设置执行权限（对于可执行文件）
         #[cfg(unix)]
@@ -1001,11 +1052,7 @@ async fn detect_geo_location_full() -> GeoLocation {
     };
 
     // 请求 ipinfo.io API
-    match client
-        .get("https://ipinfo.io/json")
-        .send()
-        .await
-    {
+    match client.get("https://ipinfo.io/json").send().await {
         Ok(response) => {
             if !response.status().is_success() {
                 log::warn!("⚠️ IP地理位置检测请求失败: HTTP {}", response.status());
@@ -1024,10 +1071,12 @@ async fn detect_geo_location_full() -> GeoLocation {
             // 解析JSON响应
             match response.json::<GeoLocation>().await {
                 Ok(geo) => {
-                    log::info!("✅ 检测到地理位置: {} ({}) - IP: {}",
+                    log::info!(
+                        "✅ 检测到地理位置: {} ({}) - IP: {}",
                         geo.country,
                         geo.city.as_deref().unwrap_or("未知城市"),
-                        geo.ip);
+                        geo.ip
+                    );
                     geo
                 }
                 Err(e) => {

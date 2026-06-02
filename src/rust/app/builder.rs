@@ -1,7 +1,7 @@
+use crate::app::{commands::*, setup::setup_application};
 use crate::config::AppState;
-use crate::ui::AudioController;
-use crate::app::{setup::setup_application, commands::*};
 use crate::log_important;
+use crate::ui::AudioController;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use tauri::Builder;
@@ -13,7 +13,6 @@ pub fn build_tauri_app() -> Builder<tauri::Wry> {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
-
         .manage(AppState::default())
         .manage(AudioController {
             should_stop: Arc::new(AtomicBool::new(false)),
@@ -25,7 +24,6 @@ pub fn build_tauri_app() -> Builder<tauri::Wry> {
             set_always_on_top,
             sync_window_state,
             reload_config,
-
             // 音频命令
             get_audio_notification_enabled,
             set_audio_notification_enabled,
@@ -36,7 +34,6 @@ pub fn build_tauri_app() -> Builder<tauri::Wry> {
             stop_audio_sound,
             get_available_audio_assets,
             refresh_audio_assets,
-
             // 主题和窗口命令
             get_theme,
             set_theme,
@@ -51,7 +48,6 @@ pub fn build_tauri_app() -> Builder<tauri::Wry> {
             get_current_window_size,
             apply_window_constraints,
             update_window_size,
-
             // 字体命令
             get_font_config,
             set_font_family,
@@ -60,7 +56,6 @@ pub fn build_tauri_app() -> Builder<tauri::Wry> {
             get_font_family_options,
             get_font_size_options,
             reset_font_config,
-
             // MCP 命令
             get_mcp_tools_config,
             set_mcp_tool_enabled,
@@ -73,7 +68,6 @@ pub fn build_tauri_app() -> Builder<tauri::Wry> {
             build_mcp_send_response,
             build_mcp_continue_response,
             create_test_popup,
-            
             // acemcp命令（迁移至 tools::acemcp::commands）
             crate::mcp::tools::acemcp::commands::get_acemcp_config,
             crate::mcp::tools::acemcp::commands::save_acemcp_config,
@@ -107,17 +101,14 @@ pub fn build_tauri_app() -> Builder<tauri::Wry> {
             // acemcp 代理命令
             crate::mcp::tools::acemcp::commands::detect_acemcp_proxy,
             crate::mcp::tools::acemcp::commands::test_acemcp_proxy_speed,
-
             // context7命令（迁移至 tools::context7::commands）
             crate::mcp::tools::context7::commands::test_context7_connection,
             crate::mcp::tools::context7::commands::get_context7_config,
             crate::mcp::tools::context7::commands::save_context7_config,
-
             // tavily 命令
             crate::mcp::tools::tavily::commands::get_tavily_config,
             crate::mcp::tools::tavily::commands::save_tavily_config,
             crate::mcp::tools::tavily::commands::test_tavily_connection,
-
             // 自定义prompt命令
             get_custom_prompt_config,
             add_custom_prompt,
@@ -126,36 +117,29 @@ pub fn build_tauri_app() -> Builder<tauri::Wry> {
             set_custom_prompt_enabled,
             update_custom_prompt_order,
             update_conditional_prompt_state,
-
             // 快捷键命令
             get_shortcut_config,
             update_shortcut_binding,
             reset_shortcuts_to_default,
-
             // 配置管理命令
             get_config_file_path,
-
             // Telegram 命令
             get_telegram_config,
             set_telegram_config,
             test_telegram_connection_cmd,
             auto_get_chat_id,
             start_telegram_sync,
-
             // 代码高亮主题命令
             get_hljs_theme,
             set_hljs_theme,
-
             // 代码执行命令
             execute_code_snippet,
-
             // 系统命令
             open_external_url,
             exit_app,
             handle_app_exit_request,
             force_exit_app,
             reset_exit_attempts_cmd,
-
             // 更新命令
             check_for_updates,
             check_announcements,
@@ -164,13 +148,11 @@ pub fn build_tauri_app() -> Builder<tauri::Wry> {
             restart_app,
             exit_for_update,
             get_platform_info,
-
             // 代理配置命令
             crate::network::commands::get_proxy_config,
             crate::network::commands::set_proxy_config,
             crate::network::commands::test_proxy_connection,
             crate::network::commands::detect_available_proxy,
-
             // 图标工坊命令
             crate::mcp::tools::icon::commands::search_icons,
             crate::mcp::tools::icon::commands::get_icon_content,
@@ -181,7 +163,6 @@ pub fn build_tauri_app() -> Builder<tauri::Wry> {
             crate::mcp::tools::icon::commands::set_icon_config,
             crate::mcp::tools::icon::commands::copy_icon_to_clipboard,
             crate::mcp::tools::icon::commands::select_icon_save_directory,
-
             // 提示词增强命令
             crate::mcp::tools::enhance::commands::enhance_prompt_stream,
             crate::mcp::tools::enhance::commands::enhance_prompt,
@@ -189,12 +170,10 @@ pub fn build_tauri_app() -> Builder<tauri::Wry> {
             crate::mcp::tools::enhance::commands::add_chat_history,
             crate::mcp::tools::enhance::commands::get_chat_history,
             crate::mcp::tools::enhance::commands::clear_chat_history,
-
             // zhi 交互历史命令
             crate::mcp::tools::interaction::commands::add_zhi_history,
             crate::mcp::tools::interaction::commands::get_zhi_history,
             crate::mcp::tools::interaction::commands::clear_zhi_history,
-
             // 记忆管理命令
             get_memory_list,
             get_memory_stats,

@@ -144,7 +144,7 @@ mod tests {
     fn test_markdown_processing() {
         let input = "# 标题\n\n**粗体文本**\n\n`代码`\n\n```rust\nfn main() {}\n```";
         let result = process_telegram_markdown(input);
-        
+
         // 验证标题转换为引用
         assert!(result.contains(">标题"));
         // 验证粗体转换
@@ -157,7 +157,7 @@ mod tests {
     fn test_special_char_escaping() {
         let input = "测试_下划线和[方括号]";
         let result = process_telegram_markdown(input);
-        
+
         assert!(result.contains("测试\\_下划线和\\[方括号\\]"));
     }
 }

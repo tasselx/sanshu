@@ -109,7 +109,10 @@ impl RequestCandidate {
             using_local_proxy: self.proxy.is_some(),
             proxy_host: self.proxy.as_ref().map(|proxy| proxy.host.clone()),
             proxy_port: self.proxy.as_ref().map(|proxy| proxy.port),
-            proxy_type: self.proxy.as_ref().map(|proxy| proxy.proxy_type.to_string()),
+            proxy_type: self
+                .proxy
+                .as_ref()
+                .map(|proxy| proxy.proxy_type.to_string()),
         }
     }
 }
@@ -117,7 +120,12 @@ impl RequestCandidate {
 pub async fn fetch_latest_release_with_strategy(
     proxy_config: &ProxyConfig,
 ) -> Result<GitHubJsonResult, String> {
-    fetch_json_with_strategy(LATEST_RELEASE_API_URL, GitHubResourceKind::Api, proxy_config).await
+    fetch_json_with_strategy(
+        LATEST_RELEASE_API_URL,
+        GitHubResourceKind::Api,
+        proxy_config,
+    )
+    .await
 }
 
 pub async fn fetch_announcement_with_strategy(
@@ -179,13 +187,21 @@ pub async fn download_with_strategy_with_progress<F>(
 where
     F: FnMut(GitHubDownloadProgress) + Send,
 {
-    let candidates = build_candidates(url, GitHubResourceKind::ReleaseAsset, proxy_config, DOWNLOAD_TIMEOUT_SECS).await;
+    let candidates = build_candidates(
+        url,
+        GitHubResourceKind::ReleaseAsset,
+        proxy_config,
+        DOWNLOAD_TIMEOUT_SECS,
+    )
+    .await;
     let mut errors = Vec::new();
 
     for candidate in candidates {
         match send_get(&candidate).await {
             Ok(response) => {
-                if let Err(e) = stream_response_to_file(response, target_path, &mut on_progress).await {
+                if let Err(e) =
+                    stream_response_to_file(response, target_path, &mut on_progress).await
+                {
                     let _ = fs::remove_file(target_path);
                     errors.push(format!("{} 写入失败: {}", candidate.label, e));
                     continue;
@@ -313,7 +329,11 @@ async fn detect_local_proxy(proxy_config: &ProxyConfig) -> Option<ProxyInfo> {
             "socks5" => ProxyType::Socks5,
             _ => ProxyType::Http,
         };
-        return Some(ProxyInfo::new(proxy_type, proxy_config.host.clone(), proxy_config.port));
+        return Some(ProxyInfo::new(
+            proxy_type,
+            proxy_config.host.clone(),
+            proxy_config.port,
+        ));
     }
 
     if proxy_config.auto_detect || proxy_config.enabled {
@@ -331,7 +351,9 @@ fn sorted_proxy_prefixes(kind: GitHubResourceKind) -> Vec<String> {
         for probe in cache.probes {
             let ok_for_kind = match kind {
                 GitHubResourceKind::Raw => probe.raw_ok,
-                GitHubResourceKind::Api | GitHubResourceKind::ReleaseAsset => probe.release_ok || probe.raw_ok,
+                GitHubResourceKind::Api | GitHubResourceKind::ReleaseAsset => {
+                    probe.release_ok || probe.raw_ok
+                }
             };
             if ok_for_kind && seen.insert(probe.proxy_prefix.clone()) {
                 prefixes.push(probe.proxy_prefix);
@@ -396,7 +418,9 @@ fn create_strategy_client(candidate: &RequestCandidate) -> Result<reqwest::Clien
         builder = builder.proxy(reqwest_proxy);
     }
 
-    builder.build().map_err(|e| format!("构建 HTTP 客户端失败: {}", e))
+    builder
+        .build()
+        .map_err(|e| format!("构建 HTTP 客户端失败: {}", e))
 }
 
 async fn stream_response_to_file(
@@ -461,16 +485,13 @@ fn read_proxy_cache() -> Option<GitHubProxyCache> {
 }
 
 fn write_proxy_cache(cache: &GitHubProxyCache) -> Result<(), String> {
-    let path = proxy_cache_path()
-        .ok_or_else(|| "无法确定 GitHub 代理缓存路径".to_string())?;
+    let path = proxy_cache_path().ok_or_else(|| "无法确定 GitHub 代理缓存路径".to_string())?;
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| format!("创建 GitHub 代理缓存目录失败: {}", e))?;
+        fs::create_dir_all(parent).map_err(|e| format!("创建 GitHub 代理缓存目录失败: {}", e))?;
     }
     let raw = serde_json::to_string_pretty(cache)
         .map_err(|e| format!("序列化 GitHub 代理缓存失败: {}", e))?;
-    fs::write(&path, raw)
-        .map_err(|e| format!("写入 GitHub 代理缓存失败 {}: {}", path.display(), e))
+    fs::write(&path, raw).map_err(|e| format!("写入 GitHub 代理缓存失败 {}: {}", path.display(), e))
 }
 
 fn proxy_cache_path() -> Option<PathBuf> {

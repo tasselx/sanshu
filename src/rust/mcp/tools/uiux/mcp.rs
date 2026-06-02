@@ -131,9 +131,15 @@ impl UiuxTool {
         }
     }
 
-    pub async fn call_tool(tool_name: &str, arguments: serde_json::Value) -> Result<CallToolResult, McpError> {
+    pub async fn call_tool(
+        tool_name: &str,
+        arguments: serde_json::Value,
+    ) -> Result<CallToolResult, McpError> {
         if tool_name != "uiux" {
-            return Err(McpError::invalid_params(format!("未知的工具: {}", tool_name), None));
+            return Err(McpError::invalid_params(
+                format!("未知的工具: {}", tool_name),
+                None,
+            ));
         }
 
         log_important!(info, "[uiux] 工具调用: tool={}", tool_name);
@@ -147,12 +153,20 @@ impl UiuxTool {
     }
 }
 
-async fn handle_request(req: UiuxRequest, defaults: UiuxDefaults) -> Result<CallToolResult, McpError> {
+async fn handle_request(
+    req: UiuxRequest,
+    defaults: UiuxDefaults,
+) -> Result<CallToolResult, McpError> {
     let lang = resolve_lang(req.lang, defaults);
     let _output_format = resolve_output_format(req.output_format, defaults);
     let action = req.action.unwrap_or(UiuxAction::Beautify);
-    let max_results = req.max_results.unwrap_or(DEFAULT_MAX_RESULTS).max(1).min(defaults.max_results_cap);
-    let project_context_enabled = req.append_project_context.unwrap_or(true) && req.project_root_path.is_some();
+    let max_results = req
+        .max_results
+        .unwrap_or(DEFAULT_MAX_RESULTS)
+        .max(1)
+        .min(defaults.max_results_cap);
+    let project_context_enabled =
+        req.append_project_context.unwrap_or(true) && req.project_root_path.is_some();
     let sou_enabled = sou_enabled();
 
     let knowledge_query = build_knowledge_query(&req.query, action);
@@ -449,7 +463,10 @@ async fn collect_project_context_hits(
     }
 }
 
-async fn search_sou_sections(project_root_path: &str, query: &str) -> Result<Vec<SouSection>, String> {
+async fn search_sou_sections(
+    project_root_path: &str,
+    query: &str,
+) -> Result<Vec<SouSection>, String> {
     let result = SouTool::search_context(SouRequest {
         project_root_path: project_root_path.to_string(),
         query: query.to_string(),
@@ -584,24 +601,55 @@ fn build_knowledge_query(query: &str, action: UiuxAction) -> String {
     ];
     match action {
         UiuxAction::Beautify => parts.extend(
-            ["页面美化", "style", "color", "typography", "layout", "motion", "responsive"]
-                .into_iter()
-                .map(str::to_string),
+            [
+                "页面美化",
+                "style",
+                "color",
+                "typography",
+                "layout",
+                "motion",
+                "responsive",
+            ]
+            .into_iter()
+            .map(str::to_string),
         ),
         UiuxAction::Describe => parts.extend(
-            ["UI描述", "visual language", "style", "component", "hierarchy", "typography"]
-                .into_iter()
-                .map(str::to_string),
+            [
+                "UI描述",
+                "visual language",
+                "style",
+                "component",
+                "hierarchy",
+                "typography",
+            ]
+            .into_iter()
+            .map(str::to_string),
         ),
         UiuxAction::Audit => parts.extend(
-            ["UI审查", "ux", "accessibility", "spacing", "alignment", "state", "responsive"]
-                .into_iter()
-                .map(str::to_string),
+            [
+                "UI审查",
+                "ux",
+                "accessibility",
+                "spacing",
+                "alignment",
+                "state",
+                "responsive",
+            ]
+            .into_iter()
+            .map(str::to_string),
         ),
         UiuxAction::DesignSystem => parts.extend(
-            ["设计系统", "design system", "color", "typography", "component", "token", "state"]
-                .into_iter()
-                .map(str::to_string),
+            [
+                "设计系统",
+                "design system",
+                "color",
+                "typography",
+                "component",
+                "token",
+                "state",
+            ]
+            .into_iter()
+            .map(str::to_string),
         ),
     }
     join_query_terms(parts)
@@ -657,7 +705,11 @@ fn current_file_query_hints(current_file_path: &str) -> Vec<String> {
     }
 
     let path = Path::new(current_file_path);
-    if let Some(parent) = path.parent().and_then(|value| value.file_name()).and_then(|value| value.to_str()) {
+    if let Some(parent) = path
+        .parent()
+        .and_then(|value| value.file_name())
+        .and_then(|value| value.to_str())
+    {
         if !parent.trim().is_empty() {
             hints.push(parent.trim().to_string());
         }
@@ -735,10 +787,7 @@ fn render_snippets(snippets: &[UiuxSnippet]) -> String {
         .iter()
         .enumerate()
         .map(|(index, snippet)| {
-            let location = snippet
-                .location
-                .as_deref()
-                .unwrap_or("未知位置");
+            let location = snippet.location.as_deref().unwrap_or("未知位置");
             format!(
                 "片段 {} [{}]\n{}\n{}",
                 index + 1,

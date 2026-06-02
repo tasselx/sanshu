@@ -1,7 +1,7 @@
 // 提示词增强模块的类型定义
 
 use serde::{Deserialize, Serialize};
-use std::sync::{Arc, atomic::AtomicBool};
+use std::sync::{atomic::AtomicBool, Arc};
 
 /// 增强请求参数
 #[derive(Debug, Clone, Serialize, Deserialize)]

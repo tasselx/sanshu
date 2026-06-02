@@ -1,23 +1,26 @@
 use anyhow::Result;
-use rmcp::{
-    ServerHandler, ServiceExt, RoleServer,
-    model::{ErrorData as McpError},
-    transport::stdio,
-    service::{RequestContext, ServerInitializeError},
-};
 use rmcp::model::*;
+use rmcp::{
+    model::ErrorData as McpError,
+    service::{RequestContext, ServerInitializeError},
+    transport::stdio,
+    RoleServer, ServerHandler, ServiceExt,
+};
 use std::collections::HashMap;
 use std::time::Instant;
 
-use super::tools::{InteractionTool, MemoryTool, SouTool, Context7Tool, IconTool, SkillsTool, UiuxTool, EnhanceTool, TavilyTool};
-use super::types::{ZhiRequest, JiyiRequest, TuRequest, SkillRunRequest};
-use crate::mcp::tools::enhance::mcp::EnhanceMcpRequest;
-use crate::mcp::tools::context7::types::Context7Request;
-use crate::mcp::tools::tavily::types::TavilyRequest;
+use super::tools::{
+    Context7Tool, EnhanceTool, IconTool, InteractionTool, MemoryTool, SkillsTool, SouTool,
+    TavilyTool, UiuxTool,
+};
+use super::types::{JiyiRequest, SkillRunRequest, TuRequest, ZhiRequest};
 use crate::config::load_standalone_config;
-use crate::mcp::utils::safe_truncate_clean;
+use crate::mcp::tools::context7::types::Context7Request;
+use crate::mcp::tools::enhance::mcp::EnhanceMcpRequest;
+use crate::mcp::tools::tavily::types::TavilyRequest;
 use crate::mcp::utils::generate_request_id;
-use crate::{log_important, log_debug};
+use crate::mcp::utils::safe_truncate_clean;
+use crate::{log_debug, log_important};
 
 const WINDSURF_ZHI_ALIAS: &str = "work_note";
 const MCP_PROFILE_ENV: &str = "SANSHU_MCP_PROFILE";
@@ -49,7 +52,11 @@ impl McpClientProfile {
         // 中文说明：`sanshu` 是面向不支持中文命令的 MCP 客户端的 ASCII 入口。
         if std::env::current_exe()
             .ok()
-            .and_then(|path| path.file_stem().and_then(|name| name.to_str()).map(str::to_string))
+            .and_then(|path| {
+                path.file_stem()
+                    .and_then(|name| name.to_str())
+                    .map(str::to_string)
+            })
             .map(|stem| stem.eq_ignore_ascii_case("sanshu"))
             .unwrap_or(false)
         {
@@ -89,7 +96,10 @@ impl ZhiServer {
         let mcp_profile = McpClientProfile::detect();
         log_important!(info, "MCP profile: {:?}", mcp_profile);
 
-        Self { enabled_tools, mcp_profile }
+        Self {
+            enabled_tools,
+            mcp_profile,
+        }
     }
 
     /// 检查工具是否启用 - 动态读取最新配置
@@ -97,7 +107,12 @@ impl ZhiServer {
         // 每次都重新读取配置，确保获取最新状态
         match load_standalone_config() {
             Ok(config) => {
-                let enabled = config.mcp_config.tools.get(tool_name).copied().unwrap_or(true);
+                let enabled = config
+                    .mcp_config
+                    .tools
+                    .get(tool_name)
+                    .copied()
+                    .unwrap_or(true);
                 log_debug!("工具 {} 当前状态: {}", tool_name, enabled);
                 enabled
             }
@@ -166,7 +181,9 @@ impl ServerHandler for ZhiServer {
                 title: None,
                 website_url: None,
             },
-            instructions: Some("Sanshu MCP 服务，提供项目记录、上下文检索与辅助处理能力。".to_string()),
+            instructions: Some(
+                "Sanshu MCP 服务，提供项目记录、上下文检索与辅助处理能力。".to_string(),
+            ),
         }
     }
 
@@ -183,8 +200,8 @@ impl ServerHandler for ZhiServer {
         _request: Option<PaginatedRequestParam>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, McpError> {
-        use std::sync::Arc;
         use std::borrow::Cow;
+        use std::sync::Arc;
 
         let mut tools = Vec::new();
 
@@ -278,7 +295,9 @@ impl ServerHandler for ZhiServer {
             if let serde_json::Value::Object(schema_map) = ji_schema {
                 tools.push(Tool {
                     name: Cow::Borrowed("ji"),
-                    description: Some(Cow::Borrowed("全局记忆管理工具，用于存储和管理重要的开发规范、用户偏好和最佳实践")),
+                    description: Some(Cow::Borrowed(
+                        "全局记忆管理工具，用于存储和管理重要的开发规范、用户偏好和最佳实践",
+                    )),
                     input_schema: Arc::new(schema_map),
                     annotations: None,
                     icons: None,
@@ -320,10 +339,14 @@ impl ServerHandler for ZhiServer {
         }
 
         // 技能运行时工具 - 动态发现 skills 并追加工具
-        let project_root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let project_root =
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
         tools.extend(SkillsTool::list_dynamic_tools(&project_root));
 
-        log_debug!("返回给客户端的工具列表: {:?}", tools.iter().map(|t| &t.name).collect::<Vec<_>>());
+        log_debug!(
+            "返回给客户端的工具列表: {:?}",
+            tools.iter().map(|t| &t.name).collect::<Vec<_>>()
+        );
 
         Ok(ListToolsResult {
             meta: None,
@@ -348,7 +371,8 @@ impl ServerHandler for ZhiServer {
             .unwrap_or_default();
 
         // 解析参数（保持与旧逻辑一致：None -> 空对象）
-        let arguments_value = request.arguments
+        let arguments_value = request
+            .arguments
             .map(serde_json::Value::Object)
             .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
 
@@ -425,7 +449,10 @@ impl ServerHandler for ZhiServer {
             "ji" => {
                 if !self.is_tool_enabled("ji") {
                     log_important!(warn, "[MCP] 工具已禁用: call_id={}, tool=ji", call_id);
-                    Err(McpError::internal_error("记忆管理工具已被禁用".to_string(), None))
+                    Err(McpError::internal_error(
+                        "记忆管理工具已被禁用".to_string(),
+                        None,
+                    ))
                 } else {
                     match serde_json::from_value::<JiyiRequest>(arguments_value) {
                         Ok(ji_request) => MemoryTool::jiyi(ji_request).await,
@@ -436,7 +463,10 @@ impl ServerHandler for ZhiServer {
                                 call_id,
                                 e
                             );
-                            Err(McpError::invalid_params(format!("参数解析失败: {}", e), None))
+                            Err(McpError::invalid_params(
+                                format!("参数解析失败: {}", e),
+                                None,
+                            ))
                         }
                     }
                 }
@@ -444,9 +474,14 @@ impl ServerHandler for ZhiServer {
             "sou" => {
                 if !self.is_tool_enabled("sou") {
                     log_important!(warn, "[MCP] 工具已禁用: call_id={}, tool=sou", call_id);
-                    Err(McpError::internal_error("代码搜索工具已被禁用".to_string(), None))
+                    Err(McpError::internal_error(
+                        "代码搜索工具已被禁用".to_string(),
+                        None,
+                    ))
                 } else {
-                    match serde_json::from_value::<crate::mcp::tools::sou::SouRequest>(arguments_value) {
+                    match serde_json::from_value::<crate::mcp::tools::sou::SouRequest>(
+                        arguments_value,
+                    ) {
                         Ok(sou_request) => SouTool::search_context(sou_request).await,
                         Err(e) => {
                             log_important!(
@@ -455,7 +490,10 @@ impl ServerHandler for ZhiServer {
                                 call_id,
                                 e
                             );
-                            Err(McpError::invalid_params(format!("参数解析失败: {}", e), None))
+                            Err(McpError::invalid_params(
+                                format!("参数解析失败: {}", e),
+                                None,
+                            ))
                         }
                     }
                 }
@@ -463,7 +501,10 @@ impl ServerHandler for ZhiServer {
             "context7" => {
                 if !self.is_tool_enabled("context7") {
                     log_important!(warn, "[MCP] 工具已禁用: call_id={}, tool=context7", call_id);
-                    Err(McpError::internal_error("Context7 文档查询工具已被禁用".to_string(), None))
+                    Err(McpError::internal_error(
+                        "Context7 文档查询工具已被禁用".to_string(),
+                        None,
+                    ))
                 } else {
                     match serde_json::from_value::<Context7Request>(arguments_value) {
                         Ok(context7_request) => Context7Tool::query_docs(context7_request).await,
@@ -474,7 +515,10 @@ impl ServerHandler for ZhiServer {
                                 call_id,
                                 e
                             );
-                            Err(McpError::invalid_params(format!("参数解析失败: {}", e), None))
+                            Err(McpError::invalid_params(
+                                format!("参数解析失败: {}", e),
+                                None,
+                            ))
                         }
                     }
                 }
@@ -482,7 +526,10 @@ impl ServerHandler for ZhiServer {
             "tu" => {
                 if !self.is_tool_enabled("icon") {
                     log_important!(warn, "[MCP] 工具已禁用: call_id={}, tool=tu(icon)", call_id);
-                    Err(McpError::internal_error("图标工坊工具已被禁用".to_string(), None))
+                    Err(McpError::internal_error(
+                        "图标工坊工具已被禁用".to_string(),
+                        None,
+                    ))
                 } else {
                     match serde_json::from_value::<TuRequest>(arguments_value) {
                         Ok(tu_request) => IconTool::tu(tu_request).await,
@@ -493,7 +540,10 @@ impl ServerHandler for ZhiServer {
                                 call_id,
                                 e
                             );
-                            Err(McpError::invalid_params(format!("参数解析失败: {}", e), None))
+                            Err(McpError::invalid_params(
+                                format!("参数解析失败: {}", e),
+                                None,
+                            ))
                         }
                     }
                 }
@@ -501,7 +551,10 @@ impl ServerHandler for ZhiServer {
             "uiux" => {
                 if !self.is_tool_enabled("uiux") {
                     log_important!(warn, "[MCP] 工具已禁用: call_id={}, tool=uiux", call_id);
-                    Err(McpError::internal_error("UI/UX 工具已被禁用".to_string(), None))
+                    Err(McpError::internal_error(
+                        "UI/UX 工具已被禁用".to_string(),
+                        None,
+                    ))
                 } else {
                     UiuxTool::call_tool("uiux", arguments_value).await
                 }
@@ -509,7 +562,8 @@ impl ServerHandler for ZhiServer {
             name if name == "skill_run" || name.starts_with("skill_") => {
                 match serde_json::from_value::<SkillRunRequest>(arguments_value) {
                     Ok(skill_request) => {
-                        let project_root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+                        let project_root = std::env::current_dir()
+                            .unwrap_or_else(|_| std::path::PathBuf::from("."));
                         SkillsTool::call_tool(name, skill_request, &project_root).await
                     }
                     Err(e) => {
@@ -520,14 +574,20 @@ impl ServerHandler for ZhiServer {
                             name,
                             e
                         );
-                        Err(McpError::invalid_params(format!("参数解析失败: {}", e), None))
+                        Err(McpError::invalid_params(
+                            format!("参数解析失败: {}", e),
+                            None,
+                        ))
                     }
                 }
             }
             "enhance" => {
                 if !self.is_tool_enabled("enhance") {
                     log_important!(warn, "[MCP] 工具已禁用: call_id={}, tool=enhance", call_id);
-                    Err(McpError::internal_error("提示词增强工具已被禁用".to_string(), None))
+                    Err(McpError::internal_error(
+                        "提示词增强工具已被禁用".to_string(),
+                        None,
+                    ))
                 } else {
                     match serde_json::from_value::<EnhanceMcpRequest>(arguments_value) {
                         Ok(enhance_request) => EnhanceTool::enhance(enhance_request).await,
@@ -538,7 +598,10 @@ impl ServerHandler for ZhiServer {
                                 call_id,
                                 e
                             );
-                            Err(McpError::invalid_params(format!("参数解析失败: {}", e), None))
+                            Err(McpError::invalid_params(
+                                format!("参数解析失败: {}", e),
+                                None,
+                            ))
                         }
                     }
                 }
@@ -546,7 +609,10 @@ impl ServerHandler for ZhiServer {
             "tavily" => {
                 if !self.is_tool_enabled("tavily") {
                     log_important!(warn, "[MCP] 工具已禁用: call_id={}, tool=tavily", call_id);
-                    Err(McpError::internal_error("Tavily AI 搜索工具已被禁用".to_string(), None))
+                    Err(McpError::internal_error(
+                        "Tavily AI 搜索工具已被禁用".to_string(),
+                        None,
+                    ))
                 } else {
                     match serde_json::from_value::<TavilyRequest>(arguments_value) {
                         Ok(tavily_request) => TavilyTool::execute(tavily_request).await,
@@ -557,12 +623,18 @@ impl ServerHandler for ZhiServer {
                                 call_id,
                                 e
                             );
-                            Err(McpError::invalid_params(format!("参数解析失败: {}", e), None))
+                            Err(McpError::invalid_params(
+                                format!("参数解析失败: {}", e),
+                                None,
+                            ))
                         }
                     }
                 }
             }
-            _ => Err(McpError::invalid_request(format!("未知的工具: {}", tool_name), None)),
+            _ => Err(McpError::invalid_request(
+                format!("未知的工具: {}", tool_name),
+                None,
+            )),
         };
 
         // 统一出口日志（全链路追踪用）
@@ -595,8 +667,6 @@ impl ServerHandler for ZhiServer {
         result
     }
 }
-
-
 
 /// 启动MCP服务器
 pub async fn run_server() -> Result<(), Box<dyn std::error::Error>> {

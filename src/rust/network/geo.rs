@@ -1,6 +1,6 @@
 // IP地理位置检测模块
+use crate::{log_debug, log_important};
 use serde::{Deserialize, Serialize};
-use crate::{log_important, log_debug};
 
 /// IP地理位置信息
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -16,17 +16,17 @@ pub struct GeoLocation {
 }
 
 /// 检测当前IP的地理位置
-/// 
+///
 /// 使用 ipinfo.io API 检测IP地理位置
 /// 返回国家代码（如 "CN", "US" 等）
-/// 
+///
 /// # 错误处理
 /// - 网络请求失败时返回 "UNKNOWN"
 /// - 解析失败时返回 "UNKNOWN"
 /// - 超时设置为 5 秒
 pub async fn detect_geo_location() -> String {
     log_important!(info, "[network] 开始检测IP地理位置");
-    
+
     // 创建HTTP客户端，设置较短的超时时间
     let client = match reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(5))
@@ -38,25 +38,30 @@ pub async fn detect_geo_location() -> String {
             return "UNKNOWN".to_string();
         }
     };
-    
+
     log_debug!("[network] 请求 ipinfo.io API");
-    
+
     // 请求 ipinfo.io API
-    match client
-        .get("https://ipinfo.io/json")
-        .send()
-        .await
-    {
+    match client.get("https://ipinfo.io/json").send().await {
         Ok(response) => {
             if !response.status().is_success() {
-                log_important!(warn, "[network] IP地理位置检测请求失败: HTTP {}", response.status());
+                log_important!(
+                    warn,
+                    "[network] IP地理位置检测请求失败: HTTP {}",
+                    response.status()
+                );
                 return "UNKNOWN".to_string();
             }
-            
+
             // 解析JSON响应
             match response.json::<GeoLocation>().await {
                 Ok(geo) => {
-                    log_important!(info, "[network] 检测到地理位置: {} ({})", geo.country, geo.city.clone().unwrap_or_default());
+                    log_important!(
+                        info,
+                        "[network] 检测到地理位置: {} ({})",
+                        geo.country,
+                        geo.city.clone().unwrap_or_default()
+                    );
                     geo.country
                 }
                 Err(e) => {
@@ -84,4 +89,3 @@ mod tests {
         assert!(!country.is_empty());
     }
 }
-

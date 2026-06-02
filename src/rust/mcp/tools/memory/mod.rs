@@ -10,17 +10,17 @@
 //! - `manager` - 核心管理器
 //! - `mcp` - MCP 接口
 
-pub mod types;
-pub mod similarity;
 pub mod dedup;
-pub mod migration;
 pub mod manager;
 pub mod mcp;
+pub mod migration;
+pub mod similarity;
+pub mod types;
 
 // 重新导出主要类型和功能
+pub use dedup::{DedupResult, DuplicateInfo, MemoryDeduplicator};
 pub use manager::MemoryManager;
-pub use types::{MemoryEntry, MemoryCategory, MemoryMetadata, MemoryStore, MemoryConfig};
 pub use mcp::MemoryTool;
-pub use similarity::TextSimilarity;
-pub use dedup::{MemoryDeduplicator, DuplicateInfo, DedupResult};
 pub use migration::{MemoryMigrator, MigrationResult};
+pub use similarity::TextSimilarity;
+pub use types::{MemoryCategory, MemoryConfig, MemoryEntry, MemoryMetadata, MemoryStore};

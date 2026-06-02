@@ -1,17 +1,18 @@
-use tauri::State;
+use super::types::{Context7Config, Context7Request, TestConnectionResponse};
 use crate::config::AppState;
-use super::types::{Context7Request, Context7Config, TestConnectionResponse};
+use tauri::State;
 
 /// 测试 Context7 连接
 #[tauri::command]
 pub async fn test_context7_connection(
     library: Option<String>,
     topic: Option<String>,
-    state: State<'_, AppState>
+    state: State<'_, AppState>,
 ) -> Result<TestConnectionResponse, String> {
     // 读取配置并立即释放锁
     let context7_config = {
-        let config = state.config
+        let config = state
+            .config
             .lock()
             .map_err(|e| format!("获取配置失败: {}", e))?;
 
@@ -35,27 +36,23 @@ pub async fn test_context7_connection(
 
     // 调用内部方法执行查询
     match execute_test_query(&context7_config, &test_request).await {
-        Ok(preview) => {
-            Ok(TestConnectionResponse {
-                success: true,
-                message: format!("连接成功! 已获取 {} 文档", test_library),
-                preview: Some(preview),
-            })
-        }
-        Err(e) => {
-            Ok(TestConnectionResponse {
-                success: false,
-                message: format!("连接失败: {}", e),
-                preview: None,
-            })
-        }
+        Ok(preview) => Ok(TestConnectionResponse {
+            success: true,
+            message: format!("连接成功! 已获取 {} 文档", test_library),
+            preview: Some(preview),
+        }),
+        Err(e) => Ok(TestConnectionResponse {
+            success: false,
+            message: format!("连接失败: {}", e),
+            preview: None,
+        }),
     }
 }
 
 /// 执行测试查询
 async fn execute_test_query(
     config: &Context7Config,
-    request: &Context7Request
+    request: &Context7Request,
 ) -> Result<String, String> {
     use reqwest::header::AUTHORIZATION;
     use reqwest::Client;
@@ -86,19 +83,30 @@ async fn execute_test_query(
     }
 
     // 发送请求
-    let response = req_builder.send().await
+    let response = req_builder
+        .send()
+        .await
         .map_err(|e| format!("请求失败: {}", e))?;
 
     let status = response.status();
 
     // 处理错误状态码
     if !status.is_success() {
-        let error_text = response.text().await.unwrap_or_else(|_| "无法读取错误信息".to_string());
-        return Err(format_test_error(status.as_u16(), &error_text, &request.library));
+        let error_text = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "无法读取错误信息".to_string());
+        return Err(format_test_error(
+            status.as_u16(),
+            &error_text,
+            &request.library,
+        ));
     }
 
     // 读取响应文本 (Context7 API 返回纯文本 Markdown，不是 JSON)
-    let response_text = response.text().await
+    let response_text = response
+        .text()
+        .await
         .map_err(|e| format!("读取响应失败: {}", e))?;
 
     // 如果响应为空
@@ -136,12 +144,13 @@ fn format_test_error(status_code: u16, error_text: &str, library: &str) -> Strin
 /// 获取 Context7 配置 (用于前端显示)
 #[tauri::command]
 pub async fn get_context7_config(
-    state: State<'_, AppState>
+    state: State<'_, AppState>,
 ) -> Result<Context7ConfigResponse, String> {
-    let config = state.config
+    let config = state
+        .config
         .lock()
         .map_err(|e| format!("获取配置失败: {}", e))?;
-    
+
     Ok(Context7ConfigResponse {
         api_key: config.mcp_config.context7_api_key.clone(),
     })
@@ -162,7 +171,8 @@ pub async fn save_context7_config(
 ) -> Result<(), String> {
     // 更新配置
     {
-        let mut config = state.config
+        let mut config = state
+            .config
             .lock()
             .map_err(|e| format!("获取配置失败: {}", e))?;
 
@@ -175,9 +185,9 @@ pub async fn save_context7_config(
     }
 
     // 保存配置到文件
-    crate::config::save_config(&state, &app).await
+    crate::config::save_config(&state, &app)
+        .await
         .map_err(|e| format!("保存配置失败: {}", e))?;
 
     Ok(())
 }
-

@@ -1,17 +1,21 @@
-use tauri::{AppHandle, Emitter, State};
 use once_cell::sync::Lazy;
 use std::env;
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use tauri::{AppHandle, Emitter, State};
 
-use crate::config::{AppState, save_config};
-use crate::network::proxy::{ProxyDetector, ProxyInfo, ProxyType};
+use super::types::{
+    DetectedProxy, ProjectFilesStatus, ProjectIndexStatus, ProjectWithNestedStatus,
+    ProjectsIndexStatus, ProxySpeedTestResult, SpeedTestMetric, SpeedTestProgress,
+    SpeedTestStageStatus,
+};
 use super::AcemcpTool;
-use super::types::{ProjectIndexStatus, ProjectsIndexStatus, ProjectFilesStatus, DetectedProxy, ProxySpeedTestResult, SpeedTestMetric, SpeedTestProgress, SpeedTestStageStatus, ProjectWithNestedStatus};
+use crate::config::{save_config, AppState};
 use crate::mcp::tools::sou::{fast_context, SouRequest, SouTool};
-use reqwest;
+use crate::network::proxy::{ProxyDetector, ProxyInfo, ProxyType};
 use crate::{log_debug, log_important};
+use reqwest;
 
 #[derive(Debug, Clone, serde::Serialize)]
 struct AcemcpLogStreamEvent {
@@ -55,8 +59,8 @@ fn get_acemcp_log_path() -> Result<std::path::PathBuf, String> {
     // Windows: C:\Users\<用户>\AppData\Roaming\sanshu\log\sanshu-mcp.log
     // Linux: ~/.config/sanshu/log/sanshu-mcp.log
     // macOS: ~/Library/Application Support/sanshu/log/sanshu-mcp.log
-    let config_dir = dirs::config_dir()
-        .ok_or_else(|| "无法获取系统配置目录，请检查操作系统环境".to_string())?;
+    let config_dir =
+        dirs::config_dir().ok_or_else(|| "无法获取系统配置目录，请检查操作系统环境".to_string())?;
 
     Ok(config_dir.join("sanshu").join("log").join("sanshu-mcp.log"))
 }
@@ -113,9 +117,15 @@ pub struct SaveAcemcpConfigArgs {
     pub sou_default_backend: Option<String>,
     #[serde(alias = "souAutoOrder", alias = "sou_auto_order")]
     pub sou_auto_order: Option<Vec<String>>,
-    #[serde(alias = "souIncludeBackendHeaders", alias = "sou_include_backend_headers")]
+    #[serde(
+        alias = "souIncludeBackendHeaders",
+        alias = "sou_include_backend_headers"
+    )]
     pub sou_include_backend_headers: Option<bool>,
-    #[serde(alias = "souIncludeFailedBackendErrors", alias = "sou_include_failed_backend_errors")]
+    #[serde(
+        alias = "souIncludeFailedBackendErrors",
+        alias = "sou_include_failed_backend_errors"
+    )]
     pub sou_include_failed_backend_errors: Option<bool>,
     #[serde(alias = "fastContextCommand", alias = "fast_context_command")]
     pub fast_context_command: Option<String>,
@@ -133,7 +143,10 @@ pub struct SaveAcemcpConfigArgs {
     pub fast_context_max_commands: Option<u8>,
     #[serde(alias = "fastContextTimeoutMs", alias = "fast_context_timeout_ms")]
     pub fast_context_timeout_ms: Option<u64>,
-    #[serde(alias = "fastContextExcludePaths", alias = "fast_context_exclude_paths")]
+    #[serde(
+        alias = "fastContextExcludePaths",
+        alias = "fast_context_exclude_paths"
+    )]
     pub fast_context_exclude_paths: Option<Vec<String>>,
 }
 
@@ -223,7 +236,6 @@ pub async fn detect_fast_context_api_key(
     }
 }
 
-
 #[tauri::command]
 pub async fn save_acemcp_config(
     args: SaveAcemcpConfigArgs,
@@ -256,7 +268,11 @@ pub async fn save_acemcp_config(
             .map_err(|e| format!("获取配置失败: {}", e))?;
 
         config.mcp_config.acemcp_base_url = normalized_base_url.clone();
-        config.mcp_config.acemcp_token = if args.token.trim().is_empty() { None } else { Some(args.token.clone()) };
+        config.mcp_config.acemcp_token = if args.token.trim().is_empty() {
+            None
+        } else {
+            Some(args.token.clone())
+        };
         config.mcp_config.acemcp_batch_size = Some(args.batch_size);
         config.mcp_config.acemcp_max_lines_per_blob = Some(args.max_lines_per_blob);
         config.mcp_config.acemcp_text_extensions = Some(args.text_extensions.clone());
@@ -357,18 +373,37 @@ pub async fn test_acemcp_connection(
         proxy_username,
         proxy_password,
     ) = {
-        let config = state.config
+        let config = state
+            .config
             .lock()
             .map_err(|e| format!("获取配置失败: {}", e))?;
-        
-        let base_url = config.mcp_config.acemcp_base_url.as_ref().unwrap_or(&args.base_url).clone();
-        let token = config.mcp_config.acemcp_token.as_ref().unwrap_or(&args.token).clone();
+
+        let base_url = config
+            .mcp_config
+            .acemcp_base_url
+            .as_ref()
+            .unwrap_or(&args.base_url)
+            .clone();
+        let token = config
+            .mcp_config
+            .acemcp_token
+            .as_ref()
+            .unwrap_or(&args.token)
+            .clone();
 
         // 代理配置（连接测试也需要遵循“所有 ACE 通信走代理”的要求）
         let proxy_enabled = config.mcp_config.acemcp_proxy_enabled.unwrap_or(false);
-        let proxy_host = config.mcp_config.acemcp_proxy_host.clone().unwrap_or_else(|| "127.0.0.1".to_string());
+        let proxy_host = config
+            .mcp_config
+            .acemcp_proxy_host
+            .clone()
+            .unwrap_or_else(|| "127.0.0.1".to_string());
         let proxy_port = config.mcp_config.acemcp_proxy_port.unwrap_or(7890);
-        let proxy_type = config.mcp_config.acemcp_proxy_type.clone().unwrap_or_else(|| "http".to_string());
+        let proxy_type = config
+            .mcp_config
+            .acemcp_proxy_type
+            .clone()
+            .unwrap_or_else(|| "http".to_string());
         let proxy_username = config.mcp_config.acemcp_proxy_username.clone();
         let proxy_password = config.mcp_config.acemcp_proxy_password.clone();
 
@@ -383,7 +418,7 @@ pub async fn test_acemcp_connection(
             proxy_password,
         )
     };
-    
+
     // 验证 URL 格式
     if !effective_base_url.starts_with("http://") && !effective_base_url.starts_with("https://") {
         let msg = "无效的API端点URL格式，必须以 http:// 或 https:// 开头".to_string();
@@ -392,7 +427,7 @@ pub async fn test_acemcp_connection(
             message: msg,
         });
     }
-    
+
     // 验证 token
     if effective_token.trim().is_empty() {
         let msg = "认证令牌不能为空".to_string();
@@ -401,17 +436,16 @@ pub async fn test_acemcp_connection(
             message: msg,
         });
     }
-    
+
     // 规范化 base_url
     let normalized_url = if effective_base_url.ends_with('/') {
         effective_base_url[..effective_base_url.len() - 1].to_string()
     } else {
         effective_base_url.clone()
     };
-    
+
     // 实际测试连接 - 发送一个简单的健康检查请求
-    let mut client_builder = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10));
+    let mut client_builder = reqwest::Client::builder().timeout(std::time::Duration::from_secs(10));
 
     // 如果启用代理，则连接测试也走代理（避免“设置了代理但测试仍失败”的误导）
     if proxy_enabled {
@@ -427,8 +461,8 @@ pub async fn test_acemcp_connection(
         }
 
         let proxy_url = format!("{}://{}:{}", proxy_type, proxy_host, proxy_port);
-        let mut reqwest_proxy = reqwest::Proxy::all(&proxy_url)
-            .map_err(|e| format!("创建代理失败: {}", e))?;
+        let mut reqwest_proxy =
+            reqwest::Proxy::all(&proxy_url).map_err(|e| format!("创建代理失败: {}", e))?;
 
         // 代理认证（Basic Auth）
         if let Some(username) = proxy_username.as_deref() {
@@ -445,19 +479,22 @@ pub async fn test_acemcp_connection(
     let client = client_builder
         .build()
         .map_err(|e| format!("创建 HTTP 客户端失败: {}", e))?;
-    
+
     // 尝试访问一个常见的端点（如果存在健康检查端点）
     let test_url = format!("{}/health", normalized_url);
-    
+
     match client
         .get(&test_url)
-        .header(reqwest::header::AUTHORIZATION, format!("Bearer {}", effective_token))
+        .header(
+            reqwest::header::AUTHORIZATION,
+            format!("Bearer {}", effective_token),
+        )
         .send()
         .await
     {
         Ok(response) => {
             let status = response.status();
-            
+
             if status.is_success() {
                 let msg = format!("连接测试成功！API 端点响应正常 (HTTP {})", status.as_u16());
                 return Ok(TestConnectionResult {
@@ -470,10 +507,10 @@ pub async fn test_acemcp_connection(
             // 健康检查端点可能不存在，继续测试实际 API 端点
         }
     }
-    
+
     // 如果健康检查失败，尝试测试实际的代码库检索端点
     let search_url = format!("{}/agents/codebase-retrieval", normalized_url);
-    
+
     // 发送一个最小的测试请求
     let test_payload = serde_json::json!({
         "information_request": "test",
@@ -483,10 +520,13 @@ pub async fn test_acemcp_connection(
         "disable_codebase_retrieval": false,
         "enable_commit_retrieval": false,
     });
-    
+
     match client
         .post(&search_url)
-        .header(reqwest::header::AUTHORIZATION, format!("Bearer {}", effective_token))
+        .header(
+            reqwest::header::AUTHORIZATION,
+            format!("Bearer {}", effective_token),
+        )
         .header(reqwest::header::CONTENT_TYPE, "application/json")
         .json(&test_payload)
         .send()
@@ -494,7 +534,7 @@ pub async fn test_acemcp_connection(
     {
         Ok(response) => {
             let status = response.status();
-            
+
             if status.is_success() {
                 let msg = format!("连接测试成功！API 端点响应正常 (HTTP {})", status.as_u16());
                 Ok(TestConnectionResult {
@@ -503,10 +543,22 @@ pub async fn test_acemcp_connection(
                 })
             } else {
                 let body = response.text().await.unwrap_or_default();
-                let msg = format!("API 端点返回错误状态: {} {}", status.as_u16(), status.as_str());
+                let msg = format!(
+                    "API 端点返回错误状态: {} {}",
+                    status.as_u16(),
+                    status.as_str()
+                );
                 Ok(TestConnectionResult {
                     success: false,
-                    message: format!("{} - 响应: {}", msg, if body.len() > 200 { format!("{}...", &body[..200]) } else { body }),
+                    message: format!(
+                        "{} - 响应: {}",
+                        msg,
+                        if body.len() > 200 {
+                            format!("{}...", &body[..200])
+                        } else {
+                            body
+                        }
+                    ),
                 })
             }
         }
@@ -544,7 +596,8 @@ pub async fn list_acemcp_log_targets() -> Result<Vec<AcemcpLogTargetInfo>, Strin
     let log_path = get_acemcp_log_path()?;
     ensure_acemcp_log_dir_exists(&log_path)?;
 
-    let max_backups: usize = crate::utils::logger::LogRotationConfig::default().max_backup_count as usize;
+    let max_backups: usize =
+        crate::utils::logger::LogRotationConfig::default().max_backup_count as usize;
 
     let log_dir = log_path
         .parent()
@@ -626,7 +679,8 @@ pub async fn read_acemcp_logs(
 
     // 前端日志查看器默认 5000 行；为了避免误传导致卡顿，这里做上限保护。
     let max_lines: usize = max_lines.unwrap_or(1000).clamp(100, 5000);
-    let max_backups: usize = crate::utils::logger::LogRotationConfig::default().max_backup_count as usize;
+    let max_backups: usize =
+        crate::utils::logger::LogRotationConfig::default().max_backup_count as usize;
     let target = target.unwrap_or_else(|| "combined".to_string());
 
     let log_dir = log_path
@@ -742,7 +796,13 @@ pub async fn export_acemcp_logs(
     let safe_hint = file_name_hint
         .unwrap_or_else(|| "acemcp-export".to_string())
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect::<String>();
 
     let export_path = log_dir.join(format!("{}-{}.{}", safe_hint, ts, ext));
@@ -1043,7 +1103,8 @@ pub struct AcemcpConfigResponse {
 
 #[tauri::command]
 pub async fn get_acemcp_config(state: State<'_, AppState>) -> Result<AcemcpConfigResponse, String> {
-    let config = state.config
+    let config = state
+        .config
         .lock()
         .map_err(|e| format!("获取配置失败: {}", e))?;
     Ok(AcemcpConfigResponse {
@@ -1053,41 +1114,113 @@ pub async fn get_acemcp_config(state: State<'_, AppState>) -> Result<AcemcpConfi
         max_lines_per_blob: config.mcp_config.acemcp_max_lines_per_blob.unwrap_or(800),
         // 默认文件扩展名列表（与前端 McpToolsTab.vue 保持一致）
         // 用户首次打开设置界面时，所有扩展名默认全部勾选
-        text_extensions: config.mcp_config.acemcp_text_extensions.clone().unwrap_or_else(|| {
-            vec![
-                ".py".to_string(), ".js".to_string(), ".ts".to_string(),
-                ".jsx".to_string(), ".tsx".to_string(), ".java".to_string(),
-                ".go".to_string(), ".rs".to_string(), ".cpp".to_string(),
-                ".c".to_string(), ".h".to_string(), ".hpp".to_string(),
-                ".cs".to_string(), ".rb".to_string(), ".php".to_string(),
-                ".md".to_string(), ".txt".to_string(), ".json".to_string(),
-                ".yaml".to_string(), ".yml".to_string(), ".toml".to_string(),
-                ".xml".to_string(), ".html".to_string(), ".css".to_string(),
-                ".scss".to_string(), ".sql".to_string(), ".sh".to_string(),
-                ".bash".to_string()
-            ]
-        }),
-        exclude_patterns: config.mcp_config.acemcp_exclude_patterns.clone().unwrap_or_else(|| {
-            vec!["node_modules".to_string(), ".git".to_string(), "target".to_string(), "dist".to_string()]
-        }),
-        watch_debounce_ms: config.mcp_config.acemcp_watch_debounce_ms
+        text_extensions: config
+            .mcp_config
+            .acemcp_text_extensions
+            .clone()
+            .unwrap_or_else(|| {
+                vec![
+                    ".py".to_string(),
+                    ".js".to_string(),
+                    ".ts".to_string(),
+                    ".jsx".to_string(),
+                    ".tsx".to_string(),
+                    ".java".to_string(),
+                    ".go".to_string(),
+                    ".rs".to_string(),
+                    ".cpp".to_string(),
+                    ".c".to_string(),
+                    ".h".to_string(),
+                    ".hpp".to_string(),
+                    ".cs".to_string(),
+                    ".rb".to_string(),
+                    ".php".to_string(),
+                    ".md".to_string(),
+                    ".txt".to_string(),
+                    ".json".to_string(),
+                    ".yaml".to_string(),
+                    ".yml".to_string(),
+                    ".toml".to_string(),
+                    ".xml".to_string(),
+                    ".html".to_string(),
+                    ".css".to_string(),
+                    ".scss".to_string(),
+                    ".sql".to_string(),
+                    ".sh".to_string(),
+                    ".bash".to_string(),
+                ]
+            }),
+        exclude_patterns: config
+            .mcp_config
+            .acemcp_exclude_patterns
+            .clone()
+            .unwrap_or_else(|| {
+                vec![
+                    "node_modules".to_string(),
+                    ".git".to_string(),
+                    "target".to_string(),
+                    "dist".to_string(),
+                ]
+            }),
+        watch_debounce_ms: config
+            .mcp_config
+            .acemcp_watch_debounce_ms
             .unwrap_or(super::watcher::DEFAULT_DEBOUNCE_MS),
-        watch_max_wait_ms: config.mcp_config.acemcp_watch_max_wait_ms
+        watch_max_wait_ms: config
+            .mcp_config
+            .acemcp_watch_max_wait_ms
             .unwrap_or(super::watcher::DEFAULT_MAX_WAIT_MS),
         // 代理配置
         proxy_enabled: config.mcp_config.acemcp_proxy_enabled.unwrap_or(false),
-        proxy_host: config.mcp_config.acemcp_proxy_host.clone().unwrap_or_else(|| "127.0.0.1".to_string()),
+        proxy_host: config
+            .mcp_config
+            .acemcp_proxy_host
+            .clone()
+            .unwrap_or_else(|| "127.0.0.1".to_string()),
         proxy_port: config.mcp_config.acemcp_proxy_port.unwrap_or(7890),
-        proxy_type: config.mcp_config.acemcp_proxy_type.clone().unwrap_or_else(|| "http".to_string()),
-        proxy_username: config.mcp_config.acemcp_proxy_username.clone().unwrap_or_default(),
-        proxy_password: config.mcp_config.acemcp_proxy_password.clone().unwrap_or_default(),
+        proxy_type: config
+            .mcp_config
+            .acemcp_proxy_type
+            .clone()
+            .unwrap_or_else(|| "http".to_string()),
+        proxy_username: config
+            .mcp_config
+            .acemcp_proxy_username
+            .clone()
+            .unwrap_or_default(),
+        proxy_password: config
+            .mcp_config
+            .acemcp_proxy_password
+            .clone()
+            .unwrap_or_default(),
         // 嵌套项目索引开关（默认启用）
-        index_nested_projects: config.mcp_config.acemcp_index_nested_projects.unwrap_or(true),
-        sou_default_backend: config.mcp_config.sou_default_backend.clone().unwrap_or_else(|| "auto".to_string()),
-        sou_auto_order: config.mcp_config.sou_auto_order.clone().unwrap_or_else(|| vec!["ace".to_string(), "fast_context".to_string()]),
-        sou_include_backend_headers: config.mcp_config.sou_include_backend_headers.unwrap_or(true),
-        sou_include_failed_backend_errors: config.mcp_config.sou_include_failed_backend_errors.unwrap_or(true),
-        fast_context_command: config.mcp_config.fast_context_command.clone().unwrap_or_else(|| "node".to_string()),
+        index_nested_projects: config
+            .mcp_config
+            .acemcp_index_nested_projects
+            .unwrap_or(true),
+        sou_default_backend: config
+            .mcp_config
+            .sou_default_backend
+            .clone()
+            .unwrap_or_else(|| "auto".to_string()),
+        sou_auto_order: config
+            .mcp_config
+            .sou_auto_order
+            .clone()
+            .unwrap_or_else(|| vec!["ace".to_string(), "fast_context".to_string()]),
+        sou_include_backend_headers: config
+            .mcp_config
+            .sou_include_backend_headers
+            .unwrap_or(true),
+        sou_include_failed_backend_errors: config
+            .mcp_config
+            .sou_include_failed_backend_errors
+            .unwrap_or(true),
+        fast_context_command: config
+            .mcp_config
+            .fast_context_command
+            .clone()
+            .unwrap_or_else(|| "node".to_string()),
         fast_context_script_path: config.mcp_config.fast_context_script_path.clone(),
         fast_context_api_key: config.mcp_config.fast_context_api_key.clone(),
         fast_context_tree_depth: config.mcp_config.fast_context_tree_depth.unwrap_or(3),
@@ -1095,9 +1228,19 @@ pub async fn get_acemcp_config(state: State<'_, AppState>) -> Result<AcemcpConfi
         fast_context_max_results: config.mcp_config.fast_context_max_results.unwrap_or(10),
         fast_context_max_commands: config.mcp_config.fast_context_max_commands.unwrap_or(8),
         fast_context_timeout_ms: config.mcp_config.fast_context_timeout_ms.unwrap_or(30000),
-        fast_context_exclude_paths: config.mcp_config.fast_context_exclude_paths.clone().unwrap_or_else(|| {
-            vec!["node_modules".to_string(), ".git".to_string(), "dist".to_string(), "build".to_string(), "target".to_string()]
-        }),
+        fast_context_exclude_paths: config
+            .mcp_config
+            .fast_context_exclude_paths
+            .clone()
+            .unwrap_or_else(|| {
+                vec![
+                    "node_modules".to_string(),
+                    ".git".to_string(),
+                    "dist".to_string(),
+                    "build".to_string(),
+                    "target".to_string(),
+                ]
+            }),
     })
 }
 
@@ -1132,14 +1275,14 @@ pub async fn debug_acemcp_search(
     _app: AppHandle,
 ) -> Result<DebugSearchResult, String> {
     use std::time::Instant;
-    
+
     // 记录请求开始时间
     let request_time = chrono::Utc::now();
     let request_time_str = request_time.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
     let start_instant = Instant::now();
-    
-    let req = SouRequest { 
-        project_root_path: project_root_path.clone(), 
+
+    let req = SouRequest {
+        project_root_path: project_root_path.clone(),
         query: query.clone(),
         backend,
         tree_depth: None,
@@ -1149,23 +1292,27 @@ pub async fn debug_acemcp_search(
         timeout_ms: None,
         exclude_paths: None,
     };
-    
+
     // 调用搜索函数（日志会通过 log crate 输出到日志文件）
-    log::info!("[调试搜索] 开始执行: project={}, query={}", project_root_path, query);
+    log::info!(
+        "[调试搜索] 开始执行: project={}, query={}",
+        project_root_path,
+        query
+    );
     let search_result = SouTool::search_context(req).await;
-    
+
     // 记录响应接收时间
     let response_time = chrono::Utc::now();
     let response_time_str = response_time.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
     let total_duration_ms = start_instant.elapsed().as_millis() as u64;
-    
+
     log::info!("[调试搜索] 执行完成: 耗时 {}ms", total_duration_ms);
-    
+
     match search_result {
         Ok(result) => {
             let mut result_text = String::new();
             let mut result_count: Option<usize> = None;
-            
+
             if let Ok(val) = serde_json::to_value(&result) {
                 if let Some(arr) = val.get("content").and_then(|v| v.as_array()) {
                     result_count = Some(arr.len());
@@ -1178,7 +1325,7 @@ pub async fn debug_acemcp_search(
                     }
                 }
             }
-            
+
             Ok(DebugSearchResult {
                 success: true,
                 result: Some(result_text),
@@ -1194,7 +1341,7 @@ pub async fn debug_acemcp_search(
         Err(e) => {
             let error_msg = format!("执行失败: {}", e);
             log::error!("[调试搜索] 错误: {}", error_msg);
-            
+
             Ok(DebugSearchResult {
                 success: false,
                 result: None,
@@ -1210,7 +1357,6 @@ pub async fn debug_acemcp_search(
     }
 }
 
-
 /// 执行acemcp工具
 #[tauri::command]
 pub async fn execute_acemcp_tool(
@@ -1220,17 +1366,20 @@ pub async fn execute_acemcp_tool(
     match tool_name.as_str() {
         "search_context" => {
             // 解析参数
-            let project_root_path = arguments.get("project_root_path")
+            let project_root_path = arguments
+                .get("project_root_path")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "缺少project_root_path参数".to_string())?
                 .to_string();
-            
-            let query = arguments.get("query")
+
+            let query = arguments
+                .get("query")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "缺少query参数".to_string())?
                 .to_string();
-            
-            let backend = arguments.get("backend")
+
+            let backend = arguments
+                .get("backend")
                 .and_then(|v| v.as_str())
                 .map(|v| v.to_string());
 
@@ -1239,12 +1388,25 @@ pub async fn execute_acemcp_tool(
                 project_root_path,
                 query,
                 backend,
-                tree_depth: arguments.get("tree_depth").and_then(|v| v.as_u64()).map(|v| v as u8),
-                max_turns: arguments.get("max_turns").and_then(|v| v.as_u64()).map(|v| v as u8),
-                max_results: arguments.get("max_results").and_then(|v| v.as_u64()).map(|v| v as u8),
-                max_commands: arguments.get("max_commands").and_then(|v| v.as_u64()).map(|v| v as u8),
+                tree_depth: arguments
+                    .get("tree_depth")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as u8),
+                max_turns: arguments
+                    .get("max_turns")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as u8),
+                max_results: arguments
+                    .get("max_results")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as u8),
+                max_commands: arguments
+                    .get("max_commands")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as u8),
                 timeout_ms: arguments.get("timeout_ms").and_then(|v| v.as_u64()),
-                exclude_paths: arguments.get("exclude_paths")
+                exclude_paths: arguments
+                    .get("exclude_paths")
                     .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok()),
             };
             match SouTool::search_context(req).await {
@@ -1279,12 +1441,15 @@ pub fn get_acemcp_index_status(project_root_path: String) -> Result<ProjectIndex
 #[tauri::command]
 pub fn get_all_acemcp_index_status() -> Result<ProjectsIndexStatus, String> {
     log::debug!("📋 [get_all_acemcp_index_status] 开始获取所有项目索引状态");
-    
+
     let status = AcemcpTool::get_all_index_status();
     let project_count = status.projects.len();
-    
-    log::debug!("📊 [get_all_acemcp_index_status] 返回项目数: {}", project_count);
-    
+
+    log::debug!(
+        "📊 [get_all_acemcp_index_status] 返回项目数: {}",
+        project_count
+    );
+
     // 详细记录每个项目的状态（用于调试）
     for (path, proj_status) in &status.projects {
         log::debug!(
@@ -1295,7 +1460,7 @@ pub fn get_all_acemcp_index_status() -> Result<ProjectsIndexStatus, String> {
             proj_status.last_success_time
         );
     }
-    
+
     Ok(status)
 }
 
@@ -1312,13 +1477,14 @@ pub async fn get_acemcp_project_files_status(
 /// 获取项目及其嵌套子项目的索引状态
 /// 用于前端展示包含多个 Git 子仓库的项目结构
 #[tauri::command]
-pub fn get_acemcp_project_with_nested(project_root_path: String) -> Result<ProjectWithNestedStatus, String> {
+pub fn get_acemcp_project_with_nested(
+    project_root_path: String,
+) -> Result<ProjectWithNestedStatus, String> {
     // 关键校验：目录不存在时直接返回错误
     if !check_directory_exists(project_root_path.clone())? {
         return Err(format!("项目根目录不存在: {}", project_root_path));
     }
-    AcemcpTool::get_project_with_nested_status(project_root_path)
-        .map_err(|e| e.to_string())
+    AcemcpTool::get_project_with_nested_status(project_root_path).map_err(|e| e.to_string())
 }
 
 /// 手动触发索引更新
@@ -1382,7 +1548,10 @@ pub fn get_watching_projects(state: State<'_, AppState>) -> Result<Vec<String>, 
     let watcher_manager = super::watcher::get_watcher_manager();
     let mut projects = watcher_manager.get_watching_projects();
     {
-        let config = state.config.lock().map_err(|e| format!("获取配置失败: {}", e))?;
+        let config = state
+            .config
+            .lock()
+            .map_err(|e| format!("获取配置失败: {}", e))?;
         projects.extend(
             config
                 .mcp_config
@@ -1396,14 +1565,20 @@ pub fn get_watching_projects(state: State<'_, AppState>) -> Result<Vec<String>, 
 
 /// 检查指定项目是否正在监听
 #[tauri::command]
-pub fn is_project_watching(project_root_path: String, state: State<'_, AppState>) -> Result<bool, String> {
+pub fn is_project_watching(
+    project_root_path: String,
+    state: State<'_, AppState>,
+) -> Result<bool, String> {
     let normalized_root = normalize_watch_project_path(&project_root_path);
     let watcher_manager = super::watcher::get_watcher_manager();
     if watcher_manager.is_watching(&normalized_root) {
         return Ok(true);
     }
 
-    let config = state.config.lock().map_err(|e| format!("获取配置失败: {}", e))?;
+    let config = state
+        .config
+        .lock()
+        .map_err(|e| format!("获取配置失败: {}", e))?;
     Ok(config
         .mcp_config
         .acemcp_watched_projects
@@ -1425,8 +1600,15 @@ pub async fn start_project_watching(
 
     // 持久化监听意图，三术 MCP 进程会从配置中恢复和同步 watcher。
     {
-        let mut config = state.config.lock().map_err(|e| format!("获取配置失败: {}", e))?;
-        let mut projects = config.mcp_config.acemcp_watched_projects.clone().unwrap_or_default();
+        let mut config = state
+            .config
+            .lock()
+            .map_err(|e| format!("获取配置失败: {}", e))?;
+        let mut projects = config
+            .mcp_config
+            .acemcp_watched_projects
+            .clone()
+            .unwrap_or_default();
         projects.push(normalized_root.clone());
         config.mcp_config.acemcp_watched_projects = Some(normalize_project_list(projects));
     }
@@ -1446,8 +1628,15 @@ pub async fn stop_project_watching(
 ) -> Result<(), String> {
     let normalized_root = normalize_watch_project_path(&project_root_path);
     {
-        let mut config = state.config.lock().map_err(|e| format!("获取配置失败: {}", e))?;
-        let projects = config.mcp_config.acemcp_watched_projects.clone().unwrap_or_default();
+        let mut config = state
+            .config
+            .lock()
+            .map_err(|e| format!("获取配置失败: {}", e))?;
+        let projects = config
+            .mcp_config
+            .acemcp_watched_projects
+            .clone()
+            .unwrap_or_default();
         config.mcp_config.acemcp_watched_projects = Some(
             normalize_project_list(projects)
                 .into_iter()
@@ -1471,12 +1660,12 @@ pub async fn stop_project_watching(
 
 /// 停止所有项目监听
 #[tauri::command]
-pub async fn stop_all_watching(
-    state: State<'_, AppState>,
-    app: AppHandle,
-) -> Result<(), String> {
+pub async fn stop_all_watching(state: State<'_, AppState>, app: AppHandle) -> Result<(), String> {
     {
-        let mut config = state.config.lock().map_err(|e| format!("获取配置失败: {}", e))?;
+        let mut config = state
+            .config
+            .lock()
+            .map_err(|e| format!("获取配置失败: {}", e))?;
         config.mcp_config.acemcp_watched_projects = Some(Vec::new());
     }
     save_config(&state, &app)
@@ -1528,17 +1717,26 @@ fn normalize_project_list(projects: Vec<String>) -> Vec<String> {
 
 /// 清理指定项目的索引记录
 /// stop_watching = true 时会停止文件监听
-fn purge_project_index_records(project_root_path: &str, stop_watching: bool) -> Result<String, String> {
-    use std::path::PathBuf;
-    use std::fs;
+fn purge_project_index_records(
+    project_root_path: &str,
+    stop_watching: bool,
+) -> Result<String, String> {
     use std::collections::HashMap;
+    use std::fs;
+    use std::path::PathBuf;
 
     // 规范化传入的路径
     let normalized_root = normalize_path_key(project_root_path);
 
     log::info!("[purge_project_index_records] 开始清理项目索引记录");
-    log::info!("[purge_project_index_records] 原始路径: {}", project_root_path);
-    log::info!("[purge_project_index_records] 规范化后路径: {}", normalized_root);
+    log::info!(
+        "[purge_project_index_records] 原始路径: {}",
+        project_root_path
+    );
+    log::info!(
+        "[purge_project_index_records] 规范化后路径: {}",
+        normalized_root
+    );
 
     let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
     let data_dir = home.join(".acemcp").join("data");
@@ -1555,7 +1753,10 @@ fn purge_project_index_records(project_root_path: &str, stop_watching: bool) -> 
                 let mut projects: HashMap<String, Vec<String>> = match serde_json::from_str(&data) {
                     Ok(val) => val,
                     Err(e) => {
-                        log::warn!("[purge_project_index_records] projects.json 解析失败，将重置文件: {}", e);
+                        log::warn!(
+                            "[purge_project_index_records] projects.json 解析失败，将重置文件: {}",
+                            e
+                        );
                         needs_write = true;
                         projects_deleted = true;
                         HashMap::new()
@@ -1563,9 +1764,13 @@ fn purge_project_index_records(project_root_path: &str, stop_watching: bool) -> 
                 };
 
                 let existing_keys: Vec<&String> = projects.keys().collect();
-                log::info!("[purge_project_index_records] projects.json 中现有项目: {:?}", existing_keys);
+                log::info!(
+                    "[purge_project_index_records] projects.json 中现有项目: {:?}",
+                    existing_keys
+                );
 
-                let key_to_remove: Option<String> = projects.keys()
+                let key_to_remove: Option<String> = projects
+                    .keys()
                     .find(|k| normalize_path_key(k) == normalized_root)
                     .cloned();
 
@@ -1575,24 +1780,43 @@ fn purge_project_index_records(project_root_path: &str, stop_watching: bool) -> 
                     needs_write = true;
                     projects_deleted = true;
                 } else if needs_write {
-                    log::warn!("[purge_project_index_records] 未找到匹配项目，但 projects.json 已被重置");
+                    log::warn!(
+                        "[purge_project_index_records] 未找到匹配项目，但 projects.json 已被重置"
+                    );
                 } else {
                     log::warn!("[purge_project_index_records] ✗ 在 projects.json 中未找到匹配的项目，规范化路径: {}", normalized_root);
                 }
 
                 if needs_write {
-                    let new_data = serde_json::to_string_pretty(&projects)
-                        .map_err(|e| format!("序列化 projects.json 失败: {} (路径: {})", e, projects_path.display()))?;
-                    fs::write(&projects_path, new_data)
-                        .map_err(|e| format!("写入 projects.json 失败: {} (路径: {})", e, projects_path.display()))?;
+                    let new_data = serde_json::to_string_pretty(&projects).map_err(|e| {
+                        format!(
+                            "序列化 projects.json 失败: {} (路径: {})",
+                            e,
+                            projects_path.display()
+                        )
+                    })?;
+                    fs::write(&projects_path, new_data).map_err(|e| {
+                        format!(
+                            "写入 projects.json 失败: {} (路径: {})",
+                            e,
+                            projects_path.display()
+                        )
+                    })?;
                 }
             }
             Err(e) => {
-                return Err(format!("读取 projects.json 失败: {} (路径: {})", e, projects_path.display()));
+                return Err(format!(
+                    "读取 projects.json 失败: {} (路径: {})",
+                    e,
+                    projects_path.display()
+                ));
             }
         }
     } else {
-        log::warn!("[purge_project_index_records] projects.json 文件不存在: {:?}", projects_path);
+        log::warn!(
+            "[purge_project_index_records] projects.json 文件不存在: {:?}",
+            projects_path
+        );
     }
 
     // 2. 从 projects_status.json 中删除项目状态
@@ -1612,12 +1836,18 @@ fn purge_project_index_records(project_root_path: &str, stop_watching: bool) -> 
                 };
 
                 let existing_keys: Vec<&String> = status.projects.keys().collect();
-                log::info!("[purge_project_index_records] projects_status.json 中现有项目: {:?}", existing_keys);
+                log::info!(
+                    "[purge_project_index_records] projects_status.json 中现有项目: {:?}",
+                    existing_keys
+                );
 
                 if status.projects.remove(&normalized_root).is_some() {
                     needs_write = true;
                     status_deleted = true;
-                    log::info!("[purge_project_index_records] ✓ 已从 projects_status.json 删除项目: {}", normalized_root);
+                    log::info!(
+                        "[purge_project_index_records] ✓ 已从 projects_status.json 删除项目: {}",
+                        normalized_root
+                    );
                 } else if needs_write {
                     log::warn!("[purge_project_index_records] 未找到匹配项目，但 projects_status.json 已被重置");
                 } else {
@@ -1625,18 +1855,35 @@ fn purge_project_index_records(project_root_path: &str, stop_watching: bool) -> 
                 }
 
                 if needs_write {
-                    let new_data = serde_json::to_string_pretty(&status)
-                        .map_err(|e| format!("序列化 projects_status.json 失败: {} (路径: {})", e, status_path.display()))?;
-                    fs::write(&status_path, new_data)
-                        .map_err(|e| format!("写入 projects_status.json 失败: {} (路径: {})", e, status_path.display()))?;
+                    let new_data = serde_json::to_string_pretty(&status).map_err(|e| {
+                        format!(
+                            "序列化 projects_status.json 失败: {} (路径: {})",
+                            e,
+                            status_path.display()
+                        )
+                    })?;
+                    fs::write(&status_path, new_data).map_err(|e| {
+                        format!(
+                            "写入 projects_status.json 失败: {} (路径: {})",
+                            e,
+                            status_path.display()
+                        )
+                    })?;
                 }
             }
             Err(e) => {
-                return Err(format!("读取 projects_status.json 失败: {} (路径: {})", e, status_path.display()));
+                return Err(format!(
+                    "读取 projects_status.json 失败: {} (路径: {})",
+                    e,
+                    status_path.display()
+                ));
             }
         }
     } else {
-        log::warn!("[purge_project_index_records] projects_status.json 文件不存在: {:?}", status_path);
+        log::warn!(
+            "[purge_project_index_records] projects_status.json 文件不存在: {:?}",
+            status_path
+        );
     }
 
     // 3. 视需要停止该项目的文件监听
@@ -1646,7 +1893,11 @@ fn purge_project_index_records(project_root_path: &str, stop_watching: bool) -> 
     }
 
     if projects_deleted || status_deleted {
-        log::info!("[purge_project_index_records] 清理完成: projects.json={}, status.json={}", projects_deleted, status_deleted);
+        log::info!(
+            "[purge_project_index_records] 清理完成: projects.json={}, status.json={}",
+            projects_deleted,
+            status_deleted
+        );
         Ok(format!("已清理项目索引记录: {}", normalized_root))
     } else {
         log::warn!("[purge_project_index_records] 未能从任何文件中删除项目，可能路径不匹配");
@@ -1667,10 +1918,10 @@ pub fn check_directory_exists(directory_path: String) -> Result<bool, String> {
     use std::path::PathBuf;
 
     let path = PathBuf::from(&directory_path);
-    
+
     // 尝试规范化路径（处理 Windows 扩展路径前缀等情况）
     let normalized = path.canonicalize().unwrap_or(path.clone());
-    
+
     Ok(normalized.exists() && normalized.is_dir())
 }
 
@@ -1679,19 +1930,21 @@ pub fn check_directory_exists(directory_path: String) -> Result<bool, String> {
 /// 自动检测本地可用的代理
 /// 返回所有检测到的可用代理列表
 #[tauri::command]
-pub async fn detect_acemcp_proxy(extra_ports: Option<Vec<u16>>) -> Result<Vec<DetectedProxy>, String> {
+pub async fn detect_acemcp_proxy(
+    extra_ports: Option<Vec<u16>>,
+) -> Result<Vec<DetectedProxy>, String> {
     log::info!("🔍 开始检测本地代理...");
-    
+
     // 常用代理端口列表
     let mut ports_to_check: Vec<(u16, &'static str)> = vec![
-        (7890, "http"),   // Clash 混合端口
-        (7891, "http"),   // Clash HTTP 端口
-        (10808, "http"),  // V2Ray HTTP 端口
+        (7890, "http"),    // Clash 混合端口
+        (7891, "http"),    // Clash HTTP 端口
+        (10808, "http"),   // V2Ray HTTP 端口
         (10809, "socks5"), // V2Ray SOCKS5 端口
-        (1080, "socks5"), // 通用 SOCKS5 端口
-        (8080, "http"),   // 通用 HTTP 代理端口
+        (1080, "socks5"),  // 通用 SOCKS5 端口
+        (8080, "http"),    // 通用 HTTP 代理端口
     ];
-    
+
     // 追加用户自定义端口（同时尝试 http 与 socks5）
     if let Some(extra) = extra_ports {
         let mut seen: std::collections::HashSet<(u16, &'static str)> =
@@ -1752,13 +2005,18 @@ pub async fn detect_acemcp_proxy(extra_ports: Option<Vec<u16>>) -> Result<Vec<De
             Err(e) => log::debug!("代理检测任务异常（忽略，不影响整体结果）: {}", e),
         }
     }
-    
+
     // 按响应时间排序
     detected_proxies.sort_by(|a, b| {
-        a.response_time_ms.unwrap_or(u64::MAX).cmp(&b.response_time_ms.unwrap_or(u64::MAX))
+        a.response_time_ms
+            .unwrap_or(u64::MAX)
+            .cmp(&b.response_time_ms.unwrap_or(u64::MAX))
     });
-    
-    log::info!("🔍 代理检测完成，找到 {} 个可用代理", detected_proxies.len());
+
+    log::info!(
+        "🔍 代理检测完成，找到 {} 个可用代理",
+        detected_proxies.len()
+    );
     Ok(detected_proxies)
 }
 
@@ -1766,8 +2024,8 @@ pub async fn detect_acemcp_proxy(extra_ports: Option<Vec<u16>>) -> Result<Vec<De
 /// 测试代理和直连模式下的网络延迟和搜索性能
 #[tauri::command]
 pub async fn test_acemcp_proxy_speed(
-    app: AppHandle,               // 用于发送进度事件
-    test_mode: String,            // "proxy" | "direct" | "compare"
+    app: AppHandle,    // 用于发送进度事件
+    test_mode: String, // "proxy" | "direct" | "compare"
     proxy_host: Option<String>,
     proxy_port: Option<u16>,
     proxy_type: Option<String>,
@@ -1775,15 +2033,25 @@ pub async fn test_acemcp_proxy_speed(
     proxy_password: Option<String>,
     test_query: String,
     project_root_path: String,
-    project_upload_mode: Option<String>,      // "sample" | "full"
-    project_upload_max_files: Option<u32>,    // 采样模式下的文件上限
+    project_upload_mode: Option<String>,   // "sample" | "full"
+    project_upload_max_files: Option<u32>, // 采样模式下的文件上限
     state: State<'_, AppState>,
 ) -> Result<ProxySpeedTestResult, String> {
     log::info!("🚀 [SpeedTest] 开始代理测速");
-    log::info!("📋 [SpeedTest] 参数: mode={}, query={}, project={}", test_mode, test_query, project_root_path);
-    
+    log::info!(
+        "📋 [SpeedTest] 参数: mode={}, query={}, project={}",
+        test_mode,
+        test_query,
+        project_root_path
+    );
+
     // 进度发送辅助闭包
-    let emit_progress = |stage: u8, stage_name: &str, percentage: u8, status: SpeedTestStageStatus, detail: Option<&str>, sub_step: Option<&str>| {
+    let emit_progress = |stage: u8,
+                         stage_name: &str,
+                         percentage: u8,
+                         status: SpeedTestStageStatus,
+                         detail: Option<&str>,
+                         sub_step: Option<&str>| {
         let progress = SpeedTestProgress {
             stage,
             stage_name: stage_name.to_string(),
@@ -1794,32 +2062,61 @@ pub async fn test_acemcp_proxy_speed(
         };
         let _ = app.emit("speed_test_progress", &progress);
     };
-    
+
     // 阶段0: 开始初始化
-    emit_progress(0, "初始化", 0, SpeedTestStageStatus::Running, Some("正在加载配置..."), None);
-    
+    emit_progress(
+        0,
+        "初始化",
+        0,
+        SpeedTestStageStatus::Running,
+        Some("正在加载配置..."),
+        None,
+    );
+
     // 获取配置
     let (base_url, token, batch_size, max_lines_per_blob) = {
-        let config = state.config.lock().map_err(|e| format!("获取配置失败: {}", e))?;
+        let config = state
+            .config
+            .lock()
+            .map_err(|e| format!("获取配置失败: {}", e))?;
         (
-            config.mcp_config.acemcp_base_url.clone().ok_or("未配置租户地址")?,
-            config.mcp_config.acemcp_token.clone().ok_or("未配置 ACE Token")?,
+            config
+                .mcp_config
+                .acemcp_base_url
+                .clone()
+                .ok_or("未配置租户地址")?,
+            config
+                .mcp_config
+                .acemcp_token
+                .clone()
+                .ok_or("未配置 ACE Token")?,
             config.mcp_config.acemcp_batch_size.unwrap_or(10) as usize,
             config.mcp_config.acemcp_max_lines_per_blob.unwrap_or(800) as usize,
         )
     };
-    
-    log::debug!("⚙️ [SpeedTest] 配置: base_url={}, batch_size={}, max_lines={}", base_url, batch_size, max_lines_per_blob);
-    
+
+    log::debug!(
+        "⚙️ [SpeedTest] 配置: base_url={}, batch_size={}, max_lines={}",
+        base_url,
+        batch_size,
+        max_lines_per_blob
+    );
+
     let mut metrics: Vec<SpeedTestMetric> = Vec::new();
     let test_proxy = test_mode == "proxy" || test_mode == "compare";
     let test_direct = test_mode == "direct" || test_mode == "compare";
-    
-    log::info!("🔧 [SpeedTest] 测试模式: test_proxy={}, test_direct={}", test_proxy, test_direct);
-    
+
+    log::info!(
+        "🔧 [SpeedTest] 测试模式: test_proxy={}, test_direct={}",
+        test_proxy,
+        test_direct
+    );
+
     // 构建代理信息
     let proxy_info = if test_proxy {
-        let host = proxy_host.clone().unwrap_or_else(|| "127.0.0.1".to_string());
+        let host = proxy_host
+            .clone()
+            .unwrap_or_else(|| "127.0.0.1".to_string());
         let port = proxy_port.unwrap_or(7890);
         let p_type = proxy_type.clone().unwrap_or_else(|| "http".to_string());
         Some(DetectedProxy {
@@ -1831,9 +2128,14 @@ pub async fn test_acemcp_proxy_speed(
     } else {
         None
     };
-    
+
     if let Some(ref pi) = proxy_info {
-        log::info!("🔌 [SpeedTest] 代理配置: {}://{}:{}", pi.proxy_type, pi.host, pi.port);
+        log::info!(
+            "🔌 [SpeedTest] 代理配置: {}://{}:{}",
+            pi.proxy_type,
+            pi.host,
+            pi.port
+        );
     }
 
     // 构建代理设置（用于实际 HTTP 请求，支持 https + 认证）
@@ -1861,7 +2163,12 @@ pub async fn test_acemcp_proxy_speed(
     let project_upload_max_files_limit: Option<usize> = match project_upload_mode.as_str() {
         "full" => None,
         "sample" => Some(sample_max_files),
-        other => return Err(format!("无效的项目上传模式: {}（仅支持 sample/full）", other)),
+        other => {
+            return Err(format!(
+                "无效的项目上传模式: {}（仅支持 sample/full）",
+                other
+            ))
+        }
     };
 
     // 读取测试项目文件列表（用于上传测速）
@@ -1877,7 +2184,8 @@ pub async fn test_acemcp_proxy_speed(
         match AcemcpTool::get_project_files_status(project_root_path.clone()).await {
             Ok(v) => {
                 if v.files.is_empty() {
-                    project_files_error = Some("测试项目未发现可索引文件，已跳过上传测试".to_string());
+                    project_files_error =
+                        Some("测试项目未发现可索引文件，已跳过上传测试".to_string());
                     log::warn!("⚠️ [SpeedTest] 测试项目无可索引文件");
                 } else {
                     log::info!("📁 [SpeedTest] 项目文件数: {} 个", v.files.len());
@@ -1908,15 +2216,27 @@ pub async fn test_acemcp_proxy_speed(
     } else {
         None
     };
-    
-    log::info!("🔗 [SpeedTest] HTTP Client 初始化完成: proxy_client={}, direct_client={}", 
-               proxy_client.is_some(), direct_client.is_some());
-    
+
+    log::info!(
+        "🔗 [SpeedTest] HTTP Client 初始化完成: proxy_client={}, direct_client={}",
+        proxy_client.is_some(),
+        direct_client.is_some()
+    );
+
     // 阶段0: 初始化完成
-    let file_count = project_files_status.as_ref().map(|p| p.files.len()).unwrap_or(0);
-    emit_progress(0, "初始化", 10, SpeedTestStageStatus::Completed, 
-                  Some(&format!("项目文件: {} 个, HTTP Client 就绪", file_count)), None);
-    
+    let file_count = project_files_status
+        .as_ref()
+        .map(|p| p.files.len())
+        .unwrap_or(0);
+    emit_progress(
+        0,
+        "初始化",
+        10,
+        SpeedTestStageStatus::Completed,
+        Some(&format!("项目文件: {} 个, HTTP Client 就绪", file_count)),
+        None,
+    );
+
     // 1. Ping 测试 - 测量到 ACE 服务器的网络延迟
     let health_url = format!("{}/health", base_url);
     let mut ping_metric = SpeedTestMetric {
@@ -1928,18 +2248,30 @@ pub async fn test_acemcp_proxy_speed(
         error: None,
         search_result_preview: None,
     };
-    
+
     log::info!("📡 [SpeedTest] === 阶段1: Ping 测试 ===");
     log::debug!("📡 [SpeedTest] Ping URL: {}", health_url);
-    
+
     // 阶段1: Ping 测试开始
-    emit_progress(1, "Ping 测试", 12, SpeedTestStageStatus::Running, 
-                  Some("正在测试网络连通性..."), None);
-    
+    emit_progress(
+        1,
+        "Ping 测试",
+        12,
+        SpeedTestStageStatus::Running,
+        Some("正在测试网络连通性..."),
+        None,
+    );
+
     // 代理模式 Ping
     if test_proxy {
-        emit_progress(1, "Ping 测试", 15, SpeedTestStageStatus::Running, 
-                      Some("代理模式 Ping..."), Some("代理 Ping"));
+        emit_progress(
+            1,
+            "Ping 测试",
+            15,
+            SpeedTestStageStatus::Running,
+            Some("代理模式 Ping..."),
+            Some("代理 Ping"),
+        );
         if let Some(ref client) = proxy_client {
             let rounds = 3usize;
             let mut ok: Vec<u64> = Vec::with_capacity(rounds);
@@ -1954,7 +2286,13 @@ pub async fn test_acemcp_proxy_speed(
 
             if ok.is_empty() {
                 ping_metric.success = false;
-                append_error(&mut ping_metric.error, format!("代理 Ping 失败: {}", last_err.unwrap_or_else(|| "未知错误".to_string())));
+                append_error(
+                    &mut ping_metric.error,
+                    format!(
+                        "代理 Ping 失败: {}",
+                        last_err.unwrap_or_else(|| "未知错误".to_string())
+                    ),
+                );
             } else {
                 let avg = ok.iter().sum::<u64>() / ok.len() as u64;
                 ping_metric.proxy_time_ms = Some(avg);
@@ -1971,23 +2309,48 @@ pub async fn test_acemcp_proxy_speed(
                     );
                 }
             }
-            log::info!("📡 [SpeedTest] 代理 Ping 完成: avg={}ms, success={}/{}", 
-                       ping_metric.proxy_time_ms.unwrap_or(0), ok.len(), rounds);
-            
-            emit_progress(1, "Ping 测试", 20, SpeedTestStageStatus::Running, 
-                          Some(&format!("代理 Ping: avg={}ms, {}/{}", ping_metric.proxy_time_ms.unwrap_or(0), ok.len(), rounds)), 
-                          Some("代理 Ping 完成"));
+            log::info!(
+                "📡 [SpeedTest] 代理 Ping 完成: avg={}ms, success={}/{}",
+                ping_metric.proxy_time_ms.unwrap_or(0),
+                ok.len(),
+                rounds
+            );
+
+            emit_progress(
+                1,
+                "Ping 测试",
+                20,
+                SpeedTestStageStatus::Running,
+                Some(&format!(
+                    "代理 Ping: avg={}ms, {}/{}",
+                    ping_metric.proxy_time_ms.unwrap_or(0),
+                    ok.len(),
+                    rounds
+                )),
+                Some("代理 Ping 完成"),
+            );
         } else {
             ping_metric.success = false;
-            append_error(&mut ping_metric.error, "代理 Ping 跳过：代理 client 未初始化".to_string());
+            append_error(
+                &mut ping_metric.error,
+                "代理 Ping 跳过：代理 client 未初始化".to_string(),
+            );
         }
     }
-    
+
     // 直连模式 Ping
     if test_direct {
-        emit_progress(1, "Ping 测试", 25, SpeedTestStageStatus::Running, 
-                      Some("直连模式 Ping..."), Some("直连 Ping"));
-        let direct_client = direct_client.as_ref().ok_or_else(|| "直连 Ping 跳过：直连 client 未初始化".to_string())?;
+        emit_progress(
+            1,
+            "Ping 测试",
+            25,
+            SpeedTestStageStatus::Running,
+            Some("直连模式 Ping..."),
+            Some("直连 Ping"),
+        );
+        let direct_client = direct_client
+            .as_ref()
+            .ok_or_else(|| "直连 Ping 跳过：直连 client 未初始化".to_string())?;
         let rounds = 3usize;
         let mut ok: Vec<u64> = Vec::with_capacity(rounds);
         let mut last_err: Option<String> = None;
@@ -2001,7 +2364,13 @@ pub async fn test_acemcp_proxy_speed(
 
         if ok.is_empty() {
             ping_metric.success = false;
-            append_error(&mut ping_metric.error, format!("直连 Ping 失败: {}", last_err.unwrap_or_else(|| "未知错误".to_string())));
+            append_error(
+                &mut ping_metric.error,
+                format!(
+                    "直连 Ping 失败: {}",
+                    last_err.unwrap_or_else(|| "未知错误".to_string())
+                ),
+            );
         } else {
             let avg = ok.iter().sum::<u64>() / ok.len() as u64;
             ping_metric.direct_time_ms = Some(avg);
@@ -2018,29 +2387,50 @@ pub async fn test_acemcp_proxy_speed(
                 );
             }
         }
-        log::info!("📡 [SpeedTest] 直连 Ping 完成: avg={}ms, success={}/{}", 
-                   ping_metric.direct_time_ms.unwrap_or(0), ok.len(), rounds);
-        
-        emit_progress(1, "Ping 测试", 30, SpeedTestStageStatus::Running, 
-                      Some(&format!("直连 Ping: avg={}ms, {}/{}", ping_metric.direct_time_ms.unwrap_or(0), ok.len(), rounds)), 
-                      Some("直连 Ping 完成"));
+        log::info!(
+            "📡 [SpeedTest] 直连 Ping 完成: avg={}ms, success={}/{}",
+            ping_metric.direct_time_ms.unwrap_or(0),
+            ok.len(),
+            rounds
+        );
+
+        emit_progress(
+            1,
+            "Ping 测试",
+            30,
+            SpeedTestStageStatus::Running,
+            Some(&format!(
+                "直连 Ping: avg={}ms, {}/{}",
+                ping_metric.direct_time_ms.unwrap_or(0),
+                ok.len(),
+                rounds
+            )),
+            Some("直连 Ping 完成"),
+        );
     }
     metrics.push(ping_metric);
-    
+
     // Ping 阶段完成
-    emit_progress(1, "Ping 测试", 35, SpeedTestStageStatus::Completed, 
-                  Some(&format!("代理: {}ms, 直连: {}ms", 
-                               metrics.last().and_then(|m| m.proxy_time_ms).unwrap_or(0),
-                               metrics.last().and_then(|m| m.direct_time_ms).unwrap_or(0))), 
-                  None);
-    
+    emit_progress(
+        1,
+        "Ping 测试",
+        35,
+        SpeedTestStageStatus::Completed,
+        Some(&format!(
+            "代理: {}ms, 直连: {}ms",
+            metrics.last().and_then(|m| m.proxy_time_ms).unwrap_or(0),
+            metrics.last().and_then(|m| m.direct_time_ms).unwrap_or(0)
+        )),
+        None,
+    );
+
     // 2. 语义搜索测试（支持多条查询：按换行/分号分隔）
     let search_url = format!("{}/agents/codebase-retrieval", base_url);
-    
+
     // 从 projects.json 加载测试项目的 blob_names（与 mcp.rs::search_only 保持一致）
     let mut blob_names: Vec<String> = {
         use std::path::PathBuf;
-        
+
         let projects_path = super::mcp::home_projects_file();
         let projects: super::mcp::ProjectsFile = if projects_path.exists() {
             let data = std::fs::read_to_string(&projects_path).unwrap_or_default();
@@ -2048,18 +2438,25 @@ pub async fn test_acemcp_proxy_speed(
         } else {
             super::mcp::ProjectsFile::default()
         };
-        
+
         let normalized_root = PathBuf::from(&project_root_path)
             .canonicalize()
             .unwrap_or_else(|_| PathBuf::from(&project_root_path))
             .to_string_lossy()
             .replace('\\', "/");
-        
-        projects.0.get(&normalized_root).cloned().unwrap_or_default()
+
+        projects
+            .0
+            .get(&normalized_root)
+            .cloned()
+            .unwrap_or_default()
     };
 
-    let current_scope_hash = super::mcp::build_index_scope_hash(&super::AcemcpTool::get_acemcp_config().await
-        .map_err(|e| format!("获取 acemcp 配置失败: {}", e))?);
+    let current_scope_hash = super::mcp::build_index_scope_hash(
+        &super::AcemcpTool::get_acemcp_config()
+            .await
+            .map_err(|e| format!("获取 acemcp 配置失败: {}", e))?,
+    );
     let project_status = super::AcemcpTool::get_index_status(project_root_path.clone());
     let scope_changed = match current_scope_hash.as_deref() {
         Some(current_hash) => match project_status.index_scope_hash.as_deref() {
@@ -2073,9 +2470,12 @@ pub async fn test_acemcp_proxy_speed(
         log::warn!("⚠️ [SpeedTest] 检测到 ACE 配置变更，已忽略旧索引 blob 列表");
         blob_names.clear();
     }
-    
-    log::info!("🔍 [SpeedTest] 加载项目 blob_names: 数量={}", blob_names.len());
-    
+
+    log::info!(
+        "🔍 [SpeedTest] 加载项目 blob_names: 数量={}",
+        blob_names.len()
+    );
+
     if blob_names.is_empty() {
         log::warn!("⚠️ [SpeedTest] 项目未索引或索引为空，搜索测试可能返回空结果");
     }
@@ -2098,15 +2498,24 @@ pub async fn test_acemcp_proxy_speed(
         queries.truncate(MAX_QUERIES);
         log::warn!("⚠️ [SpeedTest] 查询数量超限，已截断为 {} 条", MAX_QUERIES);
     }
-    
+
     log::info!("🔍 [SpeedTest] === 阶段2: 语义搜索测试 ===");
     log::info!("🔍 [SpeedTest] 搜索 URL: {}", search_url);
     log::info!("🔍 [SpeedTest] 查询数量: {} 条", queries.len());
-    
+
     // 阶段2: 语义搜索开始
-    emit_progress(2, "语义搜索", 40, SpeedTestStageStatus::Running, 
-                  Some(&format!("查询数: {} 条, 索引: {} blobs", queries.len(), blob_names.len())), 
-                  None);
+    emit_progress(
+        2,
+        "语义搜索",
+        40,
+        SpeedTestStageStatus::Running,
+        Some(&format!(
+            "查询数: {} 条, 索引: {} blobs",
+            queries.len(),
+            blob_names.len()
+        )),
+        None,
+    );
 
     for q in queries {
         let display_q = if q.len() > 30 {
@@ -2114,7 +2523,7 @@ pub async fn test_acemcp_proxy_speed(
         } else {
             q.clone()
         };
-        
+
         log::debug!("🔎 [SpeedTest] 执行搜索: {}", display_q);
 
         let mut search_metric = SpeedTestMetric {
@@ -2130,7 +2539,7 @@ pub async fn test_acemcp_proxy_speed(
         let search_payload = serde_json::json!({
             "information_request": q,
             "blobs": {
-                "checkpoint_id": serde_json::Value::Null, 
+                "checkpoint_id": serde_json::Value::Null,
                 "added_blobs": blob_names.clone(),  // 使用已索引的 blob_names
                 "deleted_blobs": []
             },
@@ -2165,7 +2574,9 @@ pub async fn test_acemcp_proxy_speed(
 
         // 直连模式搜索
         if test_direct {
-            let direct_client = direct_client.as_ref().ok_or_else(|| "直连搜索跳过：直连 client 未初始化".to_string())?;
+            let direct_client = direct_client
+                .as_ref()
+                .ok_or_else(|| "直连搜索跳过：直连 client 未初始化".to_string())?;
             match search_endpoint(direct_client, &search_url, &token, &search_payload).await {
                 Ok(result) => {
                     search_metric.direct_time_ms = Some(result.elapsed_ms);
@@ -2182,16 +2593,25 @@ pub async fn test_acemcp_proxy_speed(
                 }
             }
         }
-        
-        log::info!("🔍 [SpeedTest] 搜索完成 '{}': proxy={}ms, direct={}ms", 
-                   display_q, 
-                   search_metric.proxy_time_ms.map_or("-".to_string(), |v| v.to_string()),
-                   search_metric.direct_time_ms.map_or("-".to_string(), |v| v.to_string()));
-        
+
+        log::info!(
+            "🔍 [SpeedTest] 搜索完成 '{}': proxy={}ms, direct={}ms",
+            display_q,
+            search_metric
+                .proxy_time_ms
+                .map_or("-".to_string(), |v| v.to_string()),
+            search_metric
+                .direct_time_ms
+                .map_or("-".to_string(), |v| v.to_string())
+        );
+
         // 输出搜索结果预览摘要
         if let Some(ref preview) = search_metric.search_result_preview {
-            log::info!("📄 [SpeedTest] 搜索结果: 匹配数={}, 响应长度={}B", 
-                       preview.total_matches, preview.response_length);
+            log::info!(
+                "📄 [SpeedTest] 搜索结果: 匹配数={}, 响应长度={}B",
+                preview.total_matches,
+                preview.response_length
+            );
             // 输出第一个片段的预览（截断显示）
             if let Some(first_snippet) = preview.snippets.first() {
                 let snippet_preview = if first_snippet.snippet.len() > 100 {
@@ -2201,8 +2621,11 @@ pub async fn test_acemcp_proxy_speed(
                 };
                 // 去除换行符以便日志更整洁
                 let snippet_oneline = snippet_preview.replace('\n', " ↵ ");
-                log::debug!("📝 [SpeedTest] 首个片段: file={}, content={}", 
-                           first_snippet.file_path, snippet_oneline);
+                log::debug!(
+                    "📝 [SpeedTest] 首个片段: file={}, content={}",
+                    first_snippet.file_path,
+                    snippet_oneline
+                );
             }
         } else {
             log::debug!("📝 [SpeedTest] 未获取到搜索结果预览");
@@ -2210,10 +2633,16 @@ pub async fn test_acemcp_proxy_speed(
 
         metrics.push(search_metric);
     }
-    
+
     // 阶段2: 语义搜索完成
-    emit_progress(2, "语义搜索", 55, SpeedTestStageStatus::Completed, 
-                  Some("所有搜索查询完成"), None);
+    emit_progress(
+        2,
+        "语义搜索",
+        55,
+        SpeedTestStageStatus::Completed,
+        Some("所有搜索查询完成"),
+        None,
+    );
 
     // 3. 单文件上传测试（真实走 /batch-upload）
     let mut upload_single_metric = SpeedTestMetric {
@@ -2225,12 +2654,18 @@ pub async fn test_acemcp_proxy_speed(
         error: None,
         search_result_preview: None,
     };
-    
+
     log::info!("📤 [SpeedTest] === 阶段3: 单文件上传测试 ===");
-    
+
     // 阶段3: 单文件上传开始
-    emit_progress(3, "单文件上传", 60, SpeedTestStageStatus::Running, 
-                  Some("正在上传测试文件..."), None);
+    emit_progress(
+        3,
+        "单文件上传",
+        60,
+        SpeedTestStageStatus::Running,
+        Some("正在上传测试文件..."),
+        None,
+    );
 
     if let Some(err) = project_files_error.clone() {
         upload_single_metric.success = false;
@@ -2240,7 +2675,11 @@ pub async fn test_acemcp_proxy_speed(
         if !pfs.files.is_empty() {
             let random_index = fastrand::usize(0..pfs.files.len());
             let file = &pfs.files[random_index];
-            match build_single_file_blobs_for_speed_test(&project_root_path, &file.path, max_lines_per_blob) {
+            match build_single_file_blobs_for_speed_test(
+                &project_root_path,
+                &file.path,
+                max_lines_per_blob,
+            ) {
                 Ok((blobs, file_bytes)) => {
                     let upload_url = format!("{}/batch-upload", base_url);
                     upload_single_metric.name = format!(
@@ -2248,32 +2687,50 @@ pub async fn test_acemcp_proxy_speed(
                         format_bytes(file_bytes),
                         blobs.len()
                     );
-                    
-                    log::debug!("📤 [SpeedTest] 单文件: path={}, size={}, blobs={}", 
-                               file.path, format_bytes(file_bytes), blobs.len());
+
+                    log::debug!(
+                        "📤 [SpeedTest] 单文件: path={}, size={}, blobs={}",
+                        file.path,
+                        format_bytes(file_bytes),
+                        blobs.len()
+                    );
 
                     if test_proxy {
                         if let Some(ref client) = proxy_client {
-                            match upload_blobs_batch(client, &upload_url, &token, &blobs, 120).await {
+                            match upload_blobs_batch(client, &upload_url, &token, &blobs, 120).await
+                            {
                                 Ok(ms) => upload_single_metric.proxy_time_ms = Some(ms),
                                 Err(e) => {
                                     upload_single_metric.success = false;
-                                    append_error(&mut upload_single_metric.error, format!("代理上传失败: {}", e));
+                                    append_error(
+                                        &mut upload_single_metric.error,
+                                        format!("代理上传失败: {}", e),
+                                    );
                                 }
                             }
                         } else {
                             upload_single_metric.success = false;
-                            append_error(&mut upload_single_metric.error, "代理上传跳过：代理 client 未初始化".to_string());
+                            append_error(
+                                &mut upload_single_metric.error,
+                                "代理上传跳过：代理 client 未初始化".to_string(),
+                            );
                         }
                     }
 
                     if test_direct {
-                        let direct_client = direct_client.as_ref().ok_or_else(|| "直连上传跳过：直连 client 未初始化".to_string())?;
-                        match upload_blobs_batch(direct_client, &upload_url, &token, &blobs, 120).await {
+                        let direct_client = direct_client
+                            .as_ref()
+                            .ok_or_else(|| "直连上传跳过：直连 client 未初始化".to_string())?;
+                        match upload_blobs_batch(direct_client, &upload_url, &token, &blobs, 120)
+                            .await
+                        {
                             Ok(ms) => upload_single_metric.direct_time_ms = Some(ms),
                             Err(e) => {
                                 upload_single_metric.success = false;
-                                append_error(&mut upload_single_metric.error, format!("直连上传失败: {}", e));
+                                append_error(
+                                    &mut upload_single_metric.error,
+                                    format!("直连上传失败: {}", e),
+                                );
                             }
                         }
                     }
@@ -2285,17 +2742,25 @@ pub async fn test_acemcp_proxy_speed(
             }
         } else {
             upload_single_metric.success = false;
-            upload_single_metric.error = Some("测试项目没有可用文件，已跳过单文件上传测试".to_string());
+            upload_single_metric.error =
+                Some("测试项目没有可用文件，已跳过单文件上传测试".to_string());
         }
     }
     metrics.push(upload_single_metric);
-    
+
     // 阶段3: 单文件上传完成
-    emit_progress(3, "单文件上传", 70, SpeedTestStageStatus::Completed, 
-                  Some(&format!("代理: {}ms, 直连: {}ms", 
-                               metrics.last().and_then(|m| m.proxy_time_ms).unwrap_or(0),
-                               metrics.last().and_then(|m| m.direct_time_ms).unwrap_or(0))), 
-                  None);
+    emit_progress(
+        3,
+        "单文件上传",
+        70,
+        SpeedTestStageStatus::Completed,
+        Some(&format!(
+            "代理: {}ms, 直连: {}ms",
+            metrics.last().and_then(|m| m.proxy_time_ms).unwrap_or(0),
+            metrics.last().and_then(|m| m.direct_time_ms).unwrap_or(0)
+        )),
+        None,
+    );
 
     // 4. 项目上传测试（按策略：采样/全量）
     let mut upload_project_metric = SpeedTestMetric {
@@ -2307,15 +2772,26 @@ pub async fn test_acemcp_proxy_speed(
         error: None,
         search_result_preview: None,
     };
-    
+
     log::info!("📦 [SpeedTest] === 阶段4: 项目上传测试 ===");
-    log::info!("📦 [SpeedTest] 上传模式: {}, 文件上限: {:?}", 
-               project_upload_mode, project_upload_max_files_limit);
-    
+    log::info!(
+        "📦 [SpeedTest] 上传模式: {}, 文件上限: {:?}",
+        project_upload_mode,
+        project_upload_max_files_limit
+    );
+
     // 阶段4: 项目上传开始
-    emit_progress(4, "项目上传", 75, SpeedTestStageStatus::Running, 
-                  Some(&format!("模式: {}, 文件上限: {:?}", project_upload_mode, project_upload_max_files_limit)), 
-                  None);
+    emit_progress(
+        4,
+        "项目上传",
+        75,
+        SpeedTestStageStatus::Running,
+        Some(&format!(
+            "模式: {}, 文件上限: {:?}",
+            project_upload_mode, project_upload_max_files_limit
+        )),
+        None,
+    );
 
     if let Some(err) = project_files_error.clone() {
         upload_project_metric.success = false;
@@ -2345,17 +2821,25 @@ pub async fn test_acemcp_proxy_speed(
                     }
                     Err(e) => {
                         upload_project_metric.success = false;
-                        append_error(&mut upload_project_metric.error, format!("代理项目上传失败: {}", e));
+                        append_error(
+                            &mut upload_project_metric.error,
+                            format!("代理项目上传失败: {}", e),
+                        );
                     }
                 }
             } else {
                 upload_project_metric.success = false;
-                append_error(&mut upload_project_metric.error, "代理项目上传跳过：代理 client 未初始化".to_string());
+                append_error(
+                    &mut upload_project_metric.error,
+                    "代理项目上传跳过：代理 client 未初始化".to_string(),
+                );
             }
         }
 
         if test_direct {
-            let direct_client = direct_client.as_ref().ok_or_else(|| "直连项目上传跳过：直连 client 未初始化".to_string())?;
+            let direct_client = direct_client
+                .as_ref()
+                .ok_or_else(|| "直连项目上传跳过：直连 client 未初始化".to_string())?;
             match upload_project_for_speed_test(
                 direct_client,
                 &base_url,
@@ -2376,7 +2860,10 @@ pub async fn test_acemcp_proxy_speed(
                 }
                 Err(e) => {
                     upload_project_metric.success = false;
-                    append_error(&mut upload_project_metric.error, format!("直连项目上传失败: {}", e));
+                    append_error(
+                        &mut upload_project_metric.error,
+                        format!("直连项目上传失败: {}", e),
+                    );
                 }
             }
         }
@@ -2396,33 +2883,52 @@ pub async fn test_acemcp_proxy_speed(
 
             if r.skipped_files > 0 {
                 upload_project_metric.success = false;
-                append_error(&mut upload_project_metric.error, format!("读取失败文件: {} 个", r.skipped_files));
+                append_error(
+                    &mut upload_project_metric.error,
+                    format!("读取失败文件: {} 个", r.skipped_files),
+                );
                 if let Some(e) = r.first_error {
                     append_error(&mut upload_project_metric.error, e);
                 }
             }
 
             if r.truncated {
-                append_error(&mut upload_project_metric.error, "已按采样上限截断文件数量".to_string());
+                append_error(
+                    &mut upload_project_metric.error,
+                    "已按采样上限截断文件数量".to_string(),
+                );
             }
         }
     }
     metrics.push(upload_project_metric);
-    
+
     // 阶段4: 项目上传完成
-    emit_progress(4, "项目上传", 90, SpeedTestStageStatus::Completed, 
-                  Some(&format!("代理: {}ms, 直连: {}ms", 
-                               metrics.last().and_then(|m| m.proxy_time_ms).unwrap_or(0),
-                               metrics.last().and_then(|m| m.direct_time_ms).unwrap_or(0))), 
-                  None);
-    
+    emit_progress(
+        4,
+        "项目上传",
+        90,
+        SpeedTestStageStatus::Completed,
+        Some(&format!(
+            "代理: {}ms, 直连: {}ms",
+            metrics.last().and_then(|m| m.proxy_time_ms).unwrap_or(0),
+            metrics.last().and_then(|m| m.direct_time_ms).unwrap_or(0)
+        )),
+        None,
+    );
+
     // 阶段5: 生成报告
-    emit_progress(5, "生成报告", 95, SpeedTestStageStatus::Running, 
-                  Some("正在生成诊断报告..."), None);
-    
+    emit_progress(
+        5,
+        "生成报告",
+        95,
+        SpeedTestStageStatus::Running,
+        Some("正在生成诊断报告..."),
+        None,
+    );
+
     log::info!("📊 [SpeedTest] === 测试完成，生成报告 ===");
     log::info!("📊 [SpeedTest] 总指标数: {}", metrics.len());
-    
+
     // 生成推荐建议（附带成功率与失败摘要）
     let mut recommendation = generate_recommendation(&metrics, &test_mode);
     let all_success = metrics.iter().all(|m| m.success);
@@ -2437,7 +2943,10 @@ pub async fn test_acemcp_proxy_speed(
     }
 
     if test_direct {
-        let ok_direct = metrics.iter().filter(|m| m.direct_time_ms.is_some()).count();
+        let ok_direct = metrics
+            .iter()
+            .filter(|m| m.direct_time_ms.is_some())
+            .count();
         recommendation = format!("{} | 直连成功: {}/{}", recommendation, ok_direct, total);
     }
 
@@ -2449,13 +2958,16 @@ pub async fn test_acemcp_proxy_speed(
                     err_short.truncate(120);
                     err_short.push_str("...");
                 }
-                recommendation = format!("{} | 失败示例: {} - {}", recommendation, first_fail.name, err_short);
+                recommendation = format!(
+                    "{} | 失败示例: {} - {}",
+                    recommendation, first_fail.name, err_short
+                );
             } else {
                 recommendation = format!("{} | 存在失败项", recommendation);
             }
         }
     }
-    
+
     let result = ProxySpeedTestResult {
         mode: test_mode,
         proxy_info,
@@ -2464,24 +2976,41 @@ pub async fn test_acemcp_proxy_speed(
         recommendation,
         success: all_success,
     };
-    
-    log::info!("✅ [SpeedTest] 代理测速完成: success={}, metrics={}, recommendation={}", 
-               all_success, result.metrics.len(), result.recommendation);
-    
+
+    log::info!(
+        "✅ [SpeedTest] 代理测速完成: success={}, metrics={}, recommendation={}",
+        all_success,
+        result.metrics.len(),
+        result.recommendation
+    );
+
     // 输出每个指标的详细结果
     for (i, m) in result.metrics.iter().enumerate() {
-        log::debug!("📈 [SpeedTest] 指标[{}] {}: proxy={}ms, direct={}ms, success={}",
-                   i, m.name,
-                   m.proxy_time_ms.map_or("-".to_string(), |v| v.to_string()),
-                   m.direct_time_ms.map_or("-".to_string(), |v| v.to_string()),
-                   m.success);
+        log::debug!(
+            "📈 [SpeedTest] 指标[{}] {}: proxy={}ms, direct={}ms, success={}",
+            i,
+            m.name,
+            m.proxy_time_ms.map_or("-".to_string(), |v| v.to_string()),
+            m.direct_time_ms.map_or("-".to_string(), |v| v.to_string()),
+            m.success
+        );
     }
-    
+
     // 阶段5: 全部完成
-    let final_status = if all_success { SpeedTestStageStatus::Completed } else { SpeedTestStageStatus::Failed };
-    emit_progress(5, "生成报告", 100, final_status, 
-                  Some(&format!("成功率: {}/{}", ok, total)), None);
-    
+    let final_status = if all_success {
+        SpeedTestStageStatus::Completed
+    } else {
+        SpeedTestStageStatus::Failed
+    };
+    emit_progress(
+        5,
+        "生成报告",
+        100,
+        final_status,
+        Some(&format!("成功率: {}/{}", ok, total)),
+        None,
+    );
+
     Ok(result)
 }
 
@@ -2489,7 +3018,7 @@ pub async fn test_acemcp_proxy_speed(
 /// 支持：HTTP / HTTPS / SOCKS5 代理 + Basic Auth
 #[derive(Debug, Clone)]
 struct ProxySettings {
-    proxy_type: String,           // "http" | "https" | "socks5"
+    proxy_type: String, // "http" | "https" | "socks5"
     host: String,
     port: u16,
     username: Option<String>,
@@ -2502,7 +3031,12 @@ impl ProxySettings {
         // 校验代理类型，避免拼接出无效 URL
         match self.proxy_type.as_str() {
             "http" | "https" | "socks5" => {}
-            other => return Err(format!("不支持的代理类型: {}（仅支持 http/https/socks5）", other)),
+            other => {
+                return Err(format!(
+                    "不支持的代理类型: {}（仅支持 http/https/socks5）",
+                    other
+                ))
+            }
         }
 
         if self.host.trim().is_empty() {
@@ -2510,8 +3044,8 @@ impl ProxySettings {
         }
 
         let proxy_url = format!("{}://{}:{}", self.proxy_type, self.host.trim(), self.port);
-        let mut reqwest_proxy = reqwest::Proxy::all(&proxy_url)
-            .map_err(|e| format!("创建代理失败: {}", e))?;
+        let mut reqwest_proxy =
+            reqwest::Proxy::all(&proxy_url).map_err(|e| format!("创建代理失败: {}", e))?;
 
         // 代理认证（Basic Auth）
         if let Some(username) = self.username.as_deref() {
@@ -2538,11 +3072,12 @@ fn read_file_with_encoding_for_speed_test(path: &std::path::Path) -> Result<Stri
     use std::fs;
     use std::io::Read;
 
-    use encoding_rs::{GBK, WINDOWS_1252, UTF_8};
+    use encoding_rs::{GBK, UTF_8, WINDOWS_1252};
 
     let mut file = fs::File::open(path).map_err(|e| format!("打开文件失败: {}", e))?;
     let mut buf = Vec::new();
-    file.read_to_end(&mut buf).map_err(|e| format!("读取文件失败: {}", e))?;
+    file.read_to_end(&mut buf)
+        .map_err(|e| format!("读取文件失败: {}", e))?;
 
     // 尝试 utf-8
     let (decoded, _, had_errors) = UTF_8.decode(&buf);
@@ -2566,7 +3101,10 @@ fn read_file_with_encoding_for_speed_test(path: &std::path::Path) -> Result<Stri
 
     // 降级：utf-8 lossy
     let (decoded, _, _) = UTF_8.decode(&buf);
-    log::debug!("测速读取文件：使用 UTF-8 (lossy)，部分字符可能丢失: {:?}", path);
+    log::debug!(
+        "测速读取文件：使用 UTF-8 (lossy)，部分字符可能丢失: {:?}",
+        path
+    );
     Ok(decoded.into_owned())
 }
 
@@ -2604,9 +3142,14 @@ fn split_content_for_speed_test(path: &str, content: &str, max_lines: usize) -> 
 
 /// 构建测速用 HTTP Client（支持代理 + connect_timeout）
 /// 说明：测速过程中会多次请求，如果每次都 build client 会有额外开销
-fn build_speed_test_client(proxy: Option<&ProxySettings>, timeout_secs: u64) -> Result<reqwest::Client, String> {
+fn build_speed_test_client(
+    proxy: Option<&ProxySettings>,
+    timeout_secs: u64,
+) -> Result<reqwest::Client, String> {
     let mut client_builder = reqwest::Client::builder()
-        .connect_timeout(std::time::Duration::from_millis(crate::constants::network::CONNECTION_TIMEOUT_MS))
+        .connect_timeout(std::time::Duration::from_millis(
+            crate::constants::network::CONNECTION_TIMEOUT_MS,
+        ))
         .timeout(std::time::Duration::from_secs(timeout_secs));
 
     if let Some(p) = proxy {
@@ -2796,10 +3339,10 @@ fn build_single_file_blobs_for_speed_test(
 /// 注意：使用 GET 方法而非 HEAD，因为部分 ACE 服务器的 /health 端点不支持 HEAD 方法（返回 405）
 async fn ping_endpoint(client: &reqwest::Client, url: &str, token: &str) -> Result<u64, String> {
     log::debug!("🔗 [Ping] 开始请求: url={}", url);
-    
+
     let start = std::time::Instant::now();
     let response = client
-        .get(url)  // 使用 GET 方法代替 HEAD，解决 HTTP 405 Method Not Allowed 问题
+        .get(url) // 使用 GET 方法代替 HEAD，解决 HTTP 405 Method Not Allowed 问题
         .timeout(std::time::Duration::from_secs(10))
         .header(reqwest::header::AUTHORIZATION, format!("Bearer {}", token))
         .send()
@@ -2808,12 +3351,17 @@ async fn ping_endpoint(client: &reqwest::Client, url: &str, token: &str) -> Resu
             log::warn!("❌ [Ping] 请求失败: url={}, error={}", url, e);
             format!("请求失败: {}", e)
         })?;
-    
+
     let elapsed = start.elapsed().as_millis() as u64;
     let status = response.status();
-    
-    log::debug!("✅ [Ping] 响应: url={}, status={}, elapsed={}ms", url, status, elapsed);
-    
+
+    log::debug!(
+        "✅ [Ping] 响应: url={}, status={}, elapsed={}ms",
+        url,
+        status,
+        elapsed
+    );
+
     if status.is_success() || status.as_u16() == 404 {
         // 404 也算成功，因为只是测试连通性
         // 2xx 成功响应 或 404 表示端点存在但资源不存在，连通性正常
@@ -2832,7 +3380,12 @@ struct SearchEndpointResult {
 
 /// 搜索测试辅助函数
 /// 返回耗时和搜索结果预览（用于前端展示）
-async fn search_endpoint(client: &reqwest::Client, url: &str, token: &str, payload: &serde_json::Value) -> Result<SearchEndpointResult, String> {
+async fn search_endpoint(
+    client: &reqwest::Client,
+    url: &str,
+    token: &str,
+    payload: &serde_json::Value,
+) -> Result<SearchEndpointResult, String> {
     let start = std::time::Instant::now();
     let response = client
         .post(url)
@@ -2843,16 +3396,16 @@ async fn search_endpoint(client: &reqwest::Client, url: &str, token: &str, paylo
         .send()
         .await
         .map_err(|e| format!("请求失败: {}", e))?;
-    
+
     let elapsed = start.elapsed().as_millis() as u64;
-    
+
     if !response.status().is_success() {
         return Err(format!("HTTP {}", response.status()));
     }
-    
+
     // 解析响应内容，提取搜索结果预览
     let body = response.text().await.unwrap_or_default();
-    
+
     // 输出原始响应内容用于调试（截断显示）
     let body_preview = if body.len() > 500 {
         format!("{}... (total {}B)", &body[..500], body.len())
@@ -2860,9 +3413,9 @@ async fn search_endpoint(client: &reqwest::Client, url: &str, token: &str, paylo
         body.clone()
     };
     log::debug!("🔍 [SpeedTest] 搜索原始响应: {}", body_preview);
-    
+
     let preview = parse_search_result_preview(&body);
-    
+
     Ok(SearchEndpointResult {
         elapsed_ms: elapsed,
         preview,
@@ -2872,15 +3425,18 @@ async fn search_endpoint(client: &reqwest::Client, url: &str, token: &str, paylo
 /// 解析搜索结果响应，提取预览片段
 fn parse_search_result_preview(body: &str) -> Option<super::types::SearchResultPreview> {
     use super::types::{SearchResultPreview, SearchResultSnippet};
-    
+
     let response_length = body.len();
-    
+
     // 尝试解析 JSON 响应
     let json: serde_json::Value = match serde_json::from_str(body) {
         Ok(v) => v,
         Err(e) => {
-            log::warn!("⚠️ [SpeedTest] 搜索响应不是有效 JSON: error={}, body={}", e, 
-                      if body.len() > 100 { &body[..100] } else { body });
+            log::warn!(
+                "⚠️ [SpeedTest] 搜索响应不是有效 JSON: error={}, body={}",
+                e,
+                if body.len() > 100 { &body[..100] } else { body }
+            );
             // 如果不是 JSON，返回基本信息
             return Some(SearchResultPreview {
                 total_matches: 0,
@@ -2889,21 +3445,24 @@ fn parse_search_result_preview(body: &str) -> Option<super::types::SearchResultP
             });
         }
     };
-    
+
     // 输出 JSON 顶层键用于调试
     if let Some(obj) = json.as_object() {
         let keys: Vec<&str> = obj.keys().map(|s| s.as_str()).collect();
         log::debug!("🔍 [SpeedTest] JSON 顶层键: {:?}", keys);
     }
-    
+
     // ACE API 返回的搜索结果在 formatted_retrieval 字段中（字符串格式）
     let mut snippets = Vec::new();
     let mut total_matches = 0;
-    
+
     // 优先检查 formatted_retrieval 字段（ACE API 的标准搜索结果字段）
     if let Some(formatted) = json.get("formatted_retrieval").and_then(|v| v.as_str()) {
-        log::debug!("🔍 [SpeedTest] 发现 formatted_retrieval 字段, 长度={}", formatted.len());
-        
+        log::debug!(
+            "🔍 [SpeedTest] 发现 formatted_retrieval 字段, 长度={}",
+            formatted.len()
+        );
+
         if !formatted.is_empty() && formatted != "No relevant code context found for your query." {
             // 跳过 ACE 标题行（如 "The following code sections were retrieved:"）
             let content = formatted
@@ -2911,16 +3470,16 @@ fn parse_search_result_preview(body: &str) -> Option<super::types::SearchResultP
                 .or_else(|| formatted.strip_prefix("The following code sections were retrieved:\n"))
                 .unwrap_or(formatted)
                 .trim();
-            
+
             log::debug!("🔍 [SpeedTest] 处理后内容长度={}", content.len());
-            
+
             // ACE 格式通常是按 "---" 分隔的多个代码块
             // 每个块包含文件路径和代码内容
             let blocks: Vec<&str> = content
                 .split("\n---\n")
                 .filter(|b| !b.trim().is_empty() && b.len() > 10)
                 .collect();
-            
+
             // 如果没有 --- 分隔，尝试按双空行分隔
             let blocks = if blocks.len() <= 1 {
                 content
@@ -2930,16 +3489,16 @@ fn parse_search_result_preview(body: &str) -> Option<super::types::SearchResultP
             } else {
                 blocks
             };
-            
+
             total_matches = blocks.len().max(1); // 至少有一个匹配
             log::debug!("🔍 [SpeedTest] 分割出 {} 个代码块", blocks.len());
-            
+
             for block in blocks.iter().take(5) {
                 let lines: Vec<&str> = block.lines().collect();
                 if lines.is_empty() {
                     continue;
                 }
-                
+
                 // 尝试从第一行提取文件路径
                 // ACE 格式可能是 "Path: xxx" 或 "File: xxx" 或直接是路径
                 let first_line = lines.first().unwrap_or(&"");
@@ -2950,9 +3509,13 @@ fn parse_search_result_preview(body: &str) -> Option<super::types::SearchResultP
                     .or_else(|| first_line.strip_prefix("## "))
                     .or_else(|| {
                         // 如果第一行看起来是文件路径（包含 / 或 \ 或常见扩展名）
-                        if first_line.contains('/') || first_line.contains('\\') 
-                           || first_line.ends_with(".rs") || first_line.ends_with(".ts")
-                           || first_line.ends_with(".vue") || first_line.ends_with(".py") {
+                        if first_line.contains('/')
+                            || first_line.contains('\\')
+                            || first_line.ends_with(".rs")
+                            || first_line.ends_with(".ts")
+                            || first_line.ends_with(".vue")
+                            || first_line.ends_with(".py")
+                        {
                             Some(*first_line)
                         } else {
                             None
@@ -2961,28 +3524,34 @@ fn parse_search_result_preview(body: &str) -> Option<super::types::SearchResultP
                     .unwrap_or("代码片段")
                     .trim()
                     .to_string();
-                
+
                 // 提取代码片段（去除路径行，取前20行）
-                let snippet: String = lines.iter()
+                let snippet: String = lines
+                    .iter()
                     .skip(1)
                     .take(20)
                     .copied()
                     .collect::<Vec<_>>()
                     .join("\n");
-                
+
                 let snippet_content = if snippet.is_empty() || snippet.len() < 10 {
                     // 如果没有内容，使用整个块（可能第一行不是路径）
-                    lines.iter().take(20).copied().collect::<Vec<_>>().join("\n")
+                    lines
+                        .iter()
+                        .take(20)
+                        .copied()
+                        .collect::<Vec<_>>()
+                        .join("\n")
                 } else {
                     snippet
                 };
-                
+
                 // 跳过只有标题的块
-                if snippet_content.trim().is_empty() 
-                   || snippet_content.starts_with("The following") {
+                if snippet_content.trim().is_empty() || snippet_content.starts_with("The following")
+                {
                     continue;
                 }
-                
+
                 snippets.push(SearchResultSnippet {
                     file_path,
                     snippet: if snippet_content.len() > 800 {
@@ -2994,11 +3563,14 @@ fn parse_search_result_preview(body: &str) -> Option<super::types::SearchResultP
                 });
             }
         }
-        
+
         // 如果成功解析了 formatted_retrieval，直接返回
         if total_matches > 0 || !snippets.is_empty() {
-            log::info!("🔍 [SpeedTest] 从 formatted_retrieval 解析: matches={}, snippets={}", 
-                      total_matches, snippets.len());
+            log::info!(
+                "🔍 [SpeedTest] 从 formatted_retrieval 解析: matches={}, snippets={}",
+                total_matches,
+                snippets.len()
+            );
             return Some(SearchResultPreview {
                 total_matches,
                 snippets,
@@ -3006,9 +3578,9 @@ fn parse_search_result_preview(body: &str) -> Option<super::types::SearchResultP
             });
         }
     }
-    
+
     // 回退：尝试从其他字段提取（兼容其他 API 格式）
-    
+
     // 尝试从不同的 JSON 结构中提取结果
     if let Some(content) = json.get("content") {
         // 如果是字符串类型的内容，提取代码片段
@@ -3020,21 +3592,23 @@ fn parse_search_result_preview(body: &str) -> Option<super::types::SearchResultP
                 if lines.is_empty() {
                     continue;
                 }
-                
+
                 // 尝试提取文件路径
-                let file_path = lines.first()
+                let file_path = lines
+                    .first()
                     .and_then(|l| l.strip_prefix("Path: "))
                     .unwrap_or("unknown")
                     .to_string();
-                
+
                 // 提取代码片段（去除路径行，最多5行）
-                let snippet: String = lines.iter()
+                let snippet: String = lines
+                    .iter()
                     .skip(1)
                     .take(5)
                     .map(|s| *s)
                     .collect::<Vec<_>>()
                     .join("\n");
-                
+
                 if !snippet.is_empty() {
                     snippets.push(SearchResultSnippet {
                         file_path,
@@ -3054,16 +3628,14 @@ fn parse_search_result_preview(body: &str) -> Option<super::types::SearchResultP
             for item in arr.iter().take(3) {
                 if let Some(text_item) = item.get("text").and_then(|t| t.as_str()) {
                     // 尝试从文本中提取文件路径
-                    let file_path = text_item.lines()
+                    let file_path = text_item
+                        .lines()
                         .find(|l| l.starts_with("Path: ") || l.contains(".rs") || l.contains(".ts"))
                         .unwrap_or("unknown")
                         .to_string();
-                    
-                    let snippet = text_item.lines()
-                        .take(5)
-                        .collect::<Vec<_>>()
-                        .join("\n");
-                    
+
+                    let snippet = text_item.lines().take(5).collect::<Vec<_>>().join("\n");
+
                     snippets.push(SearchResultSnippet {
                         file_path,
                         snippet: if snippet.len() > 200 {
@@ -3077,29 +3649,32 @@ fn parse_search_result_preview(body: &str) -> Option<super::types::SearchResultP
             }
         }
     }
-    
+
     // 尝试从 results 字段提取
     if snippets.is_empty() {
         if let Some(results) = json.get("results").and_then(|r| r.as_array()) {
             total_matches = results.len();
             for result in results.iter().take(3) {
-                let file_path = result.get("path")
+                let file_path = result
+                    .get("path")
                     .or_else(|| result.get("file"))
                     .and_then(|p| p.as_str())
                     .unwrap_or("unknown")
                     .to_string();
-                
-                let snippet = result.get("content")
+
+                let snippet = result
+                    .get("content")
                     .or_else(|| result.get("snippet"))
                     .and_then(|c| c.as_str())
                     .unwrap_or("")
                     .to_string();
-                
-                let line_number = result.get("line")
+
+                let line_number = result
+                    .get("line")
                     .or_else(|| result.get("line_number"))
                     .and_then(|l| l.as_u64())
                     .map(|l| l as u32);
-                
+
                 if !snippet.is_empty() {
                     snippets.push(SearchResultSnippet {
                         file_path,
@@ -3114,7 +3689,7 @@ fn parse_search_result_preview(body: &str) -> Option<super::types::SearchResultP
             }
         }
     }
-    
+
     Some(SearchResultPreview {
         total_matches,
         snippets,
@@ -3127,12 +3702,12 @@ fn generate_recommendation(metrics: &[SpeedTestMetric], mode: &str) -> String {
     if mode != "compare" {
         return "单模式测试完成".to_string();
     }
-    
+
     let mut proxy_total: u64 = 0;
     let mut direct_total: u64 = 0;
     let mut proxy_count = 0;
     let mut direct_count = 0;
-    
+
     for m in metrics {
         if let Some(pt) = m.proxy_time_ms {
             proxy_total += pt;
@@ -3143,14 +3718,14 @@ fn generate_recommendation(metrics: &[SpeedTestMetric], mode: &str) -> String {
             direct_count += 1;
         }
     }
-    
+
     if proxy_count == 0 || direct_count == 0 {
         return "无法对比，部分测试失败".to_string();
     }
-    
+
     let proxy_avg = proxy_total / proxy_count as u64;
     let direct_avg = direct_total / direct_count as u64;
-    
+
     if proxy_avg < direct_avg {
         let improvement = ((direct_avg - proxy_avg) as f64 / direct_avg as f64 * 100.0) as u32;
         format!("🟢 建议启用代理，性能提升约 {}%", improvement)

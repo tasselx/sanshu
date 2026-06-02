@@ -1,14 +1,14 @@
 // MCP 工具入口
 // 将提示词增强功能注册为 MCP 工具，供 AI 编辑器直接调用
 
+use rmcp::model::{CallToolResult, Content, ErrorData as McpError, Tool};
+use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::sync::Arc;
-use rmcp::model::{Tool, CallToolResult, Content, ErrorData as McpError};
-use serde::{Deserialize, Serialize};
 
-use super::types::*;
 use super::core::PromptEnhancer;
 use super::history::ChatHistoryManager;
+use super::types::*;
 use crate::log_important;
 
 /// MCP 增强工具请求参数
@@ -72,7 +72,11 @@ impl EnhanceTool {
 
     /// 执行增强
     pub async fn enhance(request: EnhanceMcpRequest) -> Result<CallToolResult, McpError> {
-        log_important!(info, "MCP enhance 工具被调用: prompt_len={}", request.prompt.len());
+        log_important!(
+            info,
+            "MCP enhance 工具被调用: prompt_len={}",
+            request.prompt.len()
+        );
 
         // 创建增强器
         let enhancer = match PromptEnhancer::from_acemcp_config().await {
@@ -85,7 +89,7 @@ impl EnhanceTool {
             Err(e) => {
                 return Err(McpError::internal_error(
                     format!("初始化增强器失败: {}", e),
-                    None
+                    None,
                 ));
             }
         };
@@ -115,16 +119,14 @@ impl EnhanceTool {
                             let _ = manager.add_entry(
                                 &request.prompt,
                                 &response.enhanced_prompt,
-                                "mcp"
+                                "mcp",
                             );
                         }
                     }
                     // 成功：返回增强后的提示词
                     let result_text = format!(
                         "## 增强后的提示词\n\n{}\n\n---\n*使用了 {} 个代码上下文块，{} 条对话历史*",
-                        response.enhanced_prompt,
-                        response.blob_count,
-                        response.history_count
+                        response.enhanced_prompt, response.blob_count, response.history_count
                     );
                     Ok(CallToolResult::success(vec![Content::text(result_text)]))
                 } else {
@@ -136,12 +138,10 @@ impl EnhanceTool {
                     Ok(CallToolResult::success(vec![Content::text(error_text)]))
                 }
             }
-            Err(e) => {
-                Err(McpError::internal_error(
-                    format!("增强执行失败: {}", e),
-                    None
-                ))
-            }
+            Err(e) => Err(McpError::internal_error(
+                format!("增强执行失败: {}", e),
+                None,
+            )),
         }
     }
 }

@@ -1,10 +1,10 @@
 // 验证相关常量和函数
 
-use super::window;
 use super::audio;
-use super::theme;
-use super::telegram;
 use super::network;
+use super::telegram;
+use super::theme;
+use super::window;
 
 // 通用验证函数
 
@@ -29,7 +29,7 @@ pub fn is_valid_url(url: &str) -> bool {
     if url.is_empty() {
         return true; // 空 URL 被认为是有效的（使用默认值）
     }
-    
+
     url.starts_with("http://") || url.starts_with("https://") || url.starts_with("file://")
 }
 
@@ -167,7 +167,11 @@ pub fn validate_network_config(
         result.add_error(format!("无效的重试次数: {}", retry_count));
     }
 
-    if !is_in_range(retry_interval_ms, network::MIN_RETRY_INTERVAL_MS, network::MAX_RETRY_INTERVAL_MS) {
+    if !is_in_range(
+        retry_interval_ms,
+        network::MIN_RETRY_INTERVAL_MS,
+        network::MAX_RETRY_INTERVAL_MS,
+    ) {
         result.add_error(format!("无效的重试间隔: {}ms", retry_interval_ms));
     }
 

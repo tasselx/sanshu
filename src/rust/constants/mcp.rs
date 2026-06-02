@@ -81,10 +81,10 @@ impl Default for McpConfig {
         Self {
             tools: vec![
                 McpToolConfig::new(TOOL_ZHI, true, false), // 三术工具不可禁用，默认启用
-                McpToolConfig::new(TOOL_JI, true, true),   // 记忆管理工具可禁用，默认启用（与 default_mcp_tools() 保持一致）
+                McpToolConfig::new(TOOL_JI, true, true), // 记忆管理工具可禁用，默认启用（与 default_mcp_tools() 保持一致）
                 McpToolConfig::new(TOOL_SOU, false, true), // 代码搜索工具可禁用，默认关闭
                 McpToolConfig::new(TOOL_CONTEXT7, true, true), // Context7 文档查询工具可禁用，默认启用
-                McpToolConfig::new(TOOL_UIUX, true, true), // UI/UX 工具可禁用，默认启用
+                McpToolConfig::new(TOOL_UIUX, true, true),     // UI/UX 工具可禁用，默认启用
                 McpToolConfig::new(TOOL_ENHANCE, false, true), // 提示词增强工具可禁用，默认关闭（依赖 acemcp 配置）
                 McpToolConfig::new(TOOL_TAVILY, true, true), // Tavily AI 搜索工具可禁用，默认启用（免费额度）
             ],
@@ -148,5 +148,8 @@ pub fn get_default_mcp_config() -> McpConfig {
 
 /// 检查是否为有效的工具 ID
 pub fn is_valid_tool_id(tool_id: &str) -> bool {
-    matches!(tool_id, TOOL_ZHI | TOOL_JI | TOOL_SOU | TOOL_CONTEXT7 | TOOL_UIUX | TOOL_ENHANCE | TOOL_TAVILY)
+    matches!(
+        tool_id,
+        TOOL_ZHI | TOOL_JI | TOOL_SOU | TOOL_CONTEXT7 | TOOL_UIUX | TOOL_ENHANCE | TOOL_TAVILY
+    )
 }

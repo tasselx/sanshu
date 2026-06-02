@@ -7,10 +7,10 @@ use std::time::Instant;
 
 use crate::mcp::types::{IconSaveResponse, TuRequest};
 use crate::mcp::utils::safe_truncate_clean;
-use crate::{log_important, log_debug};
+use crate::{log_debug, log_important};
 
 /// 创建图标选择弹窗
-/// 
+///
 /// 调用 "等一下" GUI 进程，进入图标搜索模式
 /// 用户可以搜索、预览、选择并保存图标
 pub fn create_icon_popup(request: &TuRequest) -> Result<IconSaveResponse> {
@@ -19,16 +19,28 @@ pub fn create_icon_popup(request: &TuRequest) -> Result<IconSaveResponse> {
     log_important!(
         info,
         "[icon_popup] 启动图标弹窗: query={:?}, style={:?}, save_path={:?}, project_root={:?}",
-        request.query.as_deref().map(|s| safe_truncate_clean(s, 120)),
-        request.style.as_deref().map(|s| safe_truncate_clean(s, 120)),
-        request.save_path.as_deref().map(|s| safe_truncate_clean(s, 120)),
-        request.project_root.as_deref().map(|s| safe_truncate_clean(s, 120))
+        request
+            .query
+            .as_deref()
+            .map(|s| safe_truncate_clean(s, 120)),
+        request
+            .style
+            .as_deref()
+            .map(|s| safe_truncate_clean(s, 120)),
+        request
+            .save_path
+            .as_deref()
+            .map(|s| safe_truncate_clean(s, 120)),
+        request
+            .project_root
+            .as_deref()
+            .map(|s| safe_truncate_clean(s, 120))
     );
 
     // 构建命令行参数
     let mut cmd = Command::new(find_ui_command()?);
     cmd.arg("--icon-search");
-    
+
     // 添加可选参数
     if let Some(query) = &request.query {
         if !query.is_empty() {
@@ -50,14 +62,14 @@ pub fn create_icon_popup(request: &TuRequest) -> Result<IconSaveResponse> {
             cmd.arg("--project-root").arg(root);
         }
     }
-    
+
     // 执行命令并等待结果
     let output = cmd.output()?;
     let elapsed_ms = start.elapsed().as_millis();
     let exit_code = output.status.code();
     let stdout_len = output.stdout.len();
     let stderr_len = output.stderr.len();
-    
+
     if output.status.success() {
         let response_str = String::from_utf8_lossy(&output.stdout);
         let response_str = response_str.trim();
@@ -69,7 +81,7 @@ pub fn create_icon_popup(request: &TuRequest) -> Result<IconSaveResponse> {
             stderr_len,
             elapsed_ms
         );
-        
+
         if response_str.is_empty() {
             // 用户取消了操作
             return Ok(IconSaveResponse {
@@ -79,20 +91,19 @@ pub fn create_icon_popup(request: &TuRequest) -> Result<IconSaveResponse> {
                 cancelled: true,
             });
         }
-        
+
         // 解析 JSON 响应
-        let response: IconSaveResponse = serde_json::from_str(response_str)
-            .map_err(|e| {
-                log_important!(
-                    error,
-                    "[icon_popup] 解析响应失败: exit_code={:?}, stdout_preview={}, error={}",
-                    exit_code,
-                    safe_truncate_clean(response_str, 200),
-                    e
-                );
-                anyhow::anyhow!("解析图标保存响应失败: {}", e)
-            })?;
-        
+        let response: IconSaveResponse = serde_json::from_str(response_str).map_err(|e| {
+            log_important!(
+                error,
+                "[icon_popup] 解析响应失败: exit_code={:?}, stdout_preview={}, error={}",
+                exit_code,
+                safe_truncate_clean(response_str, 200),
+                e
+            );
+            anyhow::anyhow!("解析图标保存响应失败: {}", e)
+        })?;
+
         Ok(response)
     } else {
         let error = String::from_utf8_lossy(&output.stderr);
@@ -110,7 +121,7 @@ pub fn create_icon_popup(request: &TuRequest) -> Result<IconSaveResponse> {
 }
 
 /// 查找 UI 命令路径
-/// 
+///
 /// 复用 popup.rs 中的逻辑
 fn find_ui_command() -> Result<String> {
     // 1. 优先尝试与当前 MCP 服务器同目录的等一下命令

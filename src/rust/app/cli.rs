@@ -1,9 +1,9 @@
+use crate::app::builder::run_tauri_app;
 use crate::config::load_standalone_telegram_config;
+use crate::log_important;
 use crate::mcp::types::PopupRequest;
 use crate::mcp::utils::{generate_request_id, normalize_zhi_choices};
 use crate::telegram::handle_telegram_only_mcp_request;
-use crate::log_important;
-use crate::app::builder::run_tauri_app;
 use anyhow::Result;
 
 /// 处理命令行参数
@@ -18,17 +18,15 @@ pub fn handle_cli_args() -> Result<()> {
             run_tauri_app();
         }
         // 单参数：帮助或版本
-        2 => {
-            match args[1].as_str() {
-                "--help" | "-h" => print_help(),
-                "--version" | "-v" => print_version(),
-                _ => {
-                    eprintln!("未知参数: {}", args[1]);
-                    print_help();
-                    std::process::exit(1);
-                }
+        2 => match args[1].as_str() {
+            "--help" | "-h" => print_help(),
+            "--version" | "-v" => print_version(),
+            _ => {
+                eprintln!("未知参数: {}", args[1]);
+                print_help();
+                std::process::exit(1);
             }
-        }
+        },
         // 多参数：MCP请求模式、CLI交互模式或图标搜索模式
         _ => {
             if args[1] == "--mcp-request" {
@@ -168,7 +166,11 @@ fn handle_cli_mode(args: &[String]) -> Result<()> {
     let request = PopupRequest {
         id: generate_request_id(),
         message,
-        predefined_options: if options.is_empty() { None } else { Some(options) },
+        predefined_options: if options.is_empty() {
+            None
+        } else {
+            Some(options)
+        },
         is_markdown,
         project_root_path: project_root,
         uiux_intent,
@@ -232,7 +234,7 @@ fn handle_mcp_request(request_file: &str) -> Result<()> {
 }
 
 /// 处理图标搜索请求
-/// 
+///
 /// 解析 CLI 参数并设置环境变量，启动 GUI 进入图标选择模式
 fn handle_icon_search(args: &[String]) -> Result<()> {
     // 解析参数
@@ -240,7 +242,7 @@ fn handle_icon_search(args: &[String]) -> Result<()> {
     let mut style = String::new();
     let mut save_path = String::new();
     let mut project_root = String::new();
-    
+
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -269,7 +271,7 @@ fn handle_icon_search(args: &[String]) -> Result<()> {
             }
         }
     }
-    
+
     // 设置环境变量，供 Tauri 应用读取
     std::env::set_var("SANSHU_ICON_MODE", "true");
     if !query.is_empty() {
@@ -284,10 +286,10 @@ fn handle_icon_search(args: &[String]) -> Result<()> {
     if !project_root.is_empty() {
         std::env::set_var("SANSHU_ICON_PROJECT_ROOT", &project_root);
     }
-    
+
     // 启动 GUI 进入图标选择模式
     run_tauri_app();
-    
+
     Ok(())
 }
 
@@ -324,4 +326,3 @@ fn print_help() {
 fn print_version() {
     println!("三术 v{}", env!("CARGO_PKG_VERSION"));
 }
-

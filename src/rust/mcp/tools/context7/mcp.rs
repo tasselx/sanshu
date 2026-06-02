@@ -1,13 +1,13 @@
 use anyhow::Result;
-use rmcp::model::{ErrorData as McpError, Tool, CallToolResult, Content};
 use reqwest::header::AUTHORIZATION;
 use reqwest::Client;
+use rmcp::model::{CallToolResult, Content, ErrorData as McpError, Tool};
 use serde_json::json;
 use std::borrow::Cow;
 use std::sync::Arc;
 use std::time::Duration;
 
-use super::types::{Context7Request, Context7Config, SearchResponse, SearchResult};
+use super::types::{Context7Config, Context7Request, SearchResponse, SearchResult};
 use crate::log_debug;
 use crate::log_important;
 
@@ -17,15 +17,19 @@ pub struct Context7Tool;
 impl Context7Tool {
     /// 查询框架文档
     pub async fn query_docs(request: Context7Request) -> Result<CallToolResult, McpError> {
-        log_important!(info,
+        log_important!(
+            info,
             "Context7 查询请求: library={}, topic={:?}, version={:?}, page={:?}",
-            request.library, request.topic, request.version, request.page
+            request.library,
+            request.topic,
+            request.version,
+            request.page
         );
 
         // 读取配置
-        let config = Self::get_config()
-            .await
-            .map_err(|e| McpError::internal_error(format!("获取 Context7 配置失败: {}", e), None))?;
+        let config = Self::get_config().await.map_err(|e| {
+            McpError::internal_error(format!("获取 Context7 配置失败: {}", e), None)
+        })?;
 
         // 执行查询
         match Self::fetch_docs(&config, &request).await {
@@ -108,9 +112,7 @@ impl Context7Tool {
 
     /// 执行 HTTP 请求获取文档
     async fn fetch_docs(config: &Context7Config, request: &Context7Request) -> Result<String> {
-        let client = Client::builder()
-            .timeout(Duration::from_secs(30))
-            .build()?;
+        let client = Client::builder().timeout(Duration::from_secs(30)).build()?;
 
         // 构建 URL
         let url = format!("{}/docs/code/{}", config.base_url, request.library);
@@ -146,7 +148,10 @@ impl Context7Tool {
 
         // 处理错误状态码
         if !status.is_success() {
-            let error_text = response.text().await.unwrap_or_else(|_| "无法读取错误信息".to_string());
+            let error_text = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "无法读取错误信息".to_string());
 
             // 404 错误时触发智能降级：搜索候选库
             if status.as_u16() == 404 {
@@ -206,7 +211,10 @@ impl Context7Tool {
         output.push_str(content);
 
         // 添加来源信息
-        output.push_str(&format!("\n\n---\n🔗 来源: Context7 - {}\n", request.library));
+        output.push_str(&format!(
+            "\n\n---\n🔗 来源: Context7 - {}\n",
+            request.library
+        ));
 
         output
     }
@@ -219,7 +227,11 @@ impl Context7Tool {
         // 从 library 参数中提取搜索关键词
         // 如果是 owner/repo 格式，使用 repo 部分；否则使用整个字符串
         let search_query = if request.library.contains('/') {
-            request.library.split('/').last().unwrap_or(&request.library)
+            request
+                .library
+                .split('/')
+                .last()
+                .unwrap_or(&request.library)
         } else {
             &request.library
         };
@@ -232,7 +244,10 @@ impl Context7Tool {
                 if results.is_empty() {
                     Ok(Self::format_not_found_no_suggestions(&request.library))
                 } else {
-                    Ok(Self::format_not_found_with_suggestions(&request.library, &results))
+                    Ok(Self::format_not_found_with_suggestions(
+                        &request.library,
+                        &results,
+                    ))
                 }
             }
             Err(e) => {
@@ -245,9 +260,7 @@ impl Context7Tool {
 
     /// 搜索库
     async fn search_libraries(config: &Context7Config, query: &str) -> Result<Vec<SearchResult>> {
-        let client = Client::builder()
-            .timeout(Duration::from_secs(15))
-            .build()?;
+        let client = Client::builder().timeout(Duration::from_secs(15)).build()?;
 
         let url = format!("{}/search", config.base_url);
         log_debug!("Context7 搜索 URL: {}", url);
@@ -314,12 +327,7 @@ impl Context7Tool {
                 format!(" ({})", info_parts.join(" | "))
             };
 
-            output.push_str(&format!(
-                "{}. **{}**{}\n",
-                idx + 1,
-                lib_id,
-                info_str
-            ));
+            output.push_str(&format!("{}. **{}**{}\n", idx + 1, lib_id, info_str));
 
             // 添加描述（如果有）
             if let Some(desc) = &result.description {

@@ -328,11 +328,7 @@ async fn run_both(
             outputs.push(result);
         }
         Err(message) => {
-            log_important!(
-                warn,
-                "[sou] both 后端失败: fast_context, error={}",
-                message
-            );
+            log_important!(warn, "[sou] both 后端失败: fast_context, error={}", message);
             errors.push(BackendRunError {
                 backend: BACKEND_FAST_CONTEXT.to_string(),
                 message,
@@ -407,7 +403,10 @@ async fn run_fast_context(
     let started_at = Instant::now();
     let project_root = canonical_project_root(&request.project_root_path)
         .map_err(|e| format!("项目路径无效: {}", e))?;
-    let effective_timeout_ms = request.timeout_ms.unwrap_or(config.timeout_ms).clamp(1000, 300000);
+    let effective_timeout_ms = request
+        .timeout_ms
+        .unwrap_or(config.timeout_ms)
+        .clamp(1000, 300000);
     let tree_depth = clamp_u8(request.tree_depth.unwrap_or(config.tree_depth), 1, 6);
     let max_turns = clamp_u8(request.max_turns.unwrap_or(config.max_turns), 1, 5);
     let max_results = clamp_u8(request.max_results.unwrap_or(config.max_results), 1, 30);
@@ -474,12 +473,11 @@ async fn run_fast_context(
         response.meta
     );
 
-    let text = format_fast_context_text(&project_root, &response, include_header)
-        .map_err(|e| {
-            let message = e.to_string();
-            log_important!(warn, "[sou] fast-context 格式化失败: {}", message);
-            message
-        })?;
+    let text = format_fast_context_text(&project_root, &response, include_header).map_err(|e| {
+        let message = e.to_string();
+        log_important!(warn, "[sou] fast-context 格式化失败: {}", message);
+        message
+    })?;
     if text.trim().is_empty() {
         return Err("fast-context 未返回可用文件范围".to_string());
     }
@@ -578,7 +576,23 @@ fn format_fast_context_text(
             response.rg_patterns.join(", ")
         ));
     }
-    if parts.iter().all(|line| line.trim().is_empty() || line.starts_with("The following")) {
+    parts.push(format!(
+        "[fast-context stats] commands_seen={}, commands_executed={}, commands_useful={}, commands_invalid={}, repaired={}, path_missing={}, path_repaired={}, cache_hits={}, useful_command_rate={}%, invalid_command_rate={}%",
+        response.stats.commands_seen,
+        response.stats.commands_executed,
+        response.stats.commands_useful,
+        response.stats.commands_invalid,
+        response.stats.commands_repaired,
+        response.stats.path_missing,
+        response.stats.path_repaired,
+        response.stats.cache_hits,
+        response.stats.useful_rate(),
+        response.stats.invalid_rate()
+    ));
+    if parts
+        .iter()
+        .all(|line| line.trim().is_empty() || line.starts_with("The following"))
+    {
         parts.push("No relevant files found.".to_string());
     }
     if !response.meta.is_null() {

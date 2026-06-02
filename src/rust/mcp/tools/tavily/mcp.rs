@@ -2,8 +2,8 @@
 // 支持 Search（实时搜索）和 Extract（内容提取）双端点
 
 use anyhow::Result;
-use rmcp::model::{ErrorData as McpError, Tool, CallToolResult, Content};
 use reqwest::Client;
+use rmcp::model::{CallToolResult, Content, ErrorData as McpError, Tool};
 use serde_json::json;
 use std::borrow::Cow;
 use std::sync::Arc;
@@ -19,10 +19,15 @@ impl TavilyTool {
     /// 执行 Tavily 工具调用（根据 action 分发到 search 或 extract）
     pub async fn execute(request: TavilyRequest) -> Result<CallToolResult, McpError> {
         let action = request.action.to_lowercase();
-        log_important!(info,
+        log_important!(
+            info,
             "Tavily 请求: action={}, query={:?}",
             action,
-            request.query.as_deref().map(|s| if s.len() > 100 { format!("{}...", &s[..100]) } else { s.to_string() })
+            request.query.as_deref().map(|s| if s.len() > 100 {
+                format!("{}...", &s[..100])
+            } else {
+                s.to_string()
+            })
         );
 
         // 获取配置
@@ -42,14 +47,21 @@ impl TavilyTool {
             "search" => Self::search(&config, api_key, &request).await,
             "extract" => Self::extract(&config, api_key, &request).await,
             _ => Err(McpError::invalid_params(
-                format!("未知的 action: {}。支持 'search'（默认）或 'extract'", action),
+                format!(
+                    "未知的 action: {}。支持 'search'（默认）或 'extract'",
+                    action
+                ),
                 None,
             )),
         }
     }
 
     /// 搜索端点
-    async fn search(config: &TavilyConfig, api_key: &str, request: &TavilyRequest) -> Result<CallToolResult, McpError> {
+    async fn search(
+        config: &TavilyConfig,
+        api_key: &str,
+        request: &TavilyRequest,
+    ) -> Result<CallToolResult, McpError> {
         let query = request.query.as_deref().ok_or_else(|| {
             McpError::invalid_params("search 操作需要 query 参数".to_string(), None)
         })?;
@@ -120,7 +132,10 @@ impl TavilyTool {
 
         let status = response.status();
         if !status.is_success() {
-            let error_text = response.text().await.unwrap_or_else(|_| "无法读取错误信息".to_string());
+            let error_text = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "无法读取错误信息".to_string());
             let msg = Self::format_http_error(status.as_u16(), &error_text);
             return Ok(CallToolResult {
                 content: vec![Content::text(msg)],
@@ -131,7 +146,9 @@ impl TavilyTool {
         }
 
         // 解析响应
-        let response_text = response.text().await
+        let response_text = response
+            .text()
+            .await
             .map_err(|e| McpError::internal_error(format!("读取响应失败: {}", e), None))?;
 
         let search_response: TavilySearchResponse = serde_json::from_str(&response_text)
@@ -139,7 +156,8 @@ impl TavilyTool {
 
         // 格式化输出
         let formatted = Self::format_search_result(&search_response);
-        log_important!(info,
+        log_important!(
+            info,
             "Tavily Search 完成: results={}, response_time={:?}ms, request_id={:?}",
             search_response.results.len(),
             search_response.response_time,
@@ -155,7 +173,11 @@ impl TavilyTool {
     }
 
     /// 内容提取端点
-    async fn extract(config: &TavilyConfig, api_key: &str, request: &TavilyRequest) -> Result<CallToolResult, McpError> {
+    async fn extract(
+        config: &TavilyConfig,
+        api_key: &str,
+        request: &TavilyRequest,
+    ) -> Result<CallToolResult, McpError> {
         let urls = request.urls.as_ref().ok_or_else(|| {
             McpError::invalid_params("extract 操作需要 urls 参数".to_string(), None)
         })?;
@@ -163,11 +185,10 @@ impl TavilyTool {
         // 将 urls 统一为数组格式
         let urls_array = match urls {
             serde_json::Value::String(s) => vec![s.clone()],
-            serde_json::Value::Array(arr) => {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect()
-            }
+            serde_json::Value::Array(arr) => arr
+                .iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect(),
             _ => {
                 return Err(McpError::invalid_params(
                     "urls 参数必须是字符串或字符串数组".to_string(),
@@ -213,7 +234,10 @@ impl TavilyTool {
 
         let status = response.status();
         if !status.is_success() {
-            let error_text = response.text().await.unwrap_or_else(|_| "无法读取错误信息".to_string());
+            let error_text = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "无法读取错误信息".to_string());
             let msg = Self::format_http_error(status.as_u16(), &error_text);
             return Ok(CallToolResult {
                 content: vec![Content::text(msg)],
@@ -223,14 +247,17 @@ impl TavilyTool {
             });
         }
 
-        let response_text = response.text().await
+        let response_text = response
+            .text()
+            .await
             .map_err(|e| McpError::internal_error(format!("读取响应失败: {}", e), None))?;
 
         let extract_response: TavilyExtractResponse = serde_json::from_str(&response_text)
             .map_err(|e| McpError::internal_error(format!("解析提取响应失败: {}", e), None))?;
 
         let formatted = Self::format_extract_result(&extract_response);
-        log_important!(info,
+        log_important!(
+            info,
             "Tavily Extract 完成: results={}, failed={}, response_time={:?}ms",
             extract_response.results.len(),
             extract_response.failed_results.len(),
@@ -360,7 +387,10 @@ impl TavilyTool {
         if response.results.is_empty() {
             output.push_str("未找到相关搜索结果。\n");
         } else {
-            output.push_str(&format!("## 搜索结果（共 {} 条）\n\n", response.results.len()));
+            output.push_str(&format!(
+                "## 搜索结果（共 {} 条）\n\n",
+                response.results.len()
+            ));
             for (i, result) in response.results.iter().enumerate() {
                 let title = result.title.as_deref().unwrap_or("无标题");
                 output.push_str(&format!("### {}. {}\n", i + 1, title));
@@ -377,7 +407,11 @@ impl TavilyTool {
                     if !raw.is_empty() {
                         // 截断过长的原始内容
                         let truncated = if raw.len() > 2000 {
-                            format!("{}...\n\n（内容已截断，原始长度: {} 字符）", &raw[..2000], raw.len())
+                            format!(
+                                "{}...\n\n（内容已截断，原始长度: {} 字符）",
+                                &raw[..2000],
+                                raw.len()
+                            )
                         } else {
                             raw.clone()
                         };
@@ -407,14 +441,21 @@ impl TavilyTool {
 
         // 成功的提取结果
         if !response.results.is_empty() {
-            output.push_str(&format!("## 提取结果（共 {} 条）\n\n", response.results.len()));
+            output.push_str(&format!(
+                "## 提取结果（共 {} 条）\n\n",
+                response.results.len()
+            ));
             for (i, result) in response.results.iter().enumerate() {
                 output.push_str(&format!("### {}. {}\n", i + 1, result.url));
                 if let Some(ref content) = result.raw_content {
                     if !content.is_empty() {
                         // 截断过长内容
                         let truncated = if content.len() > 5000 {
-                            format!("{}...\n\n（内容已截断，原始长度: {} 字符）", &content[..5000], content.len())
+                            format!(
+                                "{}...\n\n（内容已截断，原始长度: {} 字符）",
+                                &content[..5000],
+                                content.len()
+                            )
                         } else {
                             content.clone()
                         };
@@ -427,7 +468,10 @@ impl TavilyTool {
 
         // 失败的提取结果
         if !response.failed_results.is_empty() {
-            output.push_str(&format!("## 提取失败（{} 条）\n\n", response.failed_results.len()));
+            output.push_str(&format!(
+                "## 提取失败（{} 条）\n\n",
+                response.failed_results.len()
+            ));
             for result in &response.failed_results {
                 let error = result.error.as_deref().unwrap_or("未知错误");
                 output.push_str(&format!("- {} — {}\n", result.url, error));
@@ -446,7 +490,8 @@ impl TavilyTool {
     fn format_http_error(status: u16, body: &str) -> String {
         match status {
             401 => "❌ Tavily API Key 无效或已过期。请在设置中检查并更新 API Key。".to_string(),
-            429 => "❌ Tavily API 请求频率超限。免费计划限制每分钟 100 次请求。请稍后重试。".to_string(),
+            429 => "❌ Tavily API 请求频率超限。免费计划限制每分钟 100 次请求。请稍后重试。"
+                .to_string(),
             402 => "❌ Tavily API 信用点已耗尽。免费计划每月 1000 信用点。".to_string(),
             _ => {
                 let preview = if body.len() > 300 { &body[..300] } else { body };

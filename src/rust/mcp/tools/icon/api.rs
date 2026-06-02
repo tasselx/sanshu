@@ -9,8 +9,7 @@ use std::sync::RwLock;
 use std::time::{Duration, Instant};
 
 use super::types::{
-    IconItem, IconSearchRequest, IconSearchResult,
-    IconfontApiResponse, IconfontIcon,
+    IconItem, IconSearchRequest, IconSearchResult, IconfontApiResponse, IconfontIcon,
 };
 use crate::log_debug;
 
@@ -43,20 +42,19 @@ static SEARCH_CACHE: Lazy<RwLock<HashMap<String, CacheEntry>>> =
     Lazy::new(|| RwLock::new(HashMap::new()));
 
 /// 缓存过期时间配置（秒）
-static CACHE_EXPIRY_SECS: Lazy<RwLock<u64>> =
-    Lazy::new(|| RwLock::new(DEFAULT_CACHE_EXPIRY_SECS));
+static CACHE_EXPIRY_SECS: Lazy<RwLock<u64>> = Lazy::new(|| RwLock::new(DEFAULT_CACHE_EXPIRY_SECS));
 
 // ============ HTTP 客户端 ============
 
 /// 创建带有默认配置的 HTTP 客户端
-/// 
+///
 /// 注意：iconfont.cn 是国内网站，不需要代理
 /// 显式禁用代理以避免用户系统代理设置（用于翻墙）干扰
 fn create_http_client() -> Result<Client> {
     Client::builder()
         .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS))
         .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-        .no_proxy()  // 禁用代理，直连国内网站
+        .no_proxy() // 禁用代理，直连国内网站
         .build()
         .map_err(|e| anyhow!("创建 HTTP 客户端失败: {}", e))
 }
@@ -81,38 +79,50 @@ fn generate_cache_key(request: &IconSearchRequest) -> String {
 fn get_from_cache(key: &str) -> Option<IconSearchResult> {
     let cache = SEARCH_CACHE.read().ok()?;
     let entry = cache.get(key)?;
-    
+
     // 检查是否过期
-    let expiry = CACHE_EXPIRY_SECS.read().ok().map(|e| *e).unwrap_or(DEFAULT_CACHE_EXPIRY_SECS);
+    let expiry = CACHE_EXPIRY_SECS
+        .read()
+        .ok()
+        .map(|e| *e)
+        .unwrap_or(DEFAULT_CACHE_EXPIRY_SECS);
     if entry.created_at.elapsed() > Duration::from_secs(expiry) {
         return None;
     }
-    
+
     Some(entry.result.clone())
 }
 
 /// 存入缓存
 fn put_to_cache(key: String, result: IconSearchResult) {
     if let Ok(mut cache) = SEARCH_CACHE.write() {
-        cache.insert(key, CacheEntry {
-            result,
-            created_at: Instant::now(),
-        });
+        cache.insert(
+            key,
+            CacheEntry {
+                result,
+                created_at: Instant::now(),
+            },
+        );
     }
 }
 
 /// 获取缓存统计
 pub fn get_cache_stats() -> super::types::IconCacheStats {
     let cache = SEARCH_CACHE.read().ok();
-    let expiry = CACHE_EXPIRY_SECS.read().ok().map(|e| *e).unwrap_or(DEFAULT_CACHE_EXPIRY_SECS);
-    
+    let expiry = CACHE_EXPIRY_SECS
+        .read()
+        .ok()
+        .map(|e| *e)
+        .unwrap_or(DEFAULT_CACHE_EXPIRY_SECS);
+
     match cache {
         Some(cache) => {
             let total = cache.len();
-            let valid = cache.values()
+            let valid = cache
+                .values()
                 .filter(|e| e.created_at.elapsed() < Duration::from_secs(expiry))
                 .count();
-            
+
             super::types::IconCacheStats {
                 total_entries: total,
                 valid_entries: valid,
@@ -127,7 +137,7 @@ pub fn get_cache_stats() -> super::types::IconCacheStats {
             expired_entries: 0,
             cache_expiry_minutes: expiry / 60,
             memory_usage_bytes: None,
-        }
+        },
     }
 }
 
@@ -135,14 +145,16 @@ pub fn get_cache_stats() -> super::types::IconCacheStats {
 pub fn clear_cache(expired_only: bool) -> super::types::ClearCacheResult {
     let mut cleared = 0;
     let mut remaining = 0;
-    
+
     if let Ok(mut cache) = SEARCH_CACHE.write() {
         if expired_only {
-            let expiry = CACHE_EXPIRY_SECS.read().ok().map(|e| *e).unwrap_or(DEFAULT_CACHE_EXPIRY_SECS);
+            let expiry = CACHE_EXPIRY_SECS
+                .read()
+                .ok()
+                .map(|e| *e)
+                .unwrap_or(DEFAULT_CACHE_EXPIRY_SECS);
             let original_len = cache.len();
-            cache.retain(|_, entry| {
-                entry.created_at.elapsed() < Duration::from_secs(expiry)
-            });
+            cache.retain(|_, entry| entry.created_at.elapsed() < Duration::from_secs(expiry));
             remaining = cache.len();
             cleared = original_len.saturating_sub(remaining);
         } else {
@@ -151,7 +163,7 @@ pub fn clear_cache(expired_only: bool) -> super::types::ClearCacheResult {
             remaining = 0;
         }
     }
-    
+
     super::types::ClearCacheResult {
         cleared_count: cleared,
         remaining_count: remaining,
@@ -168,56 +180,62 @@ pub fn set_cache_expiry_minutes(minutes: u64) {
 // ============ API 调用 ============
 
 /// 搜索图标
-/// 
+///
 /// 调用 Iconfont API 搜索图标，支持缓存
 pub async fn search_icons(request: IconSearchRequest) -> Result<IconSearchResult> {
     // 参数验证
     if request.query.trim().is_empty() {
         return Err(anyhow!("搜索关键词不能为空"));
     }
-    
+
     // 检查缓存
     let cache_key = generate_cache_key(&request);
     if let Some(cached) = get_from_cache(&cache_key) {
         log_debug!("图标搜索命中缓存: {}", cache_key);
         return Ok(cached);
     }
-    
+
     // 构建请求参数
     let page = request.page.unwrap_or(1);
     let page_size = request.page_size.unwrap_or(50);
-    
+
     let mut params = HashMap::new();
     params.insert("q", request.query.clone());
-    params.insert("sortType", request.sort_type.clone().unwrap_or_else(|| "relate".to_string()));
+    params.insert(
+        "sortType",
+        request
+            .sort_type
+            .clone()
+            .unwrap_or_else(|| "relate".to_string()),
+    );
     params.insert("page", page.to_string());
     params.insert("pageSize", page_size.to_string());
-    
+
     if let Some(ref style) = request.style {
         if style != "all" {
             params.insert("sType", style.clone());
         }
     }
-    
+
     if let Some(ref fills) = request.fills {
         if fills != "all" {
             params.insert("fills", fills.clone());
         }
     }
-    
+
     if request.from_collection.unwrap_or(false) {
         params.insert("fromCollection", "1".to_string());
     }
-    
+
     // 执行请求（带重试）
     let result = retry_search_request(&params).await?;
-    
+
     // 解析响应
     let search_result = parse_search_response(result, page, page_size)?;
-    
+
     // 存入缓存
     put_to_cache(cache_key, search_result.clone());
-    
+
     Ok(search_result)
 }
 
@@ -225,7 +243,7 @@ pub async fn search_icons(request: IconSearchRequest) -> Result<IconSearchResult
 async fn retry_search_request(params: &HashMap<&str, String>) -> Result<IconfontApiResponse> {
     let client = create_http_client()?;
     let mut last_error = None;
-    
+
     for attempt in 0..MAX_RETRIES {
         if attempt > 0 {
             // 指数退避
@@ -233,7 +251,7 @@ async fn retry_search_request(params: &HashMap<&str, String>) -> Result<Iconfont
             tokio::time::sleep(delay).await;
             log_debug!("图标搜索重试第 {} 次", attempt + 1);
         }
-        
+
         match execute_search_request(&client, params).await {
             Ok(response) => return Ok(response),
             Err(e) => {
@@ -241,7 +259,7 @@ async fn retry_search_request(params: &HashMap<&str, String>) -> Result<Iconfont
             }
         }
     }
-    
+
     Err(last_error.unwrap_or_else(|| anyhow!("搜索请求失败，已达到最大重试次数")))
 }
 
@@ -264,16 +282,16 @@ async fn execute_search_request(
                 anyhow!("请求失败: {}", e)
             }
         })?;
-    
+
     if !response.status().is_success() {
         return Err(anyhow!("API 返回错误状态码: {}", response.status()));
     }
-    
+
     let api_response: IconfontApiResponse = response
         .json()
         .await
         .map_err(|e| anyhow!("解析响应 JSON 失败: {}", e))?;
-    
+
     if api_response.code != 200 {
         return Err(anyhow!(
             "API 返回错误: code={}, message={}",
@@ -281,7 +299,7 @@ async fn execute_search_request(
             api_response.message.as_deref().unwrap_or("未知错误")
         ));
     }
-    
+
     Ok(api_response)
 }
 
@@ -291,16 +309,15 @@ fn parse_search_response(
     page: u32,
     page_size: u32,
 ) -> Result<IconSearchResult> {
-    let data = response.data.ok_or_else(|| anyhow!("API 响应缺少 data 字段"))?;
-    
-    let icons: Vec<IconItem> = data.icons
-        .into_iter()
-        .map(IconItem::from)
-        .collect();
-    
+    let data = response
+        .data
+        .ok_or_else(|| anyhow!("API 响应缺少 data 字段"))?;
+
+    let icons: Vec<IconItem> = data.icons.into_iter().map(IconItem::from).collect();
+
     let total = data.count;
     let has_more = page * page_size < total;
-    
+
     Ok(IconSearchResult {
         icons,
         total,
@@ -311,7 +328,7 @@ fn parse_search_response(
 }
 
 /// 获取图标 SVG 内容
-/// 
+///
 /// 根据图标 ID 获取 SVG 内容（如果搜索结果中已包含则直接返回）
 pub async fn get_icon_svg(id: u64, cached_svg: Option<String>) -> Result<String> {
     // 如果已有缓存的 SVG 内容，直接返回
@@ -320,48 +337,46 @@ pub async fn get_icon_svg(id: u64, cached_svg: Option<String>) -> Result<String>
             return Ok(svg);
         }
     }
-    
+
     // 否则需要单独请求（Iconfont 的图标详情 API）
     // 注意：Iconfont 的搜索结果通常已包含 show_svg 字段，
     // 这里提供备用方案
-    let svg_url = format!(
-        "https://www.iconfont.cn/api/icon/detail.json?id={}",
-        id
-    );
-    
+    let svg_url = format!("https://www.iconfont.cn/api/icon/detail.json?id={}", id);
+
     let client = create_http_client()?;
     let response = client
         .get(&svg_url)
         .send()
         .await
         .map_err(|e| anyhow!("获取图标详情失败: {}", e))?;
-    
+
     if !response.status().is_success() {
         return Err(anyhow!("获取图标详情失败: {}", response.status()));
     }
-    
+
     // 解析详情响应
     #[derive(serde::Deserialize)]
     struct DetailResponse {
         code: i32,
         data: Option<DetailData>,
     }
-    
+
     #[derive(serde::Deserialize)]
     struct DetailData {
         icon: Option<IconfontIcon>,
     }
-    
+
     let detail: DetailResponse = response
         .json()
         .await
         .map_err(|e| anyhow!("解析图标详情失败: {}", e))?;
-    
+
     if detail.code != 200 {
         return Err(anyhow!("获取图标详情失败: API 返回错误"));
     }
-    
-    detail.data
+
+    detail
+        .data
         .and_then(|d| d.icon)
         .and_then(|i| i.show_svg)
         .ok_or_else(|| anyhow!("图标 {} 没有 SVG 内容", id))
@@ -372,10 +387,7 @@ pub async fn get_icon_svg(id: u64, cached_svg: Option<String>) -> Result<String>
 /// 构建图标预览 URL
 pub fn build_preview_url(id: u64) -> String {
     // Iconfont 的图标预览 URL 格式
-    format!(
-        "https://at.alicdn.com/t/c/font_{}_preview.svg",
-        id
-    )
+    format!("https://at.alicdn.com/t/c/font_{}_preview.svg", id)
 }
 
 /// 构建图标下载 URL

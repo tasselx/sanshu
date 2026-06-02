@@ -10,10 +10,10 @@ use chrono::Utc;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use super::types::{MemoryEntry, MemoryCategory, MemoryStore, MemoryConfig};
-use super::similarity::TextSimilarity;
 use super::dedup::MemoryDeduplicator;
 use super::migration::MemoryMigrator;
+use super::similarity::TextSimilarity;
+use super::types::{MemoryCategory, MemoryConfig, MemoryEntry, MemoryStore};
 use crate::log_debug;
 
 /// 记忆管理器
@@ -50,12 +50,13 @@ impl MemoryManager {
         let memory_dir = normalize_result.path.join(".sanshu-memory");
 
         // 创建记忆目录
-        fs::create_dir_all(&memory_dir)
-            .map_err(|e| anyhow::anyhow!(
+        fs::create_dir_all(&memory_dir).map_err(|e| {
+            anyhow::anyhow!(
                 "无法创建记忆目录: {}\n错误: {}\n这可能是因为项目目录没有写入权限。",
                 Self::clean_display_path(&memory_dir),
                 e
-            ))?;
+            )
+        })?;
 
         let project_path_str = Self::clean_display_path(&normalize_result.path);
 
@@ -133,7 +134,11 @@ impl MemoryManager {
     ///
     /// 如果启用了去重检测，会检查是否与现有记忆重复
     /// 重复时静默拒绝，返回 None
-    pub fn add_memory(&mut self, content: &str, category: MemoryCategory) -> Result<Option<String>> {
+    pub fn add_memory(
+        &mut self,
+        content: &str,
+        category: MemoryCategory,
+    ) -> Result<Option<String>> {
         let content = content.trim();
         if content.is_empty() {
             return Err(anyhow::anyhow!("记忆内容不能为空"));
@@ -181,7 +186,8 @@ impl MemoryManager {
 
     /// 获取指定分类的记忆
     pub fn get_memories_by_category(&self, category: MemoryCategory) -> Vec<&MemoryEntry> {
-        self.store.entries
+        self.store
+            .entries
             .iter()
             .filter(|e| e.category == category)
             .collect()
@@ -239,7 +245,6 @@ impl MemoryManager {
             Ok(None) // 未找到该 ID
         }
     }
-
 
     /// 获取记忆统计信息
     pub fn get_stats(&self) -> MemoryStats {
@@ -326,7 +331,7 @@ impl MemoryManager {
     // ========================================================================
 
     /// 清理 Windows 扩展路径前缀用于显示
-    /// 
+    ///
     /// Windows 的 `canonicalize()` 会返回 `\\?\C:\...` 格式的路径，
     /// 这在错误消息和日志中显示不友好，需要清理前缀。
     fn clean_display_path(path: &Path) -> String {
@@ -343,7 +348,7 @@ impl MemoryManager {
     }
 
     /// 规范化项目路径
-    /// 
+    ///
     /// 支持非 Git 项目降级：
     /// - 如果检测到 Git 仓库，使用 Git 根目录
     /// - 如果未检测到 Git 仓库，使用当前目录并标记为降级模式
@@ -362,11 +367,10 @@ impl MemoryManager {
         };
 
         // 规范化路径（解析 . 和 .. 等）
-        let canonical_path = absolute_path.canonicalize()
-            .unwrap_or_else(|_| {
-                // 如果 canonicalize 失败，尝试手动规范化
-                Self::manual_canonicalize(&absolute_path).unwrap_or(absolute_path)
-            });
+        let canonical_path = absolute_path.canonicalize().unwrap_or_else(|_| {
+            // 如果 canonicalize 失败，尝试手动规范化
+            Self::manual_canonicalize(&absolute_path).unwrap_or(absolute_path)
+        });
 
         // 验证路径是否存在且为目录
         if !canonical_path.exists() {

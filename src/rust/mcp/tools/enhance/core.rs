@@ -1,20 +1,23 @@
 // 提示词增强核心逻辑
 // 调用 Augment chat-stream API 实现流式提示词增强
 
+use anyhow::Result;
+use futures_util::StreamExt;
+use regex::Regex;
+use reqwest::{
+    header::{AUTHORIZATION, CONTENT_TYPE},
+    Client,
+};
+use serde_json::json;
 use std::fs;
 use std::path::PathBuf;
-use std::time::Duration;
 use std::sync::atomic::Ordering;
-use anyhow::Result;
-use reqwest::{Client, header::{AUTHORIZATION, CONTENT_TYPE}};
-use serde_json::json;
-use regex::Regex;
-use futures_util::StreamExt;
+use std::time::Duration;
 
-use super::types::*;
 use super::history::ChatHistoryManager;
-use crate::mcp::tools::interaction::ZhiHistoryManager;
+use super::types::*;
 use crate::mcp::tools::acemcp::mcp::ProjectsFile;
+use crate::mcp::tools::interaction::ZhiHistoryManager;
 use crate::{log_debug, log_important};
 
 /// 增强系统提示词模板
@@ -117,11 +120,13 @@ impl PromptEnhancer {
     /// 从 acemcp 配置创建增强器
     pub async fn from_acemcp_config() -> Result<Self> {
         use crate::mcp::tools::acemcp::AcemcpTool;
-        
+
         let config = AcemcpTool::get_acemcp_config().await?;
-        let base_url = config.base_url
+        let base_url = config
+            .base_url
             .ok_or_else(|| anyhow::anyhow!("未配置 Acemcp base_url"))?;
-        let token = config.token
+        let token = config
+            .token
             .ok_or_else(|| anyhow::anyhow!("未配置 Acemcp token"))?;
 
         Self::new(&base_url, &token)
@@ -176,7 +181,9 @@ impl PromptEnhancer {
                 }
             };
 
-            if let Some((names, matched_root)) = Self::find_project_blobs(&projects, &normalized_root) {
+            if let Some((names, matched_root)) =
+                Self::find_project_blobs(&projects, &normalized_root)
+            {
                 log_debug!(
                     "已加载 blob_names: count={}, source_root={}",
                     names.len(),
@@ -197,7 +204,10 @@ impl PromptEnhancer {
     ) -> Option<(Vec<String>, String)> {
         // 1) 直接匹配
         if let Some(names) = projects.0.get(normalized_root) {
-            return Some((names.clone(), Self::clean_path_prefix_and_slashes(normalized_root)));
+            return Some((
+                names.clone(),
+                Self::clean_path_prefix_and_slashes(normalized_root),
+            ));
         }
 
         // 2) Windows 下：忽略大小写 + 兼容 keys 带长路径前缀的情况
@@ -216,7 +226,11 @@ impl PromptEnhancer {
     }
 
     /// 加载对话历史
-    fn load_chat_history(&self, count: usize, selected_ids: Option<&[String]>) -> (Vec<ChatHistoryEntry>, Option<String>) {
+    fn load_chat_history(
+        &self,
+        count: usize,
+        selected_ids: Option<&[String]>,
+    ) -> (Vec<ChatHistoryEntry>, Option<String>) {
         let project_root = match &self.project_root {
             Some(path) => path.clone(),
             None => return (Vec::new(), None),
@@ -243,7 +257,7 @@ impl PromptEnhancer {
                         (Vec::new(), Some(e.to_string()))
                     }
                 }
-            },
+            }
             Err(e) => {
                 log_debug!("加载对话历史失败: {}", e);
                 (Vec::new(), Some(e.to_string()))
@@ -265,26 +279,24 @@ impl PromptEnhancer {
         Some(ChatHistoryEntry {
             request_message: prompt.clone(),
             request_id: request_id.clone(),
-            request_nodes: vec![
-                ChatHistoryRequestNode {
-                    id: 0,
-                    node_type: 0,
-                    text_node: Some(TextNode { content: prompt.clone() }),
-                }
-            ],
+            request_nodes: vec![ChatHistoryRequestNode {
+                id: 0,
+                node_type: 0,
+                text_node: Some(TextNode {
+                    content: prompt.clone(),
+                }),
+            }],
             // 中文注释：兜底场景无真实 AI 回复，使用空字符串占位，避免破坏 API 结构
-            response_nodes: vec![
-                ChatHistoryResponseNode {
-                    id: 1,
-                    node_type: 0,
-                    content: Some(String::new()),
-                    tool_use: None,
-                    thinking: None,
-                    billing_metadata: None,
-                    metadata: None,
-                    token_usage: None,
-                }
-            ],
+            response_nodes: vec![ChatHistoryResponseNode {
+                id: 1,
+                node_type: 0,
+                content: Some(String::new()),
+                tool_use: None,
+                thinking: None,
+                billing_metadata: None,
+                metadata: None,
+                token_usage: None,
+            }],
         })
     }
 
@@ -354,7 +366,9 @@ impl PromptEnhancer {
     ) -> BuildPayloadResult {
         // 支持按 ID 过滤对话历史，未指定则使用最近历史
         let history_enabled = include_history
-            && selected_history_ids.map(|ids| !ids.is_empty()).unwrap_or(true);
+            && selected_history_ids
+                .map(|ids| !ids.is_empty())
+                .unwrap_or(true);
         let (mut chat_history, history_load_error) = if history_enabled {
             self.load_chat_history(5, selected_history_ids) // 最多5条历史
         } else {
@@ -454,7 +468,8 @@ impl PromptEnhancer {
     /// 从响应文本中提取增强后的提示词
     pub fn extract_enhanced_prompt(text: &str) -> Option<String> {
         // 匹配 <augment-enhanced-prompt>...</augment-enhanced-prompt>
-        let re = Regex::new(r"<augment-enhanced-prompt>([\s\S]*?)</augment-enhanced-prompt>").ok()?;
+        let re =
+            Regex::new(r"<augment-enhanced-prompt>([\s\S]*?)</augment-enhanced-prompt>").ok()?;
         re.captures(text)?
             .get(1)
             .map(|m| m.as_str().trim().to_string())
@@ -466,7 +481,8 @@ impl PromptEnhancer {
         if trimmed.is_empty() {
             return None;
         }
-        let payload = trimmed.strip_prefix("data:")
+        let payload = trimmed
+            .strip_prefix("data:")
             .map(|s| s.trim())
             .unwrap_or(trimmed);
         serde_json::from_str::<serde_json::Value>(payload).ok()
@@ -489,13 +505,18 @@ impl PromptEnhancer {
     /// 同步增强（等待完成后返回）
     pub async fn enhance(&self, request: EnhanceRequest) -> Result<EnhanceResponse> {
         // 中文注释：为每次请求生成稳定的 request_id，便于前后端关联
-        let request_id = request.request_id.clone()
+        let request_id = request
+            .request_id
+            .clone()
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
         // 预加载 blob 信息，便于返回给前端展示来源与数量
         let (blob_names, blob_source_root) = self.load_blob_names();
         let blob_count = blob_names.len();
-        let project_root_path = request.project_root_path.clone().or(self.project_root.clone());
+        let project_root_path = request
+            .project_root_path
+            .clone()
+            .or(self.project_root.clone());
 
         let build = self.build_request_payload(
             &request.prompt,
@@ -510,13 +531,16 @@ impl PromptEnhancer {
         let history_fallback_used = build.history_diag.fallback_used;
         let payload = build.payload;
         // 中文注释：返回给前端的“原始提示词”优先使用传入的 original_prompt
-        let response_original_prompt = request.original_prompt.clone()
+        let response_original_prompt = request
+            .original_prompt
+            .clone()
             .unwrap_or_else(|| request.prompt.clone());
 
         let url = format!("{}/chat-stream", self.base_url);
         log_important!(info, "发送增强请求: url={}", url);
 
-        let response = self.client
+        let response = self
+            .client
             .post(&url)
             .header(AUTHORIZATION, format!("Bearer {}", self.token))
             .header(CONTENT_TYPE, "application/json")
@@ -575,8 +599,7 @@ impl PromptEnhancer {
         }
 
         // 提取增强后的提示词
-        let enhanced_prompt = Self::extract_enhanced_prompt(&accumulated_text)
-            .unwrap_or_default();
+        let enhanced_prompt = Self::extract_enhanced_prompt(&accumulated_text).unwrap_or_default();
 
         let success = !enhanced_prompt.is_empty();
 
@@ -584,7 +607,11 @@ impl PromptEnhancer {
             enhanced_prompt,
             original_prompt: response_original_prompt,
             success,
-            error: if success { None } else { Some("未能从响应中提取增强结果".to_string()) },
+            error: if success {
+                None
+            } else {
+                Some("未能从响应中提取增强结果".to_string())
+            },
             blob_count,
             history_count,
             history_load_error,
@@ -596,19 +623,28 @@ impl PromptEnhancer {
     }
 
     /// 流式增强（通过回调函数推送进度）
-    pub async fn enhance_stream<F>(&self, request: EnhanceRequest, mut on_event: F) -> Result<EnhanceResponse>
+    pub async fn enhance_stream<F>(
+        &self,
+        request: EnhanceRequest,
+        mut on_event: F,
+    ) -> Result<EnhanceResponse>
     where
         F: FnMut(EnhanceStreamEvent) + Send,
     {
         // 中文注释：为每次请求生成稳定的 request_id，便于前后端关联
-        let request_id = request.request_id.clone()
+        let request_id = request
+            .request_id
+            .clone()
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         let cancel_flag = request.cancel_flag.clone();
 
         // 预加载 blob 信息，便于返回给前端展示来源与数量
         let (blob_names, blob_source_root) = self.load_blob_names();
         let blob_count = blob_names.len();
-        let project_root_path = request.project_root_path.clone().or(self.project_root.clone());
+        let project_root_path = request
+            .project_root_path
+            .clone()
+            .or(self.project_root.clone());
 
         let build = self.build_request_payload(
             &request.prompt,
@@ -623,13 +659,16 @@ impl PromptEnhancer {
         let history_fallback_used = build.history_diag.fallback_used;
         let payload = build.payload;
         // 中文注释：返回给前端的“原始提示词”优先使用传入的 original_prompt
-        let response_original_prompt = request.original_prompt.clone()
+        let response_original_prompt = request
+            .original_prompt
+            .clone()
             .unwrap_or_else(|| request.prompt.clone());
 
         let url = format!("{}/chat-stream", self.base_url);
         log_important!(info, "发送流式增强请求: url={}", url);
 
-        let response = self.client
+        let response = self
+            .client
             .post(&url)
             .header(AUTHORIZATION, format!("Bearer {}", self.token))
             .header(CONTENT_TYPE, "application/json")
@@ -764,22 +803,32 @@ impl PromptEnhancer {
         }
 
         // 提取增强后的提示词
-        let enhanced_prompt = Self::extract_enhanced_prompt(&accumulated_text)
-            .unwrap_or_default();
+        let enhanced_prompt = Self::extract_enhanced_prompt(&accumulated_text).unwrap_or_default();
 
         let success = !enhanced_prompt.is_empty();
 
         if success {
-            on_event(EnhanceStreamEvent::complete(&request_id, &enhanced_prompt, &accumulated_text));
+            on_event(EnhanceStreamEvent::complete(
+                &request_id,
+                &enhanced_prompt,
+                &accumulated_text,
+            ));
         } else {
-            on_event(EnhanceStreamEvent::error(&request_id, "未能从响应中提取增强结果"));
+            on_event(EnhanceStreamEvent::error(
+                &request_id,
+                "未能从响应中提取增强结果",
+            ));
         }
 
         Ok(EnhanceResponse {
             enhanced_prompt,
             original_prompt: response_original_prompt,
             success,
-            error: if success { None } else { Some("未能从响应中提取增强结果".to_string()) },
+            error: if success {
+                None
+            } else {
+                Some("未能从响应中提取增强结果".to_string())
+            },
             blob_count,
             history_count,
             history_load_error,

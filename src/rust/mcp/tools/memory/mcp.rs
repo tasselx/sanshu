@@ -1,8 +1,11 @@
 use anyhow::Result;
-use rmcp::model::{ErrorData as McpError, CallToolResult, Content};
+use rmcp::model::{CallToolResult, Content, ErrorData as McpError};
 
-use super::{MemoryManager, MemoryCategory};
-use crate::mcp::{JiyiRequest, utils::{validate_project_path, project_path_error}};
+use super::{MemoryCategory, MemoryManager};
+use crate::mcp::{
+    utils::{project_path_error, validate_project_path},
+    JiyiRequest,
+};
 use crate::{log_debug, log_important};
 
 /// 全局记忆管理工具
@@ -12,10 +15,10 @@ use crate::{log_debug, log_important};
 pub struct MemoryTool;
 
 impl MemoryTool {
-    pub async fn jiyi(
-        request: JiyiRequest,
-    ) -> Result<CallToolResult, McpError> {
-        log_important!(info, "[ji] 调用开始: action={}, project_path={}, content_len={}",
+    pub async fn jiyi(request: JiyiRequest) -> Result<CallToolResult, McpError> {
+        log_important!(
+            info,
+            "[ji] 调用开始: action={}, project_path={}, content_len={}",
             request.action,
             request.project_path,
             request.content.len()
@@ -34,13 +37,15 @@ impl MemoryTool {
         // 创建记忆管理器（会自动执行迁移和启动时去重）
         // 支持非 Git 项目降级模式
         let start = std::time::Instant::now();
-        let mut manager = MemoryManager::new(&request.project_path)
-            .map_err(|e| {
-                log_important!(error, "[ji] 创建记忆管理器失败: {}", e);
-                McpError::internal_error(format!("创建记忆管理器失败: {}", e), None)
-            })?;
-        log_debug!("[ji] 记忆管理器创建完成: elapsed={}ms, is_non_git={}", 
-            start.elapsed().as_millis(), manager.is_non_git_project());
+        let mut manager = MemoryManager::new(&request.project_path).map_err(|e| {
+            log_important!(error, "[ji] 创建记忆管理器失败: {}", e);
+            McpError::internal_error(format!("创建记忆管理器失败: {}", e), None)
+        })?;
+        log_debug!(
+            "[ji] 记忆管理器创建完成: elapsed={}ms, is_non_git={}",
+            start.elapsed().as_millis(),
+            manager.is_non_git_project()
+        );
 
         // 非 Git 项目提示（仅在降级模式时显示）
         let non_git_hint = if manager.is_non_git_project() {
@@ -55,7 +60,8 @@ impl MemoryTool {
             if let Err(e) = try_trigger_background_index(&request.project_path).await {
                 log_debug!("触发后台索引失败（不影响记忆操作）: {}", e);
             } else {
-                index_hint = "\n\n💡 已为当前项目后台启动代码索引，以便后续 sou 工具使用。".to_string();
+                index_hint =
+                    "\n\n💡 已为当前项目后台启动代码索引，以便后续 sou 工具使用。".to_string();
             }
         }
 
@@ -68,12 +74,21 @@ impl MemoryTool {
 
                 // 使用 MemoryCategory 的新方法解析分类
                 let category = MemoryCategory::from_str(&request.category);
-                log_debug!("[ji] 执行记忆操作: category={:?}, content_len={}", category, request.content.len());
+                log_debug!(
+                    "[ji] 执行记忆操作: category={:?}, content_len={}",
+                    category,
+                    request.content.len()
+                );
 
                 // 添加记忆（带去重检测）
                 match manager.add_memory(&request.content, category) {
                     Ok(Some(id)) => {
-                        log_important!(info, "[ji] 记忆添加成功: id={}, category={:?}", id, category);
+                        log_important!(
+                            info,
+                            "[ji] 记忆添加成功: id={}, category={:?}",
+                            id,
+                            category
+                        );
                         format!(
                             "✅ 记忆已添加，ID: {}\n📝 内容: {}\n📂 分类: {}{}{}",
                             id,
@@ -96,7 +111,10 @@ impl MemoryTool {
                     }
                     Err(e) => {
                         log_important!(error, "[ji] 添加记忆失败: {}", e);
-                        return Err(McpError::internal_error(format!("添加记忆失败: {}", e), None));
+                        return Err(McpError::internal_error(
+                            format!("添加记忆失败: {}", e),
+                            None,
+                        ));
                     }
                 }
             }
@@ -111,8 +129,13 @@ impl MemoryTool {
                 log_debug!("[ji] 执行整理（去重）操作");
                 match manager.deduplicate_with_stats() {
                     Ok(stats) => {
-                        log_important!(info, "[ji] 去重完成: original={}, removed={}, remaining={}",
-                            stats.original_count, stats.removed_count, stats.remaining_count);
+                        log_important!(
+                            info,
+                            "[ji] 去重完成: original={}, removed={}, remaining={}",
+                            stats.original_count,
+                            stats.removed_count,
+                            stats.remaining_count
+                        );
                         // 返回 JSON 格式便于前端解析
                         let json_result = serde_json::json!({
                             "success": true,
@@ -121,11 +144,17 @@ impl MemoryTool {
                             "remaining_count": stats.remaining_count,
                             "removed_ids": stats.removed_ids
                         });
-                        format!("✅ 去重整理完成\n{}", serde_json::to_string_pretty(&json_result).unwrap_or_default())
+                        format!(
+                            "✅ 去重整理完成\n{}",
+                            serde_json::to_string_pretty(&json_result).unwrap_or_default()
+                        )
                     }
                     Err(e) => {
                         log_important!(error, "[ji] 去重整理失败: {}", e);
-                        return Err(McpError::internal_error(format!("去重整理失败: {}", e), None));
+                        return Err(McpError::internal_error(
+                            format!("去重整理失败: {}", e),
+                            None,
+                        ));
                     }
                 }
             }
@@ -133,15 +162,18 @@ impl MemoryTool {
             "列表" => {
                 log_debug!("[ji] 执行列表操作");
                 let memories = manager.get_all_memories();
-                let entries: Vec<serde_json::Value> = memories.iter().map(|m| {
-                    serde_json::json!({
-                        "id": m.id,
-                        "content": m.content,
-                        "category": m.category.display_name(),
-                        "created_at": m.created_at.to_rfc3339()
+                let entries: Vec<serde_json::Value> = memories
+                    .iter()
+                    .map(|m| {
+                        serde_json::json!({
+                            "id": m.id,
+                            "content": m.content,
+                            "category": m.category.display_name(),
+                            "created_at": m.created_at.to_rfc3339()
+                        })
                     })
-                }).collect();
-                
+                    .collect();
+
                 let stats = manager.get_stats();
                 log_important!(info, "[ji] 列表完成: total={}", stats.total);
                 let json_result = serde_json::json!({
@@ -162,14 +194,26 @@ impl MemoryTool {
                     log_important!(warn, "[ji] 预览相似失败: 内容为空");
                     return Err(McpError::invalid_params("缺少待检测内容".to_string(), None));
                 }
-                
+
                 log_debug!("[ji] 执行预览相似: content_len={}", request.content.len());
-                let dedup = super::dedup::MemoryDeduplicator::new(manager.config().similarity_threshold);
-                let dup_info = dedup.check_duplicate(&request.content, &manager.get_all_memories().iter().map(|e| (*e).clone()).collect::<Vec<_>>());
-                
-                log_important!(info, "[ji] 相似度检测完成: is_dup={}, similarity={:.1}%", 
-                    dup_info.is_duplicate, dup_info.similarity * 100.0);
-                
+                let dedup =
+                    super::dedup::MemoryDeduplicator::new(manager.config().similarity_threshold);
+                let dup_info = dedup.check_duplicate(
+                    &request.content,
+                    &manager
+                        .get_all_memories()
+                        .iter()
+                        .map(|e| (*e).clone())
+                        .collect::<Vec<_>>(),
+                );
+
+                log_important!(
+                    info,
+                    "[ji] 相似度检测完成: is_dup={}, similarity={:.1}%",
+                    dup_info.is_duplicate,
+                    dup_info.similarity * 100.0
+                );
+
                 let json_result = serde_json::json!({
                     "is_duplicate": dup_info.is_duplicate,
                     "similarity": format!("{:.1}%", dup_info.similarity * 100.0),
@@ -178,15 +222,19 @@ impl MemoryTool {
                     "matched_id": dup_info.matched_id,
                     "matched_content": dup_info.matched_content
                 });
-                
+
                 if dup_info.is_duplicate {
-                    format!("⚠️ 检测到相似内容 (相似度: {:.1}%)\n{}", 
+                    format!(
+                        "⚠️ 检测到相似内容 (相似度: {:.1}%)\n{}",
                         dup_info.similarity * 100.0,
-                        serde_json::to_string_pretty(&json_result).unwrap_or_default())
+                        serde_json::to_string_pretty(&json_result).unwrap_or_default()
+                    )
                 } else {
-                    format!("✅ 未检测到相似内容 (最高相似度: {:.1}%)\n{}", 
+                    format!(
+                        "✅ 未检测到相似内容 (最高相似度: {:.1}%)\n{}",
                         dup_info.similarity * 100.0,
-                        serde_json::to_string_pretty(&json_result).unwrap_or_default())
+                        serde_json::to_string_pretty(&json_result).unwrap_or_default()
+                    )
                 }
             }
             // === 新增: 配置 (获取/更新配置) ===
@@ -195,7 +243,7 @@ impl MemoryTool {
                 if let Some(config_req) = request.config {
                     log_debug!("[ji] 执行配置更新: {:?}", config_req);
                     let mut new_config = manager.config().clone();
-                    
+
                     if let Some(threshold) = config_req.similarity_threshold {
                         // 验证阈值范围
                         new_config.similarity_threshold = threshold.clamp(0.5, 0.95);
@@ -206,16 +254,20 @@ impl MemoryTool {
                     if let Some(enable_dedup) = config_req.enable_dedup {
                         new_config.enable_dedup = enable_dedup;
                     }
-                    
-                    manager.update_config(new_config.clone())
-                        .map_err(|e| {
-                            log_important!(error, "[ji] 更新配置失败: {}", e);
-                            McpError::internal_error(format!("更新配置失败: {}", e), None)
-                        })?;
-                    
-                    log_important!(info, "[ji] 配置更新成功: threshold={}, dedup_on_startup={}, enable_dedup={}",
-                        new_config.similarity_threshold, new_config.dedup_on_startup, new_config.enable_dedup);
-                    
+
+                    manager.update_config(new_config.clone()).map_err(|e| {
+                        log_important!(error, "[ji] 更新配置失败: {}", e);
+                        McpError::internal_error(format!("更新配置失败: {}", e), None)
+                    })?;
+
+                    log_important!(
+                        info,
+                        "[ji] 配置更新成功: threshold={}, dedup_on_startup={}, enable_dedup={}",
+                        new_config.similarity_threshold,
+                        new_config.dedup_on_startup,
+                        new_config.enable_dedup
+                    );
+
                     let json_result = serde_json::json!({
                         "success": true,
                         "message": "配置已更新",
@@ -225,7 +277,10 @@ impl MemoryTool {
                             "enable_dedup": new_config.enable_dedup
                         }
                     });
-                    format!("✅ 配置已更新\n{}", serde_json::to_string_pretty(&json_result).unwrap_or_default())
+                    format!(
+                        "✅ 配置已更新\n{}",
+                        serde_json::to_string_pretty(&json_result).unwrap_or_default()
+                    )
                 } else {
                     // 返回当前配置
                     log_debug!("[ji] 获取当前配置");
@@ -235,21 +290,28 @@ impl MemoryTool {
                         "dedup_on_startup": config.dedup_on_startup,
                         "enable_dedup": config.enable_dedup
                     });
-                    format!("📋 当前配置\n{}", serde_json::to_string_pretty(&json_result).unwrap_or_default())
+                    format!(
+                        "📋 当前配置\n{}",
+                        serde_json::to_string_pretty(&json_result).unwrap_or_default()
+                    )
                 }
             }
             // === 新增: 删除 (移除指定记忆) ===
             "删除" => {
-                let memory_id = request.memory_id.as_deref()
-                    .ok_or_else(|| {
-                        log_important!(warn, "[ji] 删除失败: 缺少 memory_id");
-                        McpError::invalid_params("缺少 memory_id 参数".to_string(), None)
-                    })?;
-                
+                let memory_id = request.memory_id.as_deref().ok_or_else(|| {
+                    log_important!(warn, "[ji] 删除失败: 缺少 memory_id");
+                    McpError::invalid_params("缺少 memory_id 参数".to_string(), None)
+                })?;
+
                 log_debug!("[ji] 执行删除操作: memory_id={}", memory_id);
                 match manager.delete_memory(memory_id) {
                     Ok(Some(content)) => {
-                        log_important!(info, "[ji] 删除成功: id={}, content_len={}", memory_id, content.len());
+                        log_important!(
+                            info,
+                            "[ji] 删除成功: id={}, content_len={}",
+                            memory_id,
+                            content.len()
+                        );
                         format!("✅ 已删除记忆\n🆔 ID: {}\n📝 内容: {}", memory_id, content)
                     }
                     Ok(None) => {
@@ -258,7 +320,10 @@ impl MemoryTool {
                     }
                     Err(e) => {
                         log_important!(error, "[ji] 删除记忆失败: {}", e);
-                        return Err(McpError::internal_error(format!("删除记忆失败: {}", e), None));
+                        return Err(McpError::internal_error(
+                            format!("删除记忆失败: {}", e),
+                            None,
+                        ));
                     }
                 }
             }
@@ -271,7 +336,12 @@ impl MemoryTool {
             }
         };
 
-        log_important!(info, "[ji] 调用完成: action={}, result_len={}", request.action, result.len());
+        log_important!(
+            info,
+            "[ji] 调用完成: action={}, result_len={}",
+            request.action,
+            result.len()
+        );
         Ok(CallToolResult::success(vec![Content::text(result)]))
     }
 }
@@ -286,7 +356,9 @@ fn is_sou_enabled() -> bool {
 
 /// 尝试触发后台索引（仅在项目未初始化或索引失败时）
 async fn try_trigger_background_index(project_root: &str) -> Result<()> {
-    use super::super::acemcp::mcp::{get_initial_index_state, ensure_initial_index_background, InitialIndexState};
+    use super::super::acemcp::mcp::{
+        ensure_initial_index_background, get_initial_index_state, InitialIndexState,
+    };
 
     // 获取 acemcp 配置：复用工具内部读取逻辑，避免字段新增/演进导致此处漏填
     let acemcp_config = super::super::acemcp::mcp::AcemcpTool::get_acemcp_config().await?;
@@ -295,7 +367,10 @@ async fn try_trigger_background_index(project_root: &str) -> Result<()> {
     let initial_state = get_initial_index_state(project_root);
 
     // 仅在未初始化或失败时触发
-    if matches!(initial_state, InitialIndexState::Missing | InitialIndexState::Idle | InitialIndexState::Failed) {
+    if matches!(
+        initial_state,
+        InitialIndexState::Missing | InitialIndexState::Idle | InitialIndexState::Failed
+    ) {
         ensure_initial_index_background(&acemcp_config, project_root).await?;
         Ok(())
     } else {

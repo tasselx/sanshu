@@ -45,8 +45,14 @@ async fn uiux_beautify_uses_local_markdown_fallback_without_project_root() {
         Some("local_markdown")
     );
     assert_eq!(v["data"]["retrieval"]["degraded"].as_bool(), Some(true));
-    assert!(v["data"]["prompt"].as_str().unwrap_or_default().contains("页面美化提示词"));
-    assert!(v["data"]["uiux_hits"].as_array().map(|arr| !arr.is_empty()).unwrap_or(false));
+    assert!(v["data"]["prompt"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("页面美化提示词"));
+    assert!(v["data"]["uiux_hits"]
+        .as_array()
+        .map(|arr| !arr.is_empty())
+        .unwrap_or(false));
 }
 
 #[tokio::test]
@@ -66,7 +72,10 @@ async fn uiux_describe_returns_single_tool_contract() {
 
     assert_eq!(v["meta"]["tool"].as_str(), Some("uiux"));
     assert_eq!(v["data"]["action"].as_str(), Some("describe"));
-    assert!(v["data"]["prompt"].as_str().unwrap_or_default().contains("目标 UI 风格"));
+    assert!(v["data"]["prompt"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("目标 UI 风格"));
 }
 
 #[tokio::test]

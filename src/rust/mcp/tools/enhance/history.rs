@@ -1,16 +1,16 @@
 // 对话历史管理模块
 // 持久化存储用户与弹窗的交互历史，供提示词增强时使用
 
+use anyhow::{Context, Result};
+use chrono::{DateTime, Utc};
+use ring::digest::{Context as ShaContext, SHA256};
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
-use anyhow::{Context, Result};
-use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
-use ring::digest::{Context as ShaContext, SHA256};
 
-use crate::{log_debug, log_important};
 use crate::mcp::utils::safe_truncate;
+use crate::{log_debug, log_important};
 
 /// 对话历史管理器
 pub struct ChatHistoryManager {
@@ -292,9 +292,10 @@ impl ChatHistoryManager {
         } else {
             self.empty_history()
         };
-        
+
         // 生成唯一ID
-        let id = format!("{}_{}", 
+        let id = format!(
+            "{}_{}",
             chrono::Utc::now().timestamp_millis(),
             fastrand::u32(..)
         );
@@ -312,7 +313,7 @@ impl ChatHistoryManager {
         };
 
         history.entries.push_back(entry);
-        
+
         // 保持历史条数在限制内
         while history.entries.len() > self.max_entries {
             history.entries.pop_front();
@@ -365,9 +366,7 @@ impl ChatHistoryManager {
             map.insert(entry.id.clone(), entry);
         }
 
-        Ok(ids.iter()
-            .filter_map(|id| map.get(id).cloned())
-            .collect())
+        Ok(ids.iter().filter_map(|id| map.get(id).cloned()).collect())
     }
 
     /// 清空对话历史
@@ -427,65 +426,62 @@ impl ChatHistoryManager {
     pub fn to_api_format(&self, count: usize) -> Result<Vec<super::types::ChatHistoryEntry>> {
         let entries = self.get_recent(count)?;
 
-        Ok(entries.into_iter().map(|entry| {
-            super::types::ChatHistoryEntry {
+        Ok(entries
+            .into_iter()
+            .map(|entry| super::types::ChatHistoryEntry {
                 request_message: entry.user_input.clone(),
                 request_id: entry.id.clone(),
-                request_nodes: vec![
-                    super::types::ChatHistoryRequestNode {
-                        id: 0,
-                        node_type: 0,
-                        text_node: Some(super::types::TextNode {
-                            content: entry.user_input,
-                        }),
-                    }
-                ],
-                response_nodes: vec![
-                    super::types::ChatHistoryResponseNode {
-                        id: 1,
-                        node_type: 0,
-                        content: Some(entry.ai_response_summary),
-                        tool_use: None,
-                        thinking: None,
-                        billing_metadata: None,
-                        metadata: None,
-                        token_usage: None,
-                    }
-                ],
-            }
-        }).collect())
+                request_nodes: vec![super::types::ChatHistoryRequestNode {
+                    id: 0,
+                    node_type: 0,
+                    text_node: Some(super::types::TextNode {
+                        content: entry.user_input,
+                    }),
+                }],
+                response_nodes: vec![super::types::ChatHistoryResponseNode {
+                    id: 1,
+                    node_type: 0,
+                    content: Some(entry.ai_response_summary),
+                    tool_use: None,
+                    thinking: None,
+                    billing_metadata: None,
+                    metadata: None,
+                    token_usage: None,
+                }],
+            })
+            .collect())
     }
 
     /// 按指定 ID 转换为 chat-stream API 格式
-    pub fn to_api_format_by_ids(&self, ids: &[String]) -> Result<Vec<super::types::ChatHistoryEntry>> {
+    pub fn to_api_format_by_ids(
+        &self,
+        ids: &[String],
+    ) -> Result<Vec<super::types::ChatHistoryEntry>> {
         let entries = self.get_by_ids(ids)?;
 
-        Ok(entries.into_iter().map(|entry| {
-            super::types::ChatHistoryEntry {
+        Ok(entries
+            .into_iter()
+            .map(|entry| super::types::ChatHistoryEntry {
                 request_message: entry.user_input.clone(),
                 request_id: entry.id.clone(),
-                request_nodes: vec![
-                    super::types::ChatHistoryRequestNode {
-                        id: 0,
-                        node_type: 0,
-                        text_node: Some(super::types::TextNode {
-                            content: entry.user_input,
-                        }),
-                    }
-                ],
-                response_nodes: vec![
-                    super::types::ChatHistoryResponseNode {
-                        id: 1,
-                        node_type: 0,
-                        content: Some(entry.ai_response_summary),
-                        tool_use: None,
-                        thinking: None,
-                        billing_metadata: None,
-                        metadata: None,
-                        token_usage: None,
-                    }
-                ],
-            }
-        }).collect())
+                request_nodes: vec![super::types::ChatHistoryRequestNode {
+                    id: 0,
+                    node_type: 0,
+                    text_node: Some(super::types::TextNode {
+                        content: entry.user_input,
+                    }),
+                }],
+                response_nodes: vec![super::types::ChatHistoryResponseNode {
+                    id: 1,
+                    node_type: 0,
+                    content: Some(entry.ai_response_summary),
+                    tool_use: None,
+                    thinking: None,
+                    billing_metadata: None,
+                    metadata: None,
+                    token_usage: None,
+                }],
+            })
+            .collect())
     }
 }

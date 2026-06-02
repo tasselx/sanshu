@@ -3,7 +3,7 @@ use std::fs;
 use std::path::PathBuf;
 use tauri::{AppHandle, LogicalSize, Manager, State};
 
-use super::settings::{AppConfig, AppState, default_shortcuts, default_custom_prompts};
+use super::settings::{default_custom_prompts, default_shortcuts, AppConfig, AppState};
 
 pub fn get_config_path(_app: &AppHandle) -> Result<PathBuf> {
     // 使用与独立配置相同的路径，确保一致性
@@ -168,7 +168,10 @@ fn merge_default_shortcuts(config: &mut AppConfig) {
     for (key, default_binding) in default_shortcuts {
         if !config.shortcut_config.shortcuts.contains_key(&key) {
             // 如果用户配置中不存在，则添加
-            config.shortcut_config.shortcuts.insert(key, default_binding);
+            config
+                .shortcut_config
+                .shortcuts
+                .insert(key, default_binding);
         } else if key == "enhance" {
             // 特殊处理：更新增强快捷键的默认值从 Shift+Enter 到 Ctrl+Shift+Enter
             let existing_binding = config.shortcut_config.shortcuts.get(&key).unwrap();
@@ -178,9 +181,13 @@ fn merge_default_shortcuts(config: &mut AppConfig) {
                 && !existing_binding.key_combination.ctrl
                 && existing_binding.key_combination.shift
                 && !existing_binding.key_combination.alt
-                && !existing_binding.key_combination.meta {
+                && !existing_binding.key_combination.meta
+            {
                 // 更新为新的默认值 (Ctrl+Shift+Enter)
-                config.shortcut_config.shortcuts.insert(key, default_binding);
+                config
+                    .shortcut_config
+                    .shortcuts
+                    .insert(key, default_binding);
             }
         }
     }
@@ -194,7 +201,9 @@ fn merge_default_custom_prompts(config: &mut AppConfig) {
     // 遍历所有默认提示词
     for default_prompt in default_prompts {
         // 检查用户配置中是否已存在该提示词（按 ID 匹配）
-        let exists = config.custom_prompt_config.prompts
+        let exists = config
+            .custom_prompt_config
+            .prompts
             .iter()
             .any(|p| p.id == default_prompt.id);
 
@@ -206,6 +215,8 @@ fn merge_default_custom_prompts(config: &mut AppConfig) {
     }
 
     // 按 sort_order 重新排序，确保显示顺序正确
-    config.custom_prompt_config.prompts
+    config
+        .custom_prompt_config
+        .prompts
         .sort_by(|a, b| a.sort_order.cmp(&b.sort_order));
 }

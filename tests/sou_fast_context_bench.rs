@@ -31,9 +31,7 @@ fn extract_paths(text: &str) -> Vec<String> {
     text.lines()
         .filter_map(|line| {
             let trimmed = line.trim();
-            trimmed
-                .strip_prefix("Path: ")
-                .map(|s| s.trim().to_string())
+            trimmed.strip_prefix("Path: ").map(|s| s.trim().to_string())
         })
         .collect()
 }
@@ -120,12 +118,7 @@ async fn bench_fast_context_against_real_project() {
                 .iter()
                 .any(|kw| p.to_lowercase().contains(&kw.to_lowercase()))
         });
-        let first_preview = paths
-            .iter()
-            .take(2)
-            .cloned()
-            .collect::<Vec<_>>()
-            .join(", ");
+        let first_preview = paths.iter().take(2).cloned().collect::<Vec<_>>().join(", ");
 
         println!(
             "{:<14} {:<10} {:<6} {:<8} {:<32}",
@@ -137,7 +130,10 @@ async fn bench_fast_context_against_real_project() {
         );
 
         if is_err {
-            println!("  ⚠ 返回错误: {}", text.chars().take(300).collect::<String>());
+            println!(
+                "  ⚠ 返回错误: {}",
+                text.chars().take(300).collect::<String>()
+            );
         } else {
             println!("  全部命中文件: {:?}", paths);
         }

@@ -18,8 +18,8 @@ use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::OnceLock;
-use std::time::Instant;
 use std::time::Duration;
+use std::time::Instant;
 use std::time::SystemTime;
 use tokio::process::Command;
 use tokio::sync::Mutex;
@@ -103,6 +103,7 @@ pub struct SearchResult {
     /// ToolExecutor 在 readfile 命令中读取过的文件内容缓存（key 为规范化绝对路径）
     /// 用于格式化层复用，避免重复 IO。
     pub file_cache: HashMap<String, String>,
+    pub stats: SearchStats,
     pub meta: Value,
 }
 
@@ -111,6 +112,65 @@ pub struct FastContextFile {
     pub path: Option<String>,
     pub full_path: Option<String>,
     pub ranges: Vec<[usize; 2]>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct SearchStats {
+    pub commands_seen: usize,
+    pub commands_executed: usize,
+    pub commands_useful: usize,
+    pub commands_invalid: usize,
+    pub commands_repaired: usize,
+    pub path_missing: usize,
+    pub path_repaired: usize,
+    pub cache_hits: usize,
+    pub error_outputs: usize,
+}
+
+impl SearchStats {
+    fn merge(&mut self, other: &SearchStats) {
+        self.commands_seen += other.commands_seen;
+        self.commands_executed += other.commands_executed;
+        self.commands_useful += other.commands_useful;
+        self.commands_invalid += other.commands_invalid;
+        self.commands_repaired += other.commands_repaired;
+        self.path_missing += other.path_missing;
+        self.path_repaired += other.path_repaired;
+        self.cache_hits += other.cache_hits;
+        self.error_outputs += other.error_outputs;
+    }
+
+    pub(crate) fn useful_rate(&self) -> f64 {
+        ratio(self.commands_useful, self.commands_seen)
+    }
+
+    pub(crate) fn invalid_rate(&self) -> f64 {
+        ratio(self.commands_invalid, self.commands_seen)
+    }
+
+    fn to_json(&self) -> Value {
+        json!({
+            "commandsSeen": self.commands_seen,
+            "commandsExecuted": self.commands_executed,
+            "commandsUseful": self.commands_useful,
+            "commandsInvalid": self.commands_invalid,
+            "commandsRepaired": self.commands_repaired,
+            "pathMissing": self.path_missing,
+            "pathRepaired": self.path_repaired,
+            "cacheHits": self.cache_hits,
+            "errorOutputs": self.error_outputs,
+            "usefulCommandRate": self.useful_rate(),
+            "invalidCommandRate": self.invalid_rate()
+        })
+    }
+}
+
+fn ratio(numerator: usize, denominator: usize) -> f64 {
+    if denominator == 0 {
+        0.0
+    } else {
+        ((numerator as f64 / denominator as f64) * 1000.0).round() / 10.0
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -240,10 +300,7 @@ pub async fn search(opts: SearchOptions) -> Result<SearchResult> {
     if !project_root.is_dir() {
         return Err(anyhow!("项目路径不是目录: {}", project_root.display()));
     }
-    log::info!(
-        "[fast-context] 项目路径已解析: {}",
-        project_root.display()
-    );
+    log::info!("[fast-context] 项目路径已解析: {}", project_root.display());
 
     let detected_key = detect_api_key(opts.api_key.as_deref())
         .context("未找到 Windsurf API Key，请在设置中填写或登录 Windsurf 后重试")?;
@@ -280,8 +337,11 @@ pub async fn search(opts: SearchOptions) -> Result<SearchResult> {
     );
     // #2 Repo Map 智能化：附加 README / manifest 摘要，提升 LLM 首轮命中率
     let project_summary = build_project_summary(&project_root);
-    // 并发版 ToolExecutor：Arc<Mutex<状态>> 让多条 restricted_exec 命令可并行
-    let executor = Arc::new(ToolExecutor::new(project_root.clone()));
+    // 并发版 ToolExecutor：Arc<Mutex<状态>> 让多条 restricted_exec 命令可并行，并统一应用默认排除目录。
+    let executor = Arc::new(ToolExecutor::new(
+        project_root.clone(),
+        opts.exclude_paths.clone(),
+    ));
     let tool_defs = build_tool_definitions(opts.max_commands);
     let system_prompt = build_system_prompt(opts.max_turns, opts.max_commands, opts.max_results);
     // [D] 中文 query 提示：当中文字符占比超过 30%，user prompt 内追加翻译提醒
@@ -352,11 +412,13 @@ pub async fn search(opts: SearchOptions) -> Result<SearchResult> {
                 "[fast-context] 未解析到工具调用，返回 plain response: length={}",
                 text.len()
             );
+            let stats = executor.snapshot_stats().await;
             return Ok(SearchResult {
                 files: Vec::new(),
                 rg_patterns: executor.collected_rg_patterns().await,
                 file_cache: executor.snapshot_read_cache().await,
-                meta: build_meta(&repo_map, true, Some(text)),
+                stats: stats.clone(),
+                meta: build_meta(&repo_map, true, Some(text), &stats),
             });
         };
 
@@ -392,11 +454,13 @@ pub async fn search(opts: SearchOptions) -> Result<SearchResult> {
                     turn += 1;
                     continue;
                 }
+                let stats = executor.snapshot_stats().await;
                 return Ok(SearchResult {
                     files,
                     rg_patterns: executor.collected_rg_patterns().await,
                     file_cache: executor.snapshot_read_cache().await,
-                    meta: build_meta(&repo_map, true, None),
+                    stats: stats.clone(),
+                    meta: build_meta(&repo_map, true, None, &stats),
                 });
             }
             "restricted_exec" => {
@@ -419,14 +483,21 @@ pub async fn search(opts: SearchOptions) -> Result<SearchResult> {
                     valid_commands,
                     dup_count
                 );
-                let results = ToolExecutor::exec_tool_call(executor.clone(), &tool_call.args).await;
+                let batch = ToolExecutor::exec_tool_call(executor.clone(), &tool_call.args).await;
+                let results = batch.output;
                 log::debug!(
                     "[fast-context] restricted_exec 返回: turn={}, output_len={}",
                     turn + 1,
                     results.len()
                 );
 
-                if valid_commands == 0 && compensated_turns < 2 {
+                if batch.stats.commands_useful == 0 && compensated_turns < 2 {
+                    log::warn!(
+                        "[fast-context] 本轮未产生有效上下文，补偿搜索轮次: turn={}, invalid={}, path_missing={}",
+                        turn + 1,
+                        batch.stats.commands_invalid,
+                        batch.stats.path_missing
+                    );
                     compensated_turns += 1;
                 }
 
@@ -468,14 +539,17 @@ pub async fn search(opts: SearchOptions) -> Result<SearchResult> {
         "[fast-context] 已达到最大轮次但未获得 answer: elapsed_ms={}",
         started_at.elapsed().as_millis()
     );
+    let stats = executor.snapshot_stats().await;
     Ok(SearchResult {
         files: Vec::new(),
         rg_patterns: executor.collected_rg_patterns().await,
         file_cache: executor.snapshot_read_cache().await,
+        stats: stats.clone(),
         meta: build_meta(
             &repo_map,
             true,
             Some("Max turns reached without getting an answer".to_string()),
+            &stats,
         ),
     })
 }
@@ -1203,11 +1277,7 @@ fn build_project_summary(root: &Path) -> String {
     for candidate in ["README.md", "README.MD", "Readme.md", "readme.md", "README"] {
         let path = root.join(candidate);
         if let Ok(content) = fs::read_to_string(&path) {
-            let head = content
-                .lines()
-                .take(30)
-                .collect::<Vec<_>>()
-                .join("\n");
+            let head = content.lines().take(30).collect::<Vec<_>>().join("\n");
             if !head.trim().is_empty() {
                 sections.push(format!(
                     "### README ({candidate}, first 30 lines)\n```\n{head}\n```"
@@ -1221,7 +1291,9 @@ fn build_project_summary(root: &Path) -> String {
     if let Ok(content) = fs::read_to_string(root.join("Cargo.toml")) {
         let head = content.lines().take(40).collect::<Vec<_>>().join("\n");
         if !head.trim().is_empty() {
-            sections.push(format!("### Cargo.toml (first 40 lines)\n```toml\n{head}\n```"));
+            sections.push(format!(
+                "### Cargo.toml (first 40 lines)\n```toml\n{head}\n```"
+            ));
         }
     }
 
@@ -1248,7 +1320,10 @@ fn build_project_summary(root: &Path) -> String {
     if sections.is_empty() {
         String::new()
     } else {
-        format!("\n\nProject Summary (auto-extracted):\n{}", sections.join("\n\n"))
+        format!(
+            "\n\nProject Summary (auto-extracted):\n{}",
+            sections.join("\n\n")
+        )
     }
 }
 
@@ -1421,12 +1496,167 @@ fn count_valid_commands(args: &Value) -> usize {
         .map(|obj| {
             obj.iter()
                 .filter(|(key, value)| {
-                    key.starts_with("command")
-                        && value.get("type").and_then(Value::as_str).is_some()
+                    key.starts_with("command") && is_structurally_valid_command(value)
                 })
                 .count()
         })
         .unwrap_or(0)
+}
+
+fn is_structurally_valid_command(value: &Value) -> bool {
+    match normalize_command_shape(value) {
+        Some((command, _)) => match command.get("type").and_then(Value::as_str) {
+            Some("rg") => non_empty_str(&command, "pattern") && non_empty_str(&command, "path"),
+            Some("readfile") => non_empty_str(&command, "file"),
+            Some("tree" | "ls") => non_empty_str(&command, "path"),
+            Some("glob") => non_empty_str(&command, "pattern") && non_empty_str(&command, "path"),
+            _ => false,
+        },
+        None => false,
+    }
+}
+
+fn non_empty_str(value: &Value, key: &str) -> bool {
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .is_some_and(|s| !s.trim().is_empty())
+}
+
+fn normalize_command_shape(value: &Value) -> Option<(Value, bool)> {
+    if value.get("type").and_then(Value::as_str).is_some() {
+        return Some((value.clone(), false));
+    }
+
+    let obj = value.as_object()?;
+    for kind in ["rg", "readfile", "tree", "ls", "glob"] {
+        if let Some(nested) = obj.get(kind).and_then(Value::as_object) {
+            let mut command = nested.clone();
+            command.insert("type".to_string(), Value::String(kind.to_string()));
+            return Some((Value::Object(command), true));
+        }
+    }
+
+    // 兼容 LLM 常见 shorthand：{"readfile": "/codebase/a.rs", "start_line": 1}
+    if let Some(file) = obj.get("readfile").and_then(Value::as_str) {
+        let mut command = Map::new();
+        command.insert("type".to_string(), Value::String("readfile".to_string()));
+        command.insert("file".to_string(), Value::String(file.to_string()));
+        copy_optional_keys(obj, &mut command, &["start_line", "end_line"]);
+        return Some((Value::Object(command), true));
+    }
+
+    if let Some(path) = obj.get("tree").and_then(Value::as_str) {
+        let mut command = Map::new();
+        command.insert("type".to_string(), Value::String("tree".to_string()));
+        command.insert("path".to_string(), Value::String(path.to_string()));
+        copy_optional_keys(obj, &mut command, &["levels"]);
+        return Some((Value::Object(command), true));
+    }
+
+    if let Some(path) = obj.get("ls").and_then(Value::as_str) {
+        let mut command = Map::new();
+        command.insert("type".to_string(), Value::String("ls".to_string()));
+        command.insert("path".to_string(), Value::String(path.to_string()));
+        copy_optional_keys(obj, &mut command, &["long_format", "all"]);
+        return Some((Value::Object(command), true));
+    }
+
+    None
+}
+
+fn copy_optional_keys(source: &Map<String, Value>, target: &mut Map<String, Value>, keys: &[&str]) {
+    for key in keys {
+        if let Some(value) = source.get(*key) {
+            target.insert((*key).to_string(), value.clone());
+        }
+    }
+}
+
+fn classify_output(output: &str, stats: &mut SearchStats) {
+    let trimmed = output.trim();
+    let has_repair_warning = trimmed.contains("Warning: requested path missing");
+    let has_missing_hint = trimmed.contains("Hint: requested path missing");
+    if has_repair_warning {
+        stats.path_missing = 1;
+        stats.path_repaired = 1;
+    } else if has_missing_hint {
+        stats.path_missing = 1;
+    }
+
+    let effective = strip_diagnostic_lines(trimmed);
+    if is_useful_output(&effective) {
+        stats.commands_useful = 1;
+        return;
+    }
+
+    if effective.starts_with("Error:") {
+        stats.error_outputs = 1;
+        if effective.contains("path does not exist")
+            || effective.contains("file not found")
+            || effective.contains("dir not found")
+            || effective.contains("not a directory")
+        {
+            stats.path_missing = 1;
+        }
+    }
+}
+
+fn is_useful_output(output: &str) -> bool {
+    let trimmed = output.trim();
+    !trimmed.is_empty() && !trimmed.starts_with("Error:") && trimmed != "(no matches)"
+}
+
+fn strip_diagnostic_lines(output: &str) -> String {
+    output
+        .lines()
+        .filter(|line| {
+            let trimmed = line.trim_start();
+            !trimmed.starts_with("Warning: requested path missing")
+                && !trimmed.starts_with("Hint: requested path missing")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn normalize_virtual_path(path: &str) -> String {
+    let normalized = path.trim().replace('\\', "/");
+    if normalized.starts_with("/codebase") {
+        normalized
+    } else {
+        format!("/codebase/{}", normalized.trim_start_matches('/'))
+    }
+}
+
+fn format_path_fallback_warning(command: &str, fallback: &PathFallback) -> String {
+    let candidates = if fallback.candidates.is_empty() {
+        "(no siblings)".to_string()
+    } else {
+        fallback.candidates.join(", ")
+    };
+    format!(
+        "Warning: requested path missing for {command}; requested={}; searched_nearest_existing_parent={}; sibling_candidates={}",
+        fallback.requested, fallback.fallback_label, candidates
+    )
+}
+
+fn format_path_missing_hint(command: &str, fallback: &PathFallback) -> String {
+    let candidates = if fallback.candidates.is_empty() {
+        "(no siblings)".to_string()
+    } else {
+        fallback.candidates.join(", ")
+    };
+    format!(
+        "Hint: requested path missing for {command}; requested={}; nearest_existing_parent={}; sibling_candidates={}",
+        fallback.requested, fallback.fallback_label, candidates
+    )
+}
+
+fn prepend_warning(warning: Option<&str>, output: &str) -> String {
+    match warning {
+        Some(warning) => format!("{warning}\n{output}"),
+        None => output.to_string(),
+    }
 }
 
 fn trim_messages(messages: &mut Vec<ChatMessage>) {
@@ -1443,12 +1673,18 @@ fn trim_messages(messages: &mut Vec<ChatMessage>) {
     *messages = trimmed;
 }
 
-fn build_meta(repo_map: &RepoMap, native: bool, raw_response: Option<String>) -> Value {
+fn build_meta(
+    repo_map: &RepoMap,
+    native: bool,
+    raw_response: Option<String>,
+    stats: &SearchStats,
+) -> Value {
     let mut meta = json!({
         "treeDepth": repo_map.depth,
         "treeSizeKB": ((repo_map.size_bytes as f64 / 1024.0) * 10.0).round() / 10.0,
         "fellBack": repo_map.fell_back,
-        "native": native
+        "native": native,
+        "stats": stats.to_json()
     });
     if let Some(raw) = raw_response {
         meta["raw_response"] = Value::String(raw);
@@ -1619,6 +1855,7 @@ fn gunzip_bytes(data: &[u8]) -> Result<Vec<u8>> {
 struct ToolExecutor {
     root: PathBuf,
     root_slash: String,
+    exclude_paths: Vec<String>,
     state: Mutex<ToolExecutorState>,
 }
 
@@ -1631,16 +1868,45 @@ struct ToolExecutorState {
     /// readfile 完整文件缓存：(规范化绝对路径 → 文件原文)
     /// 供格式化层复用；同一文件的多个 readfile 也共享一次磁盘 IO
     read_cache: HashMap<String, String>,
+    /// 本次搜索的本地命令统计，用于输出命中率和诊断 LLM 工具调用质量
+    stats: SearchStats,
     /// 上一次 turn 的命令指纹集合，用于 #5 重复检测
     last_turn_fingerprints: HashSet<String>,
 }
 
+#[derive(Debug)]
+struct BatchExecution {
+    output: String,
+    stats: SearchStats,
+}
+
+#[derive(Debug)]
+struct CommandExecution {
+    output: String,
+    stats: SearchStats,
+}
+
+#[derive(Debug, Clone)]
+struct PathFallback {
+    requested: String,
+    fallback_path: PathBuf,
+    fallback_label: String,
+    candidates: Vec<String>,
+}
+
+#[derive(Debug)]
+enum PreparedCommand {
+    Valid { command: Value, repaired: bool },
+    Invalid { message: String },
+}
+
 impl ToolExecutor {
-    fn new(root: PathBuf) -> Self {
+    fn new(root: PathBuf, exclude_paths: Vec<String>) -> Self {
         let root_slash = normalize_path(&root);
         Self {
             root,
             root_slash,
+            exclude_paths,
             state: Mutex::new(ToolExecutorState::default()),
         }
     }
@@ -1661,6 +1927,10 @@ impl ToolExecutor {
         self.state.lock().await.read_cache.clone()
     }
 
+    async fn snapshot_stats(&self) -> SearchStats {
+        self.state.lock().await.stats.clone()
+    }
+
     /// #5 统计当前 args 中与上一次相同的命令指纹数量
     async fn count_repeat_commands(&self, args: &Value) -> usize {
         let state = self.state.lock().await;
@@ -1670,21 +1940,31 @@ impl ToolExecutor {
                 if !key.starts_with("command") {
                     continue;
                 }
-                let fp = command_fingerprint(value);
-                if !fp.is_empty() && state.last_turn_fingerprints.contains(&fp) {
-                    dup += 1;
+                if let PreparedCommand::Valid { command, .. } = self.prepare_command(value) {
+                    let fp = command_fingerprint(&command);
+                    if !fp.is_empty() && state.last_turn_fingerprints.contains(&fp) {
+                        dup += 1;
+                    }
                 }
             }
         }
         dup
     }
 
-    /// 并发执行一次 restricted_exec 中的所有子命令，返回拼接结果。
+    /// 并发执行一次 restricted_exec 中的所有子命令，返回拼接结果与本轮统计。
     /// 接收 Arc<Self> 是为了在 join_all 里把同一个 executor 复制给多个并发 future。
-    async fn exec_tool_call(self_arc: Arc<Self>, args: &Value) -> String {
+    async fn exec_tool_call(self_arc: Arc<Self>, args: &Value) -> BatchExecution {
         let Some(obj) = args.as_object() else {
             log::warn!("[fast-context] restricted_exec 参数缺失或格式错误");
-            return "Error: missing or invalid tool args".to_string();
+            let stats = SearchStats {
+                commands_seen: 1,
+                commands_invalid: 1,
+                ..SearchStats::default()
+            };
+            return BatchExecution {
+                output: "Error: missing or invalid tool args".to_string(),
+                stats,
+            };
         };
         let mut keys = obj
             .keys()
@@ -1698,12 +1978,14 @@ impl ToolExecutor {
             keys.len()
         );
 
-        // 记录本轮指纹（覆盖上一轮），用于下一轮的重复检测
+        // 记录本轮有效命令指纹（覆盖上一轮），用于下一轮的重复检测。
         let mut current_fps = HashSet::new();
         for key in &keys {
-            let fp = command_fingerprint(&obj[key]);
-            if !fp.is_empty() {
-                current_fps.insert(fp);
+            if let PreparedCommand::Valid { command, .. } = self_arc.prepare_command(&obj[key]) {
+                let fp = command_fingerprint(&command);
+                if !fp.is_empty() {
+                    current_fps.insert(fp);
+                }
             }
         }
 
@@ -1714,35 +1996,68 @@ impl ToolExecutor {
             let cmd = obj[key].clone();
             async move {
                 let started_at = Instant::now();
-                let output = executor.exec_command(&cmd).await;
+                let execution = executor.exec_command(&cmd).await;
                 log::info!(
                     "[fast-context] restricted_exec 本地命令完成: key={}, output_len={}, elapsed_ms={}",
                     key_owned,
-                    output.len(),
+                    execution.output.len(),
                     started_at.elapsed().as_millis()
                 );
-                format!("<{key_owned}_result>\n{output}\n</{key_owned}_result>")
+                (
+                    format!(
+                        "<{key_owned}_result>\n{}\n</{key_owned}_result>",
+                        execution.output
+                    ),
+                    execution.stats,
+                )
             }
         });
-        let parts: Vec<String> = join_all(futures).await;
+        let executions: Vec<(String, SearchStats)> = join_all(futures).await;
+        let mut batch_stats = SearchStats::default();
+        let mut parts = Vec::with_capacity(executions.len());
+        for (output, stats) in executions {
+            batch_stats.merge(&stats);
+            parts.push(output);
+        }
 
         // 更新最后一轮指纹（不影响当轮 dup_count，因为 dup_count 在 exec 之前已检测）
         {
             let mut state = self_arc.state.lock().await;
             state.last_turn_fingerprints = current_fps;
+            state.stats.merge(&batch_stats);
         }
 
-        parts.join("")
+        BatchExecution {
+            output: parts.join(""),
+            stats: batch_stats,
+        }
     }
 
-    async fn exec_command(&self, cmd: &Value) -> String {
-        let Some(kind) = cmd.get("type").and_then(Value::as_str) else {
-            log::warn!("[fast-context] 本地命令缺少 type: {}", cmd);
-            return "Error: missing or invalid command".to_string();
+    async fn exec_command(&self, raw_cmd: &Value) -> CommandExecution {
+        let mut stats = SearchStats {
+            commands_seen: 1,
+            ..SearchStats::default()
         };
+        let (cmd, repaired) = match self.prepare_command(raw_cmd) {
+            PreparedCommand::Valid { command, repaired } => (command, repaired),
+            PreparedCommand::Invalid { message } => {
+                log::warn!("[fast-context] 本地命令无效: {}, raw={}", message, raw_cmd);
+                stats.commands_invalid = 1;
+                stats.error_outputs = 1;
+                return CommandExecution {
+                    output: format!("Error: invalid command: {message}"),
+                    stats,
+                };
+            }
+        };
+        if repaired {
+            stats.commands_repaired = 1;
+        };
+        stats.commands_executed = 1;
 
         // 命令缓存：相同指纹直接复用结果（跨 turn 都生效）
-        let fp = command_fingerprint(cmd);
+        let fp = command_fingerprint(&cmd);
+        let kind = cmd.get("type").and_then(Value::as_str).unwrap_or_default();
         if !fp.is_empty() {
             let state = self.state.lock().await;
             if let Some(cached) = state.command_cache.get(&fp) {
@@ -1752,7 +2067,12 @@ impl ToolExecutor {
                     fp.len(),
                     cached.len()
                 );
-                return cached.clone();
+                stats.cache_hits = 1;
+                classify_output(cached, &mut stats);
+                return CommandExecution {
+                    output: cached.clone(),
+                    stats,
+                };
             }
         }
 
@@ -1761,7 +2081,7 @@ impl ToolExecutor {
                 let pattern = cmd.get("pattern").and_then(Value::as_str).unwrap_or("");
                 let path = cmd.get("path").and_then(Value::as_str).unwrap_or("");
                 let include = string_array(cmd.get("include"));
-                let exclude = string_array(cmd.get("exclude"));
+                let exclude = self.merge_excludes(string_array(cmd.get("exclude")));
                 log::info!(
                     "[fast-context] 本地命令 rg: path={}, pattern_len={}, include_count={}, exclude_count={}",
                     path,
@@ -1835,12 +2155,150 @@ impl ToolExecutor {
             }
         };
 
-        // 写入命令缓存
-        if !fp.is_empty() {
+        classify_output(&output, &mut stats);
+
+        // 只缓存有用输出，避免空 pattern / 路径不存在这类错误被后续误判为缓存命中。
+        if !fp.is_empty() && is_useful_output(&output) {
             let mut state = self.state.lock().await;
             state.command_cache.insert(fp, output.clone());
         }
-        output
+        CommandExecution { output, stats }
+    }
+
+    fn prepare_command(&self, raw_cmd: &Value) -> PreparedCommand {
+        let (cmd, repaired) = match normalize_command_shape(raw_cmd) {
+            Some(normalized) => normalized,
+            None => {
+                return PreparedCommand::Invalid {
+                    message: "missing command type".to_string(),
+                };
+            }
+        };
+
+        let Some(kind) = cmd.get("type").and_then(Value::as_str) else {
+            return PreparedCommand::Invalid {
+                message: "missing command type".to_string(),
+            };
+        };
+
+        let error = match kind {
+            "rg" => {
+                let pattern = cmd.get("pattern").and_then(Value::as_str).unwrap_or("");
+                let path = cmd.get("path").and_then(Value::as_str).unwrap_or("");
+                if pattern.trim().is_empty() {
+                    Some("rg.pattern is required")
+                } else if !self.is_safe_virtual_path(path) {
+                    Some("rg.path is missing or outside /codebase")
+                } else {
+                    None
+                }
+            }
+            "readfile" => {
+                let file = cmd.get("file").and_then(Value::as_str).unwrap_or("");
+                if !self.is_safe_virtual_path(file) {
+                    Some("readfile.file is missing or outside /codebase")
+                } else {
+                    None
+                }
+            }
+            "tree" | "ls" => {
+                let path = cmd.get("path").and_then(Value::as_str).unwrap_or("");
+                if !self.is_safe_virtual_path(path) {
+                    Some("path is missing or outside /codebase")
+                } else {
+                    None
+                }
+            }
+            "glob" => {
+                let pattern = cmd.get("pattern").and_then(Value::as_str).unwrap_or("");
+                let path = cmd.get("path").and_then(Value::as_str).unwrap_or("");
+                if pattern.trim().is_empty() {
+                    Some("glob.pattern is required")
+                } else if !self.is_safe_virtual_path(path) {
+                    Some("glob.path is missing or outside /codebase")
+                } else {
+                    None
+                }
+            }
+            _ => Some("unsupported command type"),
+        };
+
+        if let Some(message) = error {
+            return PreparedCommand::Invalid {
+                message: message.to_string(),
+            };
+        }
+
+        PreparedCommand::Valid {
+            command: cmd,
+            repaired,
+        }
+    }
+
+    fn merge_excludes(&self, command_excludes: Vec<String>) -> Vec<String> {
+        let mut seen = HashSet::new();
+        self.exclude_paths
+            .iter()
+            .chain(command_excludes.iter())
+            .filter_map(|pattern| {
+                let trimmed = pattern.trim();
+                if trimmed.is_empty() || !seen.insert(trimmed.to_string()) {
+                    None
+                } else {
+                    Some(trimmed.to_string())
+                }
+            })
+            .collect()
+    }
+
+    fn is_safe_virtual_path(&self, value: &str) -> bool {
+        self.real_path(value).is_ok()
+    }
+
+    fn path_fallback(&self, requested: &str) -> Option<PathFallback> {
+        let missing = self.real_path(requested).ok()?;
+        if missing.exists() {
+            return None;
+        }
+        let mut parent = missing.parent();
+        while let Some(candidate) = parent {
+            if candidate.exists() && candidate.is_dir() && candidate.starts_with(&self.root) {
+                let candidates = self.path_candidates(candidate);
+                return Some(PathFallback {
+                    requested: normalize_virtual_path(requested),
+                    fallback_path: candidate.to_path_buf(),
+                    fallback_label: self.remap(&normalize_path(candidate)),
+                    candidates,
+                });
+            }
+            parent = candidate.parent();
+        }
+        None
+    }
+
+    fn path_candidates(&self, dir: &Path) -> Vec<String> {
+        let mut entries = sorted_entries(dir, &self.exclude_paths)
+            .into_iter()
+            .take(8)
+            .map(|entry| {
+                let path = entry.path();
+                let suffix = if path.is_dir() { "/" } else { "" };
+                format!("{}{}", self.remap(&normalize_path(&path)), suffix)
+            })
+            .collect::<Vec<_>>();
+        entries.sort();
+        entries
+    }
+
+    fn path_missing_message(&self, command: &str, requested: &str, prefix: &str) -> String {
+        if let Some(fallback) = self.path_fallback(requested) {
+            format!(
+                "{prefix}: {requested}\n{}",
+                format_path_missing_hint(command, &fallback)
+            )
+        } else {
+            format!("{prefix}: {requested}")
+        }
     }
 
     async fn rg(
@@ -1858,10 +2316,20 @@ impl ToolExecutor {
             log::warn!("[fast-context] rg 路径无法映射: {}", path);
             return format!("Error: path does not exist: {path}");
         };
-        if !real_path.exists() {
+        let (real_path, path_warning) = if real_path.exists() {
+            (real_path, None)
+        } else if let Some(fallback) = self.path_fallback(path) {
+            log::warn!(
+                "[fast-context] rg 路径不存在，已回退到最近存在父目录: requested={}, fallback={}",
+                path,
+                fallback.fallback_label
+            );
+            let warning = format_path_fallback_warning("rg", &fallback);
+            (fallback.fallback_path, Some(warning))
+        } else {
             log::warn!("[fast-context] rg 路径不存在: {}", real_path.display());
             return format!("Error: path does not exist: {path}");
-        }
+        };
         {
             let mut state = self.state.lock().await;
             state.collected_rg_patterns.push(pattern.to_string());
@@ -1895,11 +2363,11 @@ impl ToolExecutor {
                     real_path.display(),
                     result.len()
                 );
-                result
+                prepend_warning(path_warning.as_deref(), &result)
             }
             Ok(Ok(output)) if output.status.code() == Some(1) => {
                 log::info!("[fast-context] rg 无匹配: pattern={}", pattern);
-                "(no matches)".to_string()
+                prepend_warning(path_warning.as_deref(), "(no matches)")
             }
             Ok(Ok(output)) => {
                 let stderr = String::from_utf8_lossy(&output.stderr);
@@ -1913,7 +2381,7 @@ impl ToolExecutor {
                     output.status.code(),
                     result.len()
                 );
-                result
+                prepend_warning(path_warning.as_deref(), &result)
             }
             // 本机未安装 rg 时走 Rust 内置搜索，保证 fast-context 不因外部二进制缺失不可用。
             Ok(Err(err)) => {
@@ -1921,7 +2389,10 @@ impl ToolExecutor {
                     "[fast-context] 启动 rg 失败，改用 Rust 内置搜索: error={}",
                     err
                 );
-                self.rg_fallback(pattern, &real_path, &include, &exclude)
+                prepend_warning(
+                    path_warning.as_deref(),
+                    &self.rg_fallback(pattern, &real_path, &include, &exclude),
+                )
             }
             Err(_) => {
                 log::warn!("[fast-context] rg 超时: pattern={}", pattern);
@@ -1967,14 +2438,19 @@ impl ToolExecutor {
         }
     }
 
-    async fn readfile(&self, file: &str, start_line: Option<usize>, end_line: Option<usize>) -> String {
+    async fn readfile(
+        &self,
+        file: &str,
+        start_line: Option<usize>,
+        end_line: Option<usize>,
+    ) -> String {
         let Ok(path) = self.real_path(file) else {
             log::warn!("[fast-context] readfile 文件无法映射: {}", file);
-            return format!("Error: file not found: {file}");
+            return self.path_missing_message("readfile", file, "Error: file not found");
         };
         if !path.is_file() {
             log::warn!("[fast-context] readfile 文件不存在: {}", path.display());
-            return format!("Error: file not found: {file}");
+            return self.path_missing_message("readfile", file, "Error: file not found");
         }
         let key = normalize_path(&path);
         // #3 读文件缓存：同一 path 全量内容仅读盘一次，多次 readfile（不同 range）零额外 IO
@@ -2027,18 +2503,18 @@ impl ToolExecutor {
     fn tree(&self, path: &str, levels: Option<u8>) -> String {
         let Ok(real_path) = self.real_path(path) else {
             log::warn!("[fast-context] tree 目录无法映射: {}", path);
-            return format!("Error: dir not found: {path}");
+            return self.path_missing_message("tree", path, "Error: dir not found");
         };
         if !real_path.is_dir() {
             log::warn!("[fast-context] tree 目录不存在: {}", real_path.display());
-            return format!("Error: dir not found: {path}");
+            return self.path_missing_message("tree", path, "Error: dir not found");
         }
         let label = self.virtual_label(path);
         let result = truncate_output(&self.remap(&build_tree(
             &real_path,
             &label,
             levels.unwrap_or(3).clamp(1, 6),
-            &[],
+            &self.exclude_paths,
         )));
         log::info!(
             "[fast-context] tree 完成: path={}, output_len={}",
@@ -2051,11 +2527,11 @@ impl ToolExecutor {
     fn ls(&self, path: &str, long_format: bool, all: bool) -> String {
         let Ok(real_path) = self.real_path(path) else {
             log::warn!("[fast-context] ls 目录无法映射: {}", path);
-            return format!("Error: dir not found: {path}");
+            return self.path_missing_message("ls", path, "Error: dir not found");
         };
         if !real_path.is_dir() {
             log::warn!("[fast-context] ls 不是目录: {}", real_path.display());
-            return format!("Error: not a directory: {path}");
+            return self.path_missing_message("ls", path, "Error: not a directory");
         }
         let mut entries = match fs::read_dir(&real_path) {
             Ok(entries) => entries.filter_map(|entry| entry.ok()).collect::<Vec<_>>(),
@@ -2121,10 +2597,20 @@ impl ToolExecutor {
             log::warn!("[fast-context] glob 路径无法映射: {}", path);
             return format!("Error: path does not exist: {path}");
         };
-        if !root.exists() {
+        let (root, path_warning) = if root.exists() {
+            (root, None)
+        } else if let Some(fallback) = self.path_fallback(path) {
+            log::warn!(
+                "[fast-context] glob 路径不存在，已回退到最近存在父目录: requested={}, fallback={}",
+                path,
+                fallback.fallback_label
+            );
+            let warning = format_path_fallback_warning("glob", &fallback);
+            (fallback.fallback_path, Some(warning))
+        } else {
             log::warn!("[fast-context] glob 路径不存在: {}", root.display());
             return format!("Error: path does not exist: {path}");
-        }
+        };
         let matcher = match GlobBuilder::new(pattern).literal_separator(true).build() {
             Ok(glob) => glob.compile_matcher(),
             Err(err) => {
@@ -2133,12 +2619,19 @@ impl ToolExecutor {
             }
         };
         let mut matches = Vec::new();
-        collect_glob_matches(&root, &root, &matcher, type_filter, &mut matches);
+        collect_glob_matches(
+            &root,
+            &root,
+            &matcher,
+            type_filter,
+            &self.exclude_paths,
+            &mut matches,
+        );
         matches.sort();
         matches.truncate(100);
         if matches.is_empty() {
             log::info!("[fast-context] glob 无匹配: pattern={}", pattern);
-            "(no matches)".to_string()
+            prepend_warning(path_warning.as_deref(), "(no matches)")
         } else {
             let result = self.remap(
                 &matches
@@ -2152,7 +2645,7 @@ impl ToolExecutor {
                 matches.len(),
                 result.len()
             );
-            result
+            prepend_warning(path_warning.as_deref(), &result)
         }
     }
 
@@ -2245,14 +2738,18 @@ fn command_fingerprint(cmd: &Value) -> String {
         "ls" => format!(
             "ls|{}|{}|{}",
             cmd.get("path").and_then(Value::as_str).unwrap_or(""),
-            cmd.get("long_format").and_then(Value::as_bool).unwrap_or(false),
+            cmd.get("long_format")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
             cmd.get("all").and_then(Value::as_bool).unwrap_or(false),
         ),
         "glob" => format!(
             "glob|{}|{}|{}",
             cmd.get("pattern").and_then(Value::as_str).unwrap_or(""),
             cmd.get("path").and_then(Value::as_str).unwrap_or(""),
-            cmd.get("type_filter").and_then(Value::as_str).unwrap_or("all"),
+            cmd.get("type_filter")
+                .and_then(Value::as_str)
+                .unwrap_or("all"),
         ),
         _ => String::new(),
     }
@@ -2263,6 +2760,7 @@ fn collect_glob_matches(
     dir: &Path,
     matcher: &globset::GlobMatcher,
     type_filter: &str,
+    exclude: &[String],
     matches: &mut Vec<PathBuf>,
 ) {
     if matches.len() >= 100 {
@@ -2281,12 +2779,16 @@ fn collect_glob_matches(
         };
         let rel = path.strip_prefix(base).unwrap_or(&path);
         let name = entry.file_name().to_string_lossy().to_string();
+        let rel_slash = normalize_path(rel);
+        if matches_exclude(&name, exclude) || matches_exclude(&rel_slash, exclude) {
+            continue;
+        }
         let matched = matcher.is_match(rel) || matcher.is_match(&name);
         if matched && matches_type(type_filter, metadata.is_file(), metadata.is_dir()) {
             matches.push(path.clone());
         }
         if metadata.is_dir() && !name.starts_with('.') {
-            collect_glob_matches(base, &path, matcher, type_filter, matches);
+            collect_glob_matches(base, &path, matcher, type_filter, exclude, matches);
         }
     }
 }
@@ -2580,7 +3082,10 @@ mod tests {
             "start_line": 1,
             "end_line": 40
         });
-        assert_ne!(command_fingerprint(&read_full), command_fingerprint(&read_range));
+        assert_ne!(
+            command_fingerprint(&read_full),
+            command_fingerprint(&read_range)
+        );
     }
 
     #[tokio::test]
@@ -2594,7 +3099,7 @@ mod tests {
         let lib = temp_root.join("lib.rs");
         fs::write(&lib, "fn alpha() {}\nfn beta() {}\n").expect("写入测试文件应成功");
 
-        let executor = Arc::new(ToolExecutor::new(temp_root.clone()));
+        let executor = Arc::new(ToolExecutor::new(temp_root.clone(), vec![]));
 
         // 同一个 readfile 命令调用一次（建立缓存与指纹）
         let args1 = json!({"command1": {"type": "readfile", "file": "/codebase/lib.rs"}});
@@ -2608,9 +3113,118 @@ mod tests {
         let args2 = args1.clone();
         let out_second = ToolExecutor::exec_tool_call(executor.clone(), &args2).await;
         assert!(
-            out_second.contains("alpha"),
+            out_second.output.contains("alpha"),
             "缓存命中后输出仍应包含原文件内容"
         );
+        assert_eq!(out_second.stats.cache_hits, 1, "第二次调用应命中命令缓存");
+    }
+
+    #[test]
+    fn count_valid_commands_rejects_empty_pattern_and_accepts_repairable_readfile() {
+        let args = json!({
+            "command1": {"type": "rg", "pattern": "", "path": "/codebase/src"},
+            "command2": {"readfile": "/codebase/src/lib.rs", "start_line": 1, "end_line": 20},
+            "command3": {"type": "glob", "pattern": "*.rs", "path": "/codebase/src"}
+        });
+
+        assert_eq!(
+            count_valid_commands(&args),
+            2,
+            "空 pattern 的 rg 不应计入严格有效命令，readfile shorthand 应可修复"
+        );
+    }
+
+    #[tokio::test]
+    async fn tool_executor_repairs_readfile_shorthand_and_tracks_stats() {
+        let temp = tempdir().expect("临时目录应创建成功");
+        let temp_root = temp
+            .path()
+            .canonicalize()
+            .unwrap_or_else(|_| temp.path().to_path_buf());
+        fs::write(temp_root.join("lib.rs"), "fn alpha() {}\n").expect("测试文件应写入成功");
+
+        let executor = Arc::new(ToolExecutor::new(temp_root, vec![]));
+        let args = json!({
+            "command1": {"readfile": "/codebase/lib.rs"}
+        });
+        let output = ToolExecutor::exec_tool_call(executor, &args).await;
+
+        assert!(output.output.contains("alpha"));
+        assert_eq!(output.stats.commands_seen, 1);
+        assert_eq!(output.stats.commands_executed, 1);
+        assert_eq!(output.stats.commands_useful, 1);
+        assert_eq!(output.stats.commands_repaired, 1);
+    }
+
+    #[tokio::test]
+    async fn invalid_commands_are_not_executed_or_cached() {
+        let temp = tempdir().expect("临时目录应创建成功");
+        let temp_root = temp
+            .path()
+            .canonicalize()
+            .unwrap_or_else(|_| temp.path().to_path_buf());
+        let executor = Arc::new(ToolExecutor::new(temp_root, vec![]));
+        let args = json!({
+            "command1": {"type": "rg", "pattern": "", "path": "/codebase"}
+        });
+
+        let first = ToolExecutor::exec_tool_call(executor.clone(), &args).await;
+        let second = ToolExecutor::exec_tool_call(executor, &args).await;
+
+        assert!(first.output.contains("invalid command"));
+        assert_eq!(first.stats.commands_invalid, 1);
+        assert_eq!(first.stats.commands_executed, 0);
+        assert_eq!(
+            second.stats.cache_hits, 0,
+            "无效命令不应写入缓存，避免错误缓存被统计为命中"
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_rg_path_falls_back_to_nearest_parent() {
+        let temp = tempdir().expect("临时目录应创建成功");
+        let temp_root = temp
+            .path()
+            .canonicalize()
+            .unwrap_or_else(|_| temp.path().to_path_buf());
+        let src = temp_root.join("src");
+        fs::create_dir_all(&src).expect("src 目录应创建成功");
+        fs::write(src.join("payment.rs"), "fn payment_status() {}\n").expect("测试文件应写入成功");
+
+        let executor = Arc::new(ToolExecutor::new(temp_root, vec![]));
+        let args = json!({
+            "command1": {"type": "rg", "pattern": "payment_status", "path": "/codebase/src/missing-module"}
+        });
+        let output = ToolExecutor::exec_tool_call(executor, &args).await;
+
+        assert!(output.output.contains("Warning: requested path missing"));
+        assert!(output.output.contains("payment_status"));
+        assert_eq!(output.stats.commands_useful, 1);
+        assert_eq!(output.stats.path_missing, 1);
+        assert_eq!(output.stats.path_repaired, 1);
+    }
+
+    #[tokio::test]
+    async fn missing_readfile_path_reports_candidates_without_repairing() {
+        let temp = tempdir().expect("临时目录应创建成功");
+        let temp_root = temp
+            .path()
+            .canonicalize()
+            .unwrap_or_else(|_| temp.path().to_path_buf());
+        fs::write(temp_root.join("payment.rs"), "fn payment_status() {}\n")
+            .expect("测试文件应写入成功");
+
+        let executor = Arc::new(ToolExecutor::new(temp_root, vec![]));
+        let args = json!({
+            "command1": {"type": "readfile", "file": "/codebase/missing/payment.rs"}
+        });
+        let output = ToolExecutor::exec_tool_call(executor, &args).await;
+
+        assert!(output.output.contains("Hint: requested path missing"));
+        assert!(output.output.contains("/codebase/payment.rs"));
+        assert_eq!(output.stats.commands_useful, 0);
+        assert_eq!(output.stats.path_missing, 1);
+        assert_eq!(output.stats.path_repaired, 0);
     }
 
     #[test]

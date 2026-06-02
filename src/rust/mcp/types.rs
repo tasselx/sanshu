@@ -42,7 +42,9 @@ pub struct MemoryConfigRequest {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct JiyiRequest {
-    #[schemars(description = "操作类型：记忆(添加) | 回忆(查询) | 整理(去重) | 列表(全部记忆) | 预览相似(检测相似度) | 配置(获取/更新) | 删除(移除记忆)")]
+    #[schemars(
+        description = "操作类型：记忆(添加) | 回忆(查询) | 整理(去重) | 列表(全部记忆) | 预览相似(检测相似度) | 配置(获取/更新) | 删除(移除记忆)"
+    )]
     pub action: String,
     #[schemars(description = "项目路径（必需）")]
     pub project_path: String,
@@ -93,7 +95,7 @@ fn default_category() -> String {
 // ============ 图标工坊 MCP 请求类型 ============
 
 /// 图标工坊交互请求（"tu" 工具）
-/// 
+///
 /// 打开可视化图标选择界面，让用户搜索、预览、选择并保存图标
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct TuRequest {
@@ -101,17 +103,17 @@ pub struct TuRequest {
     #[schemars(description = "预设的搜索关键词（可选）")]
     #[serde(default)]
     pub query: Option<String>,
-    
+
     /// 预设的图标风格：line(线性) | fill(面性) | flat(扁平) | all(全部)
     #[schemars(description = "预设的图标风格：line/fill/flat/all")]
     #[serde(default)]
     pub style: Option<String>,
-    
+
     /// 建议的保存路径（可选，用户可修改）
     #[schemars(description = "建议的保存路径（相对于项目根目录）")]
     #[serde(default)]
     pub save_path: Option<String>,
-    
+
     /// 项目根目录路径（用于计算相对路径）
     #[schemars(description = "项目根目录路径")]
     #[serde(default)]

@@ -1,7 +1,7 @@
+use crate::constants::{audio, font, mcp, telegram, theme, window};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Mutex;
-use crate::constants::{window, theme, audio, mcp, telegram, font};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct AppConfig {
@@ -115,8 +115,8 @@ pub struct McpConfig {
     #[serde(default = "default_mcp_tools")]
     pub tools: HashMap<String, bool>, // MCP工具启用状态
     pub acemcp_base_url: Option<String>, // acemcp API端点URL
-    pub acemcp_token: Option<String>, // acemcp认证令牌
-    pub acemcp_batch_size: Option<u32>, // acemcp批处理大小
+    pub acemcp_token: Option<String>,    // acemcp认证令牌
+    pub acemcp_batch_size: Option<u32>,  // acemcp批处理大小
     pub acemcp_max_lines_per_blob: Option<u32>, // acemcp最大行数/块
     pub acemcp_text_extensions: Option<Vec<String>>, // acemcp文件扩展名
     pub acemcp_exclude_patterns: Option<Vec<String>>, // acemcp排除模式
@@ -132,10 +132,10 @@ pub struct McpConfig {
     /// 当对父目录触发索引或监听时，自动检测并索引/监听所有子项目
     pub acemcp_index_nested_projects: Option<bool>,
     // Sou 代理配置
-    pub acemcp_proxy_enabled: Option<bool>, // 代理启用开关
-    pub acemcp_proxy_host: Option<String>, // 代理主机地址
-    pub acemcp_proxy_port: Option<u16>, // 代理端口
-    pub acemcp_proxy_type: Option<String>, // 代理类型: "http" | "https" | "socks5"
+    pub acemcp_proxy_enabled: Option<bool>,    // 代理启用开关
+    pub acemcp_proxy_host: Option<String>,     // 代理主机地址
+    pub acemcp_proxy_port: Option<u16>,        // 代理端口
+    pub acemcp_proxy_type: Option<String>,     // 代理类型: "http" | "https" | "socks5"
     pub acemcp_proxy_username: Option<String>, // 代理用户名（可选）
     pub acemcp_proxy_password: Option<String>, // 代理密码（可选）
     // Sou 多后端配置
@@ -147,14 +147,14 @@ pub struct McpConfig {
     pub fast_context_command: Option<String>, // 兼容旧配置：Rust 原生 fast-context 已不再使用
     pub fast_context_script_path: Option<String>, // 兼容旧配置：Rust 原生 fast-context 已不再使用
     pub fast_context_api_key: Option<String>, // Windsurf API Key，留空时走环境变量/自动发现
-    pub fast_context_tree_depth: Option<u8>, // 目录树深度 1-6
-    pub fast_context_max_turns: Option<u8>, // 搜索轮数 1-5
+    pub fast_context_tree_depth: Option<u8>,  // 目录树深度 1-6
+    pub fast_context_max_turns: Option<u8>,   // 搜索轮数 1-5
     pub fast_context_max_results: Option<u8>, // 返回文件数 1-30
     pub fast_context_max_commands: Option<u8>, // 每轮最大命令数
     pub fast_context_timeout_ms: Option<u64>, // 请求超时
     pub fast_context_exclude_paths: Option<Vec<String>>, // 额外排除路径
-    pub context7_api_key: Option<String>, // Context7 API密钥 (可选，免费使用时可为空)
-    pub skill_python_path: Option<String>, // Skill Python 路径（可选，默认走 PATH）
+    pub context7_api_key: Option<String>,     // Context7 API密钥 (可选，免费使用时可为空)
+    pub skill_python_path: Option<String>,    // Skill Python 路径（可选，默认走 PATH）
 
     // UI/UX Pro Max 配置
     /// 默认语言（"zh" | "en"）
@@ -181,7 +181,6 @@ pub struct McpConfig {
     pub tavily_api_key: Option<String>,
 }
 
-
 // 自定义prompt结构
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct CustomPrompt {
@@ -195,11 +194,11 @@ pub struct CustomPrompt {
     #[serde(default = "default_prompt_type")]
     pub r#type: String, // "normal" | "conditional"
     // 条件性prompt专用字段
-    pub condition_text: Option<String>,    // 条件描述文本
-    pub template_true: Option<String>,     // 开关为true时的模板
-    pub template_false: Option<String>,    // 开关为false时的模板
+    pub condition_text: Option<String>, // 条件描述文本
+    pub template_true: Option<String>,  // 开关为true时的模板
+    pub template_false: Option<String>, // 开关为false时的模板
     #[serde(default = "default_prompt_state")]
-    pub current_state: bool,               // 当前开关状态（原default_state）
+    pub current_state: bool, // 当前开关状态（原default_state）
     /// 关联的 MCP 工具 ID（仅对 conditional 类型有效）
     /// 当此字段有值时，该 prompt 的可用性取决于对应 MCP 工具的启用状态
     #[serde(default)]
@@ -353,7 +352,7 @@ pub fn default_mcp_config() -> McpConfig {
         acemcp_watch_debounce_ms: None, // 未设置时走 watcher 默认 30000ms (30秒)
         acemcp_watch_max_wait_ms: None, // 未设置时走 watcher 默认 300000ms (5分钟)
         acemcp_auto_index_enabled: None, // 默认启用（未设置时视为 true）
-        acemcp_watched_projects: None, // 默认没有持久监听项目
+        acemcp_watched_projects: None,  // 默认没有持久监听项目
         acemcp_index_nested_projects: None, // 自动索引嵌套项目（默认启用）
         // 代理配置默认值
         acemcp_proxy_enabled: None,
@@ -391,12 +390,12 @@ pub fn default_mcp_config() -> McpConfig {
         uiux_max_results_cap: Some(10),
         uiux_beautify_enabled: Some(true),
         // 图标工坊配置默认值
-        icon_default_save_path: None,      // 使用默认 "assets/icons"
-        icon_default_format: None,          // 默认 SVG
-        icon_default_png_size: None,        // 默认 64px
-        icon_cache_expiry_minutes: None,    // 默认 30 分钟
+        icon_default_save_path: None,    // 使用默认 "assets/icons"
+        icon_default_format: None,       // 默认 SVG
+        icon_default_png_size: None,     // 默认 64px
+        icon_cache_expiry_minutes: None, // 默认 30 分钟
         // Tavily AI 搜索配置
-        tavily_api_key: None,              // 用户需配置 API Key
+        tavily_api_key: None, // 用户需配置 API Key
     }
 }
 
@@ -612,8 +611,6 @@ pub fn default_prompt_type() -> String {
 pub fn default_prompt_state() -> bool {
     false
 }
-
-
 
 // 自定义prompt默认值函数
 pub fn default_custom_prompts() -> Vec<CustomPrompt> {
@@ -866,55 +863,64 @@ pub fn default_shortcuts() -> HashMap<String, ShortcutBinding> {
     let mut shortcuts = HashMap::new();
 
     // 快速发送快捷键
-    shortcuts.insert("quick_submit".to_string(), ShortcutBinding {
-        id: "quick_submit".to_string(),
-        name: "快速发送".to_string(),
-        description: "快速提交当前输入内容".to_string(),
-        action: "submit".to_string(),
-        key_combination: ShortcutKey {
-            key: "Enter".to_string(),
-            ctrl: true,
-            alt: false,
-            shift: false,
-            meta: false,
+    shortcuts.insert(
+        "quick_submit".to_string(),
+        ShortcutBinding {
+            id: "quick_submit".to_string(),
+            name: "快速发送".to_string(),
+            description: "快速提交当前输入内容".to_string(),
+            action: "submit".to_string(),
+            key_combination: ShortcutKey {
+                key: "Enter".to_string(),
+                ctrl: true,
+                alt: false,
+                shift: false,
+                meta: false,
+            },
+            enabled: true,
+            scope: "popup".to_string(),
         },
-        enabled: true,
-        scope: "popup".to_string(),
-    });
+    );
 
     // 增强快捷键
-    shortcuts.insert("enhance".to_string(), ShortcutBinding {
-        id: "enhance".to_string(),
-        name: "增强".to_string(),
-        description: "增强当前输入内容".to_string(),
-        action: "enhance".to_string(),
-        key_combination: ShortcutKey {
-            key: "Enter".to_string(),
-            ctrl: true,
-            alt: false,
-            shift: true,
-            meta: false,
+    shortcuts.insert(
+        "enhance".to_string(),
+        ShortcutBinding {
+            id: "enhance".to_string(),
+            name: "增强".to_string(),
+            description: "增强当前输入内容".to_string(),
+            action: "enhance".to_string(),
+            key_combination: ShortcutKey {
+                key: "Enter".to_string(),
+                ctrl: true,
+                alt: false,
+                shift: true,
+                meta: false,
+            },
+            enabled: true,
+            scope: "popup".to_string(),
         },
-        enabled: true,
-        scope: "popup".to_string(),
-    });
+    );
 
     // 继续快捷键
-    shortcuts.insert("continue".to_string(), ShortcutBinding {
-        id: "continue".to_string(),
-        name: "继续".to_string(),
-        description: "继续对话".to_string(),
-        action: "continue".to_string(),
-        key_combination: ShortcutKey {
-            key: "Enter".to_string(),
-            ctrl: false,
-            alt: true,
-            shift: false,
-            meta: false,
+    shortcuts.insert(
+        "continue".to_string(),
+        ShortcutBinding {
+            id: "continue".to_string(),
+            name: "继续".to_string(),
+            description: "继续对话".to_string(),
+            action: "continue".to_string(),
+            key_combination: ShortcutKey {
+                key: "Enter".to_string(),
+                ctrl: false,
+                alt: true,
+                shift: false,
+                meta: false,
+            },
+            enabled: true,
+            scope: "popup".to_string(),
         },
-        enabled: true,
-        scope: "popup".to_string(),
-    });
+    );
 
     shortcuts
 }
@@ -954,4 +960,3 @@ pub fn default_proxy_port() -> u16 {
 pub fn default_proxy_only_for_cn() -> bool {
     true // 默认仅在中国大陆地区使用代理
 }
-

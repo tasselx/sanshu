@@ -9,8 +9,8 @@ use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 
 use crate::config::load_standalone_config;
-use crate::{log_debug, log_important};
 use crate::mcp::types::SkillRunRequest;
+use crate::{log_debug, log_important};
 
 /// 技能运行时工具
 /// 负责发现 skills、动态注册 MCP 工具并执行 Python 入口
@@ -56,7 +56,10 @@ impl SkillsTool {
         // 兼容 Antigravity：动态技能工具名使用下划线分隔
         for skill in skills {
             let tool_name = format!("skill_{}", skill.name);
-            let description = skill.description.clone().unwrap_or_else(|| "技能工具".to_string());
+            let description = skill
+                .description
+                .clone()
+                .unwrap_or_else(|| "技能工具".to_string());
             tools.push(Tool {
                 name: Cow::Owned(tool_name),
                 description: Some(Cow::Owned(description)),
@@ -79,7 +82,7 @@ impl SkillsTool {
         project_root: &Path,
     ) -> Result<CallToolResult, McpError> {
         let start = std::time::Instant::now();
-        
+
         // 解析技能名称
         let skill_name = if tool_name == "skill_run" {
             request.skill_name.clone().unwrap_or_default()
@@ -87,16 +90,28 @@ impl SkillsTool {
             tool_name.trim_start_matches("skill_").to_string()
         };
 
-        log_important!(info, "[skills] 工具调用: tool={}, skill={}, action={:?}, query={:?}", 
-            tool_name, skill_name, request.action, request.query);
+        log_important!(
+            info,
+            "[skills] 工具调用: tool={}, skill={}, action={:?}, query={:?}",
+            tool_name,
+            skill_name,
+            request.action,
+            request.query
+        );
 
         if skill_name.trim().is_empty() {
             log_important!(warn, "[skills] 缺少 skill_name 参数");
-            return Err(McpError::invalid_params("缺少 skill_name".to_string(), None));
+            return Err(McpError::invalid_params(
+                "缺少 skill_name".to_string(),
+                None,
+            ));
         }
 
         if skill_name.eq_ignore_ascii_case("ui-ux-pro-max") {
-            log_important!(warn, "[skills] 已拒绝旧入口 ui-ux-pro-max，请改用 uiux MCP 工具");
+            log_important!(
+                warn,
+                "[skills] 已拒绝旧入口 ui-ux-pro-max，请改用 uiux MCP 工具"
+            );
             return Err(McpError::invalid_params(
                 "ui-ux-pro-max 技能入口已下线，请改用 uiux MCP 工具".to_string(),
                 None,
@@ -106,7 +121,7 @@ impl SkillsTool {
         // 读取技能清单（按需加载，避免启动时全量解析）
         let skills = scan_skills(project_root);
         log_debug!("[skills] 扫描到 {} 个技能", skills.len());
-        
+
         let skill = skills
             .into_iter()
             .find(|s| s.name.eq_ignore_ascii_case(&skill_name))
@@ -115,7 +130,11 @@ impl SkillsTool {
                 McpError::invalid_params(format!("未找到技能: {}", skill_name), None)
             })?;
 
-        log_debug!("[skills] 找到技能: name={}, path={}", skill.name, skill.path.display());
+        log_debug!(
+            "[skills] 找到技能: name={}, path={}",
+            skill.name,
+            skill.path.display()
+        );
 
         // 优先请求里的 action，其次使用配置默认 action，最后兜底 search
         let action_name = request
@@ -124,28 +143,33 @@ impl SkillsTool {
             .or_else(|| skill.config.as_ref().and_then(|c| c.default_action.clone()))
             .unwrap_or_else(|| "search".to_string());
 
-        let (entry_rel, args) = resolve_action_args(&skill, &action_name, &mut request)
-            .map_err(|e| {
+        let (entry_rel, args) =
+            resolve_action_args(&skill, &action_name, &mut request).map_err(|e| {
                 log_important!(warn, "[skills] 解析 action 参数失败: {}", e);
                 McpError::invalid_params(e.to_string(), None)
             })?;
 
         // 构建入口路径，并限制在技能目录内执行（防止路径穿透）
         let entry_path = skill.path.join(&entry_rel);
-        let entry_path = entry_path
-            .canonicalize()
-            .map_err(|e| {
-                log_important!(warn, "[skills] 入口路径解析失败: {}", e);
-                McpError::invalid_params(format!("入口路径解析失败: {}", e), None)
-            })?;
+        let entry_path = entry_path.canonicalize().map_err(|e| {
+            log_important!(warn, "[skills] 入口路径解析失败: {}", e);
+            McpError::invalid_params(format!("入口路径解析失败: {}", e), None)
+        })?;
         let skill_root = skill
             .path
             .canonicalize()
             .map_err(|e| McpError::invalid_params(format!("技能路径解析失败: {}", e), None))?;
         if !entry_path.starts_with(&skill_root) {
-            log_important!(warn, "[skills] 安全检查失败: 入口路径不在技能目录内, entry={}, root={}", 
-                entry_path.display(), skill_root.display());
-            return Err(McpError::invalid_params("入口路径不在技能目录内".to_string(), None));
+            log_important!(
+                warn,
+                "[skills] 安全检查失败: 入口路径不在技能目录内, entry={}, root={}",
+                entry_path.display(),
+                skill_root.display()
+            );
+            return Err(McpError::invalid_params(
+                "入口路径不在技能目录内".to_string(),
+                None,
+            ));
         }
 
         // 选择 Python 执行器：配置优先，其次 PATH
@@ -178,20 +202,37 @@ impl SkillsTool {
                 log_important!(error, "[skills] Python 执行失败: {}", e);
                 McpError::internal_error(format!("Python 执行失败: {}", e), None)
             })?;
-        
+
         let exec_duration = exec_start.elapsed().as_millis();
         let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
 
-        log_debug!("[skills] Python 执行完成: exit_code={:?}, stdout_len={}, stderr_len={}, duration={}ms",
-            output.status.code(), stdout.len(), stderr.len(), exec_duration);
+        log_debug!(
+            "[skills] Python 执行完成: exit_code={:?}, stdout_len={}, stderr_len={}, duration={}ms",
+            output.status.code(),
+            stdout.len(),
+            stderr.len(),
+            exec_duration
+        );
 
         if !output.status.success() {
             let err_text = if stderr.is_empty() { stdout } else { stderr };
-            let preview = if err_text.len() > 200 { &err_text[..200] } else { &err_text };
-            log_important!(error, "[skills] 技能执行失败: skill={}, exit_code={:?}, error_preview={}", 
-                skill.name, output.status.code(), preview);
-            return Err(McpError::internal_error(format!("技能执行失败: {}", err_text), None));
+            let preview = if err_text.len() > 200 {
+                &err_text[..200]
+            } else {
+                &err_text
+            };
+            log_important!(
+                error,
+                "[skills] 技能执行失败: skill={}, exit_code={:?}, error_preview={}",
+                skill.name,
+                output.status.code(),
+                preview
+            );
+            return Err(McpError::internal_error(
+                format!("技能执行失败: {}", err_text),
+                None,
+            ));
         }
 
         let final_text = if stdout.is_empty() {
@@ -200,8 +241,14 @@ impl SkillsTool {
             stdout
         };
 
-        log_important!(info, "[skills] 完成: skill={}, action={}, duration={}ms, output_len={}", 
-            skill.name, action_name, start.elapsed().as_millis(), final_text.len());
+        log_important!(
+            info,
+            "[skills] 完成: skill={}, action={}, duration={}ms, output_len={}",
+            skill.name,
+            action_name,
+            start.elapsed().as_millis(),
+            final_text.len()
+        );
 
         Ok(CallToolResult::success(vec![Content::text(final_text)]))
     }
@@ -239,8 +286,11 @@ fn skills_input_schema() -> serde_json::Map<String, serde_json::Value> {
 }
 
 fn scan_skills(project_root: &Path) -> Vec<SkillInfo> {
-    log_debug!("[skills] 扫描技能目录: project_root={}", project_root.display());
-    
+    log_debug!(
+        "[skills] 扫描技能目录: project_root={}",
+        project_root.display()
+    );
+
     let mut skills_map: HashMap<String, SkillInfo> = HashMap::new();
     let mut seen_paths: HashSet<PathBuf> = HashSet::new();
 
@@ -266,11 +316,17 @@ fn scan_skills(project_root: &Path) -> Vec<SkillInfo> {
                 if let Ok(content) = std::fs::read_to_string(&skill_md) {
                     let (name_opt, desc_opt) = parse_skill_front_matter(&content);
                     let name = name_opt
-                        .or_else(|| path.file_name().and_then(|s| s.to_str()).map(|s| s.to_string()))
+                        .or_else(|| {
+                            path.file_name()
+                                .and_then(|s| s.to_str())
+                                .map(|s| s.to_string())
+                        })
                         .unwrap_or_else(|| "unknown-skill".to_string());
                     let normalized = normalize_skill_name(&name);
                     if normalized == "ui-ux-pro-max" {
-                        log_debug!("[skills] 跳过内置 ui-ux-pro-max 技能，统一改由 uiux MCP 对外暴露");
+                        log_debug!(
+                            "[skills] 跳过内置 ui-ux-pro-max 技能，统一改由 uiux MCP 对外暴露"
+                        );
                         continue;
                     }
                     if skills_map.contains_key(&normalized) {
@@ -279,9 +335,13 @@ fn scan_skills(project_root: &Path) -> Vec<SkillInfo> {
                     }
 
                     let config = load_skill_config(&path);
-                    log_debug!("[skills] 发现技能: name={}, path={}, has_config={}", 
-                        normalized, path.display(), config.is_some());
-                    
+                    log_debug!(
+                        "[skills] 发现技能: name={}, path={}, has_config={}",
+                        normalized,
+                        path.display(),
+                        config.is_some()
+                    );
+
                     skills_map.insert(
                         normalized.clone(),
                         SkillInfo {
@@ -298,7 +358,7 @@ fn scan_skills(project_root: &Path) -> Vec<SkillInfo> {
 
     let mut skills: Vec<SkillInfo> = skills_map.into_values().collect();
     skills.sort_by(|a, b| a.name.cmp(&b.name));
-    
+
     log_debug!("[skills] 扫描完成: 共发现 {} 个技能", skills.len());
     skills
 }
@@ -385,12 +445,20 @@ fn load_skill_config(skill_path: &Path) -> Option<SkillConfig> {
         Ok(text) => match serde_json::from_str::<SkillConfig>(&text) {
             Ok(cfg) => Some(cfg),
             Err(e) => {
-                log_debug!("解析 skill.config.json 失败: {}, path={}", e, config_path.display());
+                log_debug!(
+                    "解析 skill.config.json 失败: {}, path={}",
+                    e,
+                    config_path.display()
+                );
                 None
             }
         },
         Err(e) => {
-            log_debug!("读取 skill.config.json 失败: {}, path={}", e, config_path.display());
+            log_debug!(
+                "读取 skill.config.json 失败: {}, path={}",
+                e,
+                config_path.display()
+            );
             None
         }
     }

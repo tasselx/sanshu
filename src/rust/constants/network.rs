@@ -31,7 +31,8 @@ pub const WRITE_TIMEOUT_MS: u64 = 10000;
 pub const MAX_CONCURRENT_CONNECTIONS: usize = 10;
 
 /// 默认用户代理
-pub const DEFAULT_USER_AGENT: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
+pub const DEFAULT_USER_AGENT: &str =
+    concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
 
 // 网络配置结构体
 #[derive(Debug, Clone)]

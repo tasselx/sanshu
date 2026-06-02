@@ -26,15 +26,13 @@ pub struct FontSizeOption {
     pub scale: f32,
 }
 
-
-
 #[tauri::command]
 pub async fn get_font_config(state: State<'_, AppState>) -> Result<FontInfo, String> {
     let config = state
         .config
         .lock()
         .map_err(|e| format!("获取配置失败: {}", e))?;
-    
+
     Ok(FontInfo {
         font_family: config.ui_config.font_config.font_family.clone(),
         font_size: config.ui_config.font_config.font_size.clone(),
@@ -84,8 +82,6 @@ pub async fn set_font_size(
     Ok(())
 }
 
-
-
 #[tauri::command]
 pub async fn set_custom_font_family(
     custom_font_family: String,
@@ -106,8 +102,6 @@ pub async fn set_custom_font_family(
 
     Ok(())
 }
-
-
 
 #[tauri::command]
 pub async fn get_font_family_options() -> Result<Vec<FontFamilyOption>, String> {
@@ -133,13 +127,8 @@ pub async fn get_font_size_options() -> Result<Vec<FontSizeOption>, String> {
         .collect())
 }
 
-
-
 #[tauri::command]
-pub async fn reset_font_config(
-    state: State<'_, AppState>,
-    app: AppHandle,
-) -> Result<(), String> {
+pub async fn reset_font_config(state: State<'_, AppState>, app: AppHandle) -> Result<(), String> {
     {
         let mut config = state
             .config

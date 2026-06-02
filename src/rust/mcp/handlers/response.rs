@@ -1,9 +1,9 @@
 use anyhow::Result;
-use rmcp::model::{ErrorData as McpError, Content};
+use rmcp::model::{Content, ErrorData as McpError};
 
+use crate::log_debug;
 use crate::mcp::types::{McpResponse, McpResponseContent};
 use crate::mcp::utils::is_zhi_custom_choice;
-use crate::log_debug;
 
 /// 解析 MCP 响应内容
 ///
@@ -35,7 +35,10 @@ pub fn parse_mcp_response(response: &str) -> Result<Vec<Content>, McpError> {
     // 回退到旧格式兼容性解析
     match serde_json::from_str::<Vec<McpResponseContent>>(response) {
         Ok(content_array) => {
-            log_debug!("[parse_mcp_response] 旧格式响应数组: items={}", content_array.len());
+            log_debug!(
+                "[parse_mcp_response] 旧格式响应数组: items={}",
+                content_array.len()
+            );
             let mut result = Vec::new();
             let mut image_count = 0;
 
@@ -56,7 +59,10 @@ pub fn parse_mcp_response(response: &str) -> Result<Vec<Content>, McpError> {
                                 image_count += 1;
 
                                 // 先添加图片到结果中（图片在前）
-                                result.push(Content::image(source.data.clone(), source.media_type.clone()));
+                                result.push(Content::image(
+                                    source.data.clone(),
+                                    source.media_type.clone(),
+                                ));
 
                                 // 添加图片信息到图片信息部分
                                 let base64_len = source.data.len();
@@ -139,7 +145,10 @@ pub fn parse_mcp_response(response: &str) -> Result<Vec<Content>, McpError> {
         }
         Err(_) => {
             // 如果不是JSON格式，作为纯文本处理
-            log_debug!("[parse_mcp_response] 非JSON响应，按纯文本处理: len={}", response.len());
+            log_debug!(
+                "[parse_mcp_response] 非JSON响应，按纯文本处理: len={}",
+                response.len()
+            );
             // 中文说明：纯文本回退分支也要兜底空/纯空白响应，否则 AI 收到空文本会按
             // 「无内容」直接收尾，从而导致下一条消息被客户端计为新一轮 request。
             if response.trim().is_empty() {
@@ -166,7 +175,8 @@ fn parse_structured_response(response: McpResponse) -> Result<Vec<Content>, McpE
 
     // 1. 处理选择的选项。自定义选项需要明确表达“以补充说明为准”，降低模型误读风险。
     if custom_selected {
-        text_parts.push("用户选择了自定义要求：不采用以上预设选项，以补充说明为最终要求。".to_string());
+        text_parts
+            .push("用户选择了自定义要求：不采用以上预设选项，以补充说明为最终要求。".to_string());
         let non_custom_options: Vec<&str> = response
             .selected_options
             .iter()
@@ -180,7 +190,10 @@ fn parse_structured_response(response: McpResponse) -> Result<Vec<Content>, McpE
             ));
         }
     } else if !response.selected_options.is_empty() {
-        text_parts.push(format!("选择的选项: {}", response.selected_options.join(", ")));
+        text_parts.push(format!(
+            "选择的选项: {}",
+            response.selected_options.join(", ")
+        ));
     }
 
     // 2. 处理用户输入文本
@@ -218,13 +231,20 @@ fn parse_structured_response(response: McpResponse) -> Result<Vec<Content>, McpE
             format!("{:.1} MB", estimated_size as f64 / (1024.0 * 1024.0))
         };
 
-        let filename_info = image.filename.as_ref()
+        let filename_info = image
+            .filename
+            .as_ref()
             .map(|f| format!("\n文件名: {}", f))
             .unwrap_or_default();
 
         let image_info = format!(
             "=== 图片 {} ==={}\n类型: {}\n大小: {}\nBase64 预览: {}\n完整 Base64 长度: {} 字符",
-            index + 1, filename_info, image.media_type, size_str, preview, base64_len
+            index + 1,
+            filename_info,
+            image.media_type,
+            size_str,
+            preview,
+            base64_len
         );
         image_info_parts.push(image_info);
     }

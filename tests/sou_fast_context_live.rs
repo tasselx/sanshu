@@ -24,12 +24,22 @@ async fn live_fast_context_search_smoke() {
         return;
     }
 
-    let project_root = env!("CARGO_MANIFEST_DIR").replace('\\', "/");
+    let project_root = std::env::var("SANSHU_LIVE_FAST_CONTEXT_PROJECT")
+        .unwrap_or_else(|_| env!("CARGO_MANIFEST_DIR").to_string())
+        .replace('\\', "/");
+    let query = std::env::var("SANSHU_LIVE_FAST_CONTEXT_QUERY").unwrap_or_else(|_| {
+        "定位 sou fast_context Rust SearchOptions 和输出格式化实现".to_string()
+    });
+    let tree_depth = if std::env::var("SANSHU_LIVE_FAST_CONTEXT_PROJECT").is_ok() {
+        3
+    } else {
+        1
+    };
     let result = SouTool::search_context(SouRequest {
         project_root_path: project_root,
-        query: "定位 sou fast_context Rust SearchOptions 和输出格式化实现".to_string(),
+        query,
         backend: Some("fast_context".to_string()),
-        tree_depth: Some(1),
+        tree_depth: Some(tree_depth),
         max_turns: Some(1),
         max_results: Some(3),
         max_commands: Some(3),
@@ -57,4 +67,15 @@ async fn live_fast_context_search_smoke() {
         "fast-context 返回了无法识别的输出：{}",
         text
     );
+    assert!(
+        text.contains("[fast-context stats]"),
+        "fast-context 输出缺少命中率统计：{}",
+        text
+    );
+    if let Some(stats_line) = text
+        .lines()
+        .find(|line| line.contains("[fast-context stats]"))
+    {
+        println!("live stats: {stats_line}");
+    }
 }

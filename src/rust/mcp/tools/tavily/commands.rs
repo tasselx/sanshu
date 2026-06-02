@@ -1,16 +1,15 @@
 // Tavily Tauri 命令入口
 // 提供配置读写和连接测试功能
 
-use tauri::State;
-use crate::config::AppState;
 use super::types::TavilyTestConnectionResponse;
+use crate::config::AppState;
+use tauri::State;
 
 /// 获取 Tavily 配置
 #[tauri::command]
-pub async fn get_tavily_config(
-    state: State<'_, AppState>,
-) -> Result<serde_json::Value, String> {
-    let config = state.config
+pub async fn get_tavily_config(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    let config = state
+        .config
         .lock()
         .map_err(|e| format!("获取配置失败: {}", e))?;
 
@@ -27,7 +26,8 @@ pub async fn save_tavily_config(
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     {
-        let mut config = state.config
+        let mut config = state
+            .config
             .lock()
             .map_err(|e| format!("获取配置失败: {}", e))?;
 
@@ -39,7 +39,8 @@ pub async fn save_tavily_config(
         };
     }
 
-    crate::config::save_config(&state, &app).await
+    crate::config::save_config(&state, &app)
+        .await
         .map_err(|e| format!("保存配置失败: {}", e))?;
 
     Ok(())
@@ -90,7 +91,10 @@ pub async fn test_tavily_connection(
                 let preview = if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&text) {
                     let results_count = parsed["results"].as_array().map(|a| a.len()).unwrap_or(0);
                     let response_time = parsed["response_time"].as_f64().unwrap_or(0.0);
-                    Some(format!("获取到 {} 条结果，响应时间 {:.2}s", results_count, response_time))
+                    Some(format!(
+                        "获取到 {} 条结果，响应时间 {:.2}s",
+                        results_count, response_time
+                    ))
                 } else {
                     None
                 };
@@ -106,7 +110,15 @@ pub async fn test_tavily_connection(
                     401 => "API Key 无效或已过期".to_string(),
                     429 => "请求频率超限，请稍后重试".to_string(),
                     402 => "信用点已耗尽".to_string(),
-                    _ => format!("HTTP {} - {}", status.as_u16(), if error_text.len() > 200 { &error_text[..200] } else { &error_text }),
+                    _ => format!(
+                        "HTTP {} - {}",
+                        status.as_u16(),
+                        if error_text.len() > 200 {
+                            &error_text[..200]
+                        } else {
+                            &error_text
+                        }
+                    ),
                 };
 
                 Ok(TavilyTestConnectionResponse {

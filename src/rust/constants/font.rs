@@ -7,7 +7,8 @@ pub const DEFAULT_FONT_FAMILY: &str = "inter";
 pub const DEFAULT_FONT_SIZE: &str = "medium";
 
 // 默认自定义字体系列
-pub const DEFAULT_CUSTOM_FONT_FAMILY: &str = "Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif";
+pub const DEFAULT_CUSTOM_FONT_FAMILY: &str =
+    "Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif";
 
 // 支持的字体系列选项
 pub const FONT_FAMILIES: &[(&str, &str, &str)] = &[
@@ -36,16 +37,20 @@ pub const FONT_SIZES: &[(&str, &str, f32)] = &[
     ("xlarge", "特大", 1.25), // 20px base
 ];
 
-
-
 // 字体大小比例映射
 pub const FONT_SIZE_SCALES: &[(&str, &str, &str, &str, &str)] = &[
-    ("xs", "0.75rem", "0.65625rem", "0.84375rem", "0.9375rem"),     // 12px -> 10.5px -> 13.5px -> 15px
+    ("xs", "0.75rem", "0.65625rem", "0.84375rem", "0.9375rem"), // 12px -> 10.5px -> 13.5px -> 15px
     ("sm", "0.875rem", "0.765625rem", "0.984375rem", "1.09375rem"), // 14px -> 12.25px -> 15.75px -> 17.5px
-    ("base", "0.875rem", "0.765625rem", "0.984375rem", "1.09375rem"), // 14px -> 12.25px -> 15.75px -> 17.5px
+    (
+        "base",
+        "0.875rem",
+        "0.765625rem",
+        "0.984375rem",
+        "1.09375rem",
+    ), // 14px -> 12.25px -> 15.75px -> 17.5px
     ("lg", "1rem", "0.875rem", "1.125rem", "1.25rem"),              // 16px -> 14px -> 18px -> 20px
     ("xl", "1.125rem", "0.984375rem", "1.265625rem", "1.40625rem"), // 18px -> 15.75px -> 20.25px -> 22.5px
-    ("2xl", "1.25rem", "1.09375rem", "1.40625rem", "1.5625rem"),    // 20px -> 17.5px -> 22.5px -> 25px
+    ("2xl", "1.25rem", "1.09375rem", "1.40625rem", "1.5625rem"), // 20px -> 17.5px -> 22.5px -> 25px
 ];
 
 // CSS 变量名

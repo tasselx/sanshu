@@ -89,7 +89,7 @@ impl TelegramConfig {
                     current = String::new();
                 }
             }
-            
+
             if !current.is_empty() {
                 current.push('\n');
             }

@@ -1,11 +1,11 @@
+use env_logger::{Builder, Target};
+use log::LevelFilter;
 use std::env;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{Mutex, Once};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use log::LevelFilter;
-use env_logger::{Builder, Target};
 
 static INIT: Once = Once::new();
 
@@ -63,9 +63,8 @@ impl Default for LogConfig {
 /// Linux: ~/.config/sanshu/log/sanshu-mcp.log
 /// macOS: ~/Library/Application Support/sanshu/log/sanshu-mcp.log
 fn get_gui_log_path() -> Option<PathBuf> {
-    dirs::config_dir().map(|config_dir| {
-        config_dir.join("sanshu").join("log").join("sanshu-mcp.log")
-    })
+    dirs::config_dir()
+        .map(|config_dir| config_dir.join("sanshu").join("log").join("sanshu-mcp.log"))
 }
 
 /// 确保日志目录存在
@@ -88,7 +87,7 @@ fn rotate_log_if_needed(log_path: &PathBuf, rotation_config: &LogRotationConfig)
             perform_log_rotation(log_path, rotation_config.max_backup_count);
         }
     }
-    
+
     // 清理过期日志文件
     cleanup_old_logs(log_path, rotation_config);
 }
@@ -100,16 +99,16 @@ fn perform_log_rotation(log_path: &PathBuf, max_backup_count: u32) {
         Some(dir) => dir,
         None => return,
     };
-    
+
     let log_name = match log_path.file_name().and_then(|n| n.to_str()) {
         Some(name) => name,
         None => return,
     };
-    
+
     // 删除最旧的备份（如果存在）
     let oldest_backup = log_dir.join(format!("{}.{}", log_name, max_backup_count));
     let _ = fs::remove_file(&oldest_backup);
-    
+
     // 将现有备份依次重命名（从后往前）
     for i in (1..max_backup_count).rev() {
         let from = log_dir.join(format!("{}.{}", log_name, i));
@@ -118,7 +117,7 @@ fn perform_log_rotation(log_path: &PathBuf, max_backup_count: u32) {
             let _ = fs::rename(&from, &to);
         }
     }
-    
+
     // 将当前日志文件重命名为 .1
     let first_backup = log_dir.join(format!("{}.1", log_name));
     let _ = fs::rename(log_path, &first_backup);
@@ -130,12 +129,12 @@ fn cleanup_old_logs(log_path: &PathBuf, rotation_config: &LogRotationConfig) {
         Some(dir) => dir,
         None => return,
     };
-    
+
     let log_name = match log_path.file_name().and_then(|n| n.to_str()) {
         Some(name) => name,
         None => return,
     };
-    
+
     // 计算过期时间阈值（当前时间 - 保留天数）
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -143,7 +142,7 @@ fn cleanup_old_logs(log_path: &PathBuf, rotation_config: &LogRotationConfig) {
         .as_secs();
     let retention_secs = rotation_config.retention_days as u64 * 24 * 60 * 60;
     let threshold = now.saturating_sub(retention_secs);
-    
+
     // 遍历备份文件并删除过期的
     for i in 1..=rotation_config.max_backup_count {
         let backup_path = log_dir.join(format!("{}.{}", log_name, i));
@@ -178,10 +177,7 @@ struct RotatingFileInner {
 
 impl RotatingFileInner {
     fn open_file(log_path: &PathBuf) -> std::io::Result<std::fs::File> {
-        OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(log_path)
+        OpenOptions::new().create(true).append(true).open(log_path)
     }
 
     fn new(log_path: PathBuf, rotation: LogRotationConfig) -> std::io::Result<Self> {
@@ -286,7 +282,11 @@ struct RotatingFileWriter {
 }
 
 impl RotatingFileWriter {
-    fn new(log_path: PathBuf, rotation: LogRotationConfig, also_stderr: bool) -> std::io::Result<Self> {
+    fn new(
+        log_path: PathBuf,
+        rotation: LogRotationConfig,
+        also_stderr: bool,
+    ) -> std::io::Result<Self> {
         Ok(Self {
             inner: Mutex::new(RotatingFileInner::new(log_path, rotation)?),
             also_stderr,
@@ -334,10 +334,10 @@ impl Write for RotatingFileWriter {
 pub fn init_logger(config: LogConfig) -> Result<(), Box<dyn std::error::Error>> {
     INIT.call_once(|| {
         let mut builder = Builder::new();
-        
+
         // 设置日志级别
         builder.filter_level(config.level);
-        
+
         // 设置日志格式
         builder.format(|buf, record| {
             let log_line = format!(
@@ -347,27 +347,27 @@ pub fn init_logger(config: LogConfig) -> Result<(), Box<dyn std::error::Error>> 
                 record.module_path().unwrap_or("unknown"),
                 record.args()
             );
-            
+
             // 写入到原始目标（stderr 或文件）
             writeln!(buf, "{}", log_line)?;
-            
+
             Ok(())
         });
-        
+
         // 根据模式设置输出目标
         if config.is_mcp_mode {
             // MCP 模式：只输出到文件，不输出到 stderr
             if let Some(file_path) = &config.file_path {
                 let log_path = PathBuf::from(file_path);
-                
+
                 // MCP 模式下严格只写文件；创建失败则关闭日志，避免污染 MCP stdout 协议
                 match RotatingFileWriter::new(log_path, config.rotation.clone(), false) {
                     Ok(writer) => {
                         builder.target(Target::Pipe(Box::new(writer)));
                     }
                     Err(_) => {
-                    // 如果文件打开失败，禁用日志输出
-                    builder.filter_level(LevelFilter::Off);
+                        // 如果文件打开失败，禁用日志输出
+                        builder.filter_level(LevelFilter::Off);
                     }
                 };
             } else {
@@ -378,15 +378,15 @@ pub fn init_logger(config: LogConfig) -> Result<(), Box<dyn std::error::Error>> 
             // 非 MCP 模式：同时输出到文件和 stderr
             if let Some(file_path) = &config.file_path {
                 let log_path = PathBuf::from(file_path);
-                
+
                 // GUI 模式：优先文件+stderr（带运行时轮转）；失败则退化为 stderr
                 match RotatingFileWriter::new(log_path, config.rotation.clone(), true) {
                     Ok(writer) => {
                         builder.target(Target::Pipe(Box::new(writer)));
                     }
                     Err(_) => {
-                    // 如果文件打开失败，只输出到 stderr
-                    builder.target(Target::Stderr);
+                        // 如果文件打开失败，只输出到 stderr
+                        builder.target(Target::Stderr);
                     }
                 };
             } else {
@@ -394,10 +394,10 @@ pub fn init_logger(config: LogConfig) -> Result<(), Box<dyn std::error::Error>> 
                 builder.target(Target::Stderr);
             }
         }
-        
+
         builder.init();
     });
-    
+
     Ok(())
 }
 
@@ -406,12 +406,12 @@ pub fn init_logger(config: LogConfig) -> Result<(), Box<dyn std::error::Error>> 
 pub fn auto_init_logger() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().collect();
     let is_mcp_mode = args.len() >= 3 && args[1] == "--mcp-request";
-    
+
     // 获取日志文件路径（GUI 和 MCP 模式统一使用配置目录）
     let log_file_path = env::var("MCP_LOG_FILE")
         .ok()
         .or_else(|| get_gui_log_path().map(|p| p.to_string_lossy().to_string()));
-    
+
     let config = if is_mcp_mode {
         // MCP 模式：只输出到文件，不输出到 stderr
         LogConfig {
@@ -436,7 +436,7 @@ pub fn auto_init_logger() -> Result<(), Box<dyn std::error::Error>> {
             rotation: LogRotationConfig::default(),
         }
     };
-    
+
     init_logger(config)
 }
 

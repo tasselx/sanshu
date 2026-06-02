@@ -1,15 +1,18 @@
 use anyhow::Result;
 use std::sync::Arc;
 use std::time::Duration;
-use rmcp::RoleServer;
+use rmcp::model::{
+    CallToolResult, Content, ErrorData as McpError, NumberOrString, ProgressNotificationParam,
+    ProgressToken,
+};
 use rmcp::service::Peer;
-use rmcp::model::{ErrorData as McpError, CallToolResult, Content, ProgressNotificationParam, ProgressToken, NumberOrString};
+use rmcp::RoleServer;
 
-use crate::mcp::{ZhiRequest, PopupRequest};
-use crate::mcp::handlers::{poll_or_start_popup, parse_mcp_response, PopupPoll, POPUP_POLL_WINDOW};
-use crate::mcp::utils::{generate_request_id, normalize_zhi_choices};
+use crate::mcp::handlers::{parse_mcp_response, poll_or_start_popup, PopupPoll, POPUP_POLL_WINDOW};
 use crate::mcp::utils::safe_truncate_clean;
-use crate::{log_important, log_debug};
+use crate::mcp::utils::{generate_request_id, normalize_zhi_choices};
+use crate::mcp::{PopupRequest, ZhiRequest};
+use crate::{log_debug, log_important};
 
 /// 心跳进度通知周期：10 秒。
 ///
@@ -28,9 +31,7 @@ const PROGRESS_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(10);
 pub struct InteractionTool;
 
 impl InteractionTool {
-    pub async fn zhi(
-        request: ZhiRequest,
-    ) -> Result<CallToolResult, McpError> {
+    pub async fn zhi(request: ZhiRequest) -> Result<CallToolResult, McpError> {
         // 默认生成 request_id（MCP server 会优先使用其 call_id 注入到 zhi_with_request_id）
         let request_id = generate_request_id();
         // 中文说明：无 peer 的入口（CLI/测试等）不发送 progress 心跳。
@@ -204,7 +205,12 @@ impl InteractionTool {
                 )]))
             }
             Err(e) => {
-                log_important!(warn, "[zhi] 弹窗失败: request_id={}, error={}", request_id, e);
+                log_important!(
+                    warn,
+                    "[zhi] 弹窗失败: request_id={}, error={}",
+                    request_id,
+                    e
+                );
                 // 中文说明：不再以 Err 返回给 MCP 客户端（Cursor 等收到 hard error 极易直接收尾、
                 // 把后续消息计为新一轮 request）；改为成功响应 + is_error=true + 重试指引，
                 // 让 AI 在本轮内自我修复后立刻再次调用 zhi。

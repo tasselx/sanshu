@@ -264,7 +264,10 @@ mod tests {
 
     #[test]
     fn test_exact_match() {
-        assert!((TextSimilarity::calculate_enhanced("使用 KISS 原则", "使用 KISS 原则") - 1.0).abs() < 0.01);
+        assert!(
+            (TextSimilarity::calculate_enhanced("使用 KISS 原则", "使用 KISS 原则") - 1.0).abs()
+                < 0.01
+        );
     }
 
     #[test]

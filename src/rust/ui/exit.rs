@@ -2,7 +2,7 @@ use crate::config::AppState;
 use crate::constants::app::{EXIT_CONFIRMATION_WINDOW_SECS, REQUIRED_EXIT_ATTEMPTS};
 use crate::log_important;
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Manager, State, Emitter};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 /// 检查是否应该允许退出
 /// 返回 (should_exit, show_warning)
@@ -11,28 +11,42 @@ pub fn should_allow_exit(state: &State<AppState>) -> Result<(bool, bool), String
 
     // 获取当前退出尝试计数和上次尝试时间
     let (current_count, last_attempt) = {
-        let count_guard = state.exit_attempt_count.lock()
+        let count_guard = state
+            .exit_attempt_count
+            .lock()
             .map_err(|e| format!("获取退出计数失败: {}", e))?;
-        let time_guard = state.last_exit_attempt.lock()
+        let time_guard = state
+            .last_exit_attempt
+            .lock()
             .map_err(|e| format!("获取退出时间失败: {}", e))?;
 
         (*count_guard, *time_guard)
     };
 
-    log_important!(info, "🔍 退出检查 - 当前计数: {}, 要求计数: {}", current_count, REQUIRED_EXIT_ATTEMPTS);
+    log_important!(
+        info,
+        "🔍 退出检查 - 当前计数: {}, 要求计数: {}",
+        current_count,
+        REQUIRED_EXIT_ATTEMPTS
+    );
 
     // 检查时间窗口
     let within_time_window = if let Some(last_time) = last_attempt {
         let elapsed = now.duration_since(last_time);
         let within_window = elapsed <= Duration::from_secs(EXIT_CONFIRMATION_WINDOW_SECS);
-        log_important!(info, "🔍 时间窗口检查 - 距离上次: {:?}, 窗口期: {}秒, 在窗口内: {}",
-                elapsed, EXIT_CONFIRMATION_WINDOW_SECS, within_window);
+        log_important!(
+            info,
+            "🔍 时间窗口检查 - 距离上次: {:?}, 窗口期: {}秒, 在窗口内: {}",
+            elapsed,
+            EXIT_CONFIRMATION_WINDOW_SECS,
+            within_window
+        );
         within_window
     } else {
         log_important!(info, "🔍 首次退出尝试");
         false
     };
-    
+
     // 如果超出时间窗口，重置计数器并开始新的计数
     if !within_time_window {
         reset_exit_attempts(state)?;
@@ -43,7 +57,9 @@ pub fn should_allow_exit(state: &State<AppState>) -> Result<(bool, bool), String
     // 在时间窗口内，先增加计数，然后检查是否达到要求
     increment_exit_attempts(state, now)?;
     let new_count = {
-        let count_guard = state.exit_attempt_count.lock()
+        let count_guard = state
+            .exit_attempt_count
+            .lock()
             .map_err(|e| format!("获取退出计数失败: {}", e))?;
         *count_guard
     };
@@ -61,34 +77,42 @@ pub fn should_allow_exit(state: &State<AppState>) -> Result<(bool, bool), String
 /// 重置退出尝试计数器
 fn reset_exit_attempts(state: &State<AppState>) -> Result<(), String> {
     {
-        let mut count_guard = state.exit_attempt_count.lock()
+        let mut count_guard = state
+            .exit_attempt_count
+            .lock()
             .map_err(|e| format!("重置退出计数失败: {}", e))?;
         *count_guard = 0;
     }
-    
+
     {
-        let mut time_guard = state.last_exit_attempt.lock()
+        let mut time_guard = state
+            .last_exit_attempt
+            .lock()
             .map_err(|e| format!("重置退出时间失败: {}", e))?;
         *time_guard = None;
     }
-    
+
     Ok(())
 }
 
 /// 增加退出尝试计数
 fn increment_exit_attempts(state: &State<AppState>, now: Instant) -> Result<(), String> {
     {
-        let mut count_guard = state.exit_attempt_count.lock()
+        let mut count_guard = state
+            .exit_attempt_count
+            .lock()
             .map_err(|e| format!("增加退出计数失败: {}", e))?;
         *count_guard += 1;
     }
-    
+
     {
-        let mut time_guard = state.last_exit_attempt.lock()
+        let mut time_guard = state
+            .last_exit_attempt
+            .lock()
             .map_err(|e| format!("更新退出时间失败: {}", e))?;
         *time_guard = Some(now);
     }
-    
+
     Ok(())
 }
 
@@ -103,10 +127,10 @@ pub async fn handle_system_exit_request(
         perform_exit(app.clone()).await?;
         return Ok(true);
     }
-    
+
     // 检查是否应该允许退出
     let (should_exit, show_warning) = should_allow_exit(&state)?;
-    
+
     if should_exit {
         perform_exit(app.clone()).await?;
         Ok(true)
@@ -141,7 +165,7 @@ async fn perform_exit(app: AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.close();
     }
-    
+
     // 短暂延迟后强制退出应用
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
     app.exit(0);

@@ -1,14 +1,17 @@
 // Tauri 命令入口
 // 将提示词增强功能暴露给前端调用
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}};
-use once_cell::sync::Lazy;
-use tauri::{AppHandle, Emitter};
-use super::types::*;
 use super::core::PromptEnhancer;
 use super::history::ChatHistoryManager;
+use super::types::*;
 use crate::log_important;
+use once_cell::sync::Lazy;
+use std::collections::HashMap;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex,
+};
+use tauri::{AppHandle, Emitter};
 
 // 中文注释：保存增强请求的取消标记，用于前端主动取消
 static ENHANCE_CANCEL_FLAGS: Lazy<Mutex<HashMap<String, Arc<AtomicBool>>>> =
@@ -55,9 +58,11 @@ pub async fn enhance_prompt_stream(
     let request_id = request_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let cancel_flag = register_cancel_flag(&request_id);
 
-    log_important!(info, "收到增强请求: request_id={}, prompt_len={}, project={:?}", 
+    log_important!(
+        info,
+        "收到增强请求: request_id={}, prompt_len={}, project={:?}",
         request_id,
-        prompt.len(), 
+        prompt.len(),
         project_root_path.as_ref().map(|p| p.len())
     );
 
@@ -83,12 +88,14 @@ pub async fn enhance_prompt_stream(
 
     // 使用流式增强
     let app = app_handle.clone();
-    let result = enhancer.enhance_stream(request, move |event| {
-        // 通过 Tauri Event 推送给前端
-        if let Err(e) = app.emit("enhance-stream", &event) {
-            log_important!(warn, "推送增强事件失败: {}", e);
-        }
-    }).await;
+    let result = enhancer
+        .enhance_stream(request, move |event| {
+            // 通过 Tauri Event 推送给前端
+            if let Err(e) = app.emit("enhance-stream", &event) {
+                log_important!(warn, "推送增强事件失败: {}", e);
+            }
+        })
+        .await;
 
     // 中文注释：请求结束后释放取消标记，避免内存泄漏
     remove_cancel_flag(&request_id);
@@ -101,17 +108,13 @@ pub async fn enhance_prompt_stream(
                     if let Ok(manager) = ChatHistoryManager::new(path) {
                         // 中文注释：优先记录“原始用户输入”，避免把规则/上下文拼接写入历史
                         let user_input = original_prompt.as_deref().unwrap_or(&prompt);
-                        let _ = manager.add_entry(
-                            user_input,
-                            &response.enhanced_prompt,
-                            "enhance"
-                        );
+                        let _ = manager.add_entry(user_input, &response.enhanced_prompt, "enhance");
                     }
                 }
             }
             Ok(response)
         }
-        Err(e) => Err(format!("增强失败: {}", e))
+        Err(e) => Err(format!("增强失败: {}", e)),
     }
 }
 
@@ -129,7 +132,12 @@ pub async fn enhance_prompt(
 ) -> Result<EnhanceResponse, String> {
     let request_id = request_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
-    log_important!(info, "收到同步增强请求: request_id={}, prompt_len={}", request_id, prompt.len());
+    log_important!(
+        info,
+        "收到同步增强请求: request_id={}, prompt_len={}",
+        request_id,
+        prompt.len()
+    );
 
     // 创建增强器
     let mut enhancer = PromptEnhancer::from_acemcp_config()
@@ -151,7 +159,8 @@ pub async fn enhance_prompt(
         cancel_flag: None,
     };
 
-    enhancer.enhance(request)
+    enhancer
+        .enhance(request)
         .await
         .map_err(|e| format!("增强失败: {}", e))
 }
@@ -166,12 +175,14 @@ pub async fn add_chat_history(
 ) -> Result<String, String> {
     let manager = ChatHistoryManager::new(&project_root_path)
         .map_err(|e| format!("创建历史管理器失败: {}", e))?;
-    
-    manager.add_entry(
-        &user_input,
-        &ai_response,
-        &source.unwrap_or_else(|| "popup".to_string())
-    ).map_err(|e| format!("添加历史记录失败: {}", e))
+
+    manager
+        .add_entry(
+            &user_input,
+            &ai_response,
+            &source.unwrap_or_else(|| "popup".to_string()),
+        )
+        .map_err(|e| format!("添加历史记录失败: {}", e))
 }
 
 /// 获取对话历史
@@ -182,27 +193,23 @@ pub async fn get_chat_history(
 ) -> Result<Vec<super::history::ChatEntry>, String> {
     let manager = ChatHistoryManager::new(&project_root_path)
         .map_err(|e| format!("创建历史管理器失败: {}", e))?;
-    
-    manager.get_recent_entries(count.unwrap_or(20))
+
+    manager
+        .get_recent_entries(count.unwrap_or(20))
         .map_err(|e| format!("读取历史记录失败: {}", e))
 }
 
 /// 清空对话历史
 #[tauri::command]
-pub async fn clear_chat_history(
-    project_root_path: String,
-) -> Result<(), String> {
+pub async fn clear_chat_history(project_root_path: String) -> Result<(), String> {
     let manager = ChatHistoryManager::new(&project_root_path)
         .map_err(|e| format!("创建历史管理器失败: {}", e))?;
-    
-    manager.clear()
-        .map_err(|e| format!("清空历史失败: {}", e))
+
+    manager.clear().map_err(|e| format!("清空历史失败: {}", e))
 }
 
 /// 取消正在进行的增强请求
 #[tauri::command]
-pub async fn cancel_enhance_request(
-    request_id: String,
-) -> Result<bool, String> {
+pub async fn cancel_enhance_request(request_id: String) -> Result<bool, String> {
     Ok(cancel_request(&request_id))
 }

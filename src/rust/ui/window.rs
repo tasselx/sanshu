@@ -1,7 +1,7 @@
-use tauri::{State, Manager};
-use crate::config::{AppState, save_config};
+use crate::config::{save_config, AppState};
 use crate::constants::window;
 use serde::{Deserialize, Serialize};
+use tauri::{Manager, State};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct WindowSizeUpdate {
@@ -11,10 +11,19 @@ pub struct WindowSizeUpdate {
 }
 
 #[tauri::command]
-pub async fn apply_window_constraints(state: State<'_, AppState>, app: tauri::AppHandle) -> Result<(), String> {
+pub async fn apply_window_constraints(
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
     let (window_config, always_on_top) = {
-        let config = state.config.lock().map_err(|e| format!("获取配置失败: {}", e))?;
-        (config.ui_config.window_config.clone(), config.ui_config.always_on_top)
+        let config = state
+            .config
+            .lock()
+            .map_err(|e| format!("获取配置失败: {}", e))?;
+        (
+            config.ui_config.window_config.clone(),
+            config.ui_config.always_on_top,
+        )
     };
 
     if let Some(window) = app.get_webview_window("main") {
@@ -37,8 +46,9 @@ pub async fn apply_window_constraints(state: State<'_, AppState>, app: tauri::Ap
         if window_config.auto_resize {
             let initial_width = window_config.min_width;
             let initial_height = (window_config.min_height + window_config.max_height) / 2.0;
-            
-            if let Err(e) = window.set_size(tauri::LogicalSize::new(initial_width, initial_height)) {
+
+            if let Err(e) = window.set_size(tauri::LogicalSize::new(initial_width, initial_height))
+            {
                 return Err(format!("设置窗口大小失败: {}", e));
             }
         }
@@ -53,16 +63,26 @@ pub async fn apply_window_constraints(state: State<'_, AppState>, app: tauri::Ap
 }
 
 #[tauri::command]
-pub async fn update_window_size(size_update: WindowSizeUpdate, state: State<'_, AppState>, app: tauri::AppHandle) -> Result<(), String> {
+pub async fn update_window_size(
+    size_update: WindowSizeUpdate,
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
     // 更新配置
     {
-        let mut config = state.config.lock().map_err(|e| format!("获取配置失败: {}", e))?;
+        let mut config = state
+            .config
+            .lock()
+            .map_err(|e| format!("获取配置失败: {}", e))?;
 
         // 更新模式设置
         config.ui_config.window_config.fixed = size_update.fixed;
 
         // 更新当前模式的尺寸
-        config.ui_config.window_config.update_current_size(size_update.width, size_update.height);
+        config
+            .ui_config
+            .window_config
+            .update_current_size(size_update.width, size_update.height);
 
         if size_update.fixed {
             // 固定模式：设置最大和最小尺寸为相同值
@@ -82,11 +102,16 @@ pub async fn update_window_size(size_update: WindowSizeUpdate, state: State<'_, 
     }
 
     // 保存配置
-    save_config(&state, &app).await.map_err(|e| format!("保存配置失败: {}", e))?;
+    save_config(&state, &app)
+        .await
+        .map_err(|e| format!("保存配置失败: {}", e))?;
 
     // 获取置顶状态
     let always_on_top = {
-        let config = state.config.lock().map_err(|e| format!("获取配置失败: {}", e))?;
+        let config = state
+            .config
+            .lock()
+            .map_err(|e| format!("获取配置失败: {}", e))?;
         config.ui_config.always_on_top
     };
 
@@ -94,35 +119,61 @@ pub async fn update_window_size(size_update: WindowSizeUpdate, state: State<'_, 
     if let Some(window) = app.get_webview_window("main") {
         if size_update.fixed {
             // 固定模式：设置精确的窗口大小和约束
-            if let Err(e) = window.set_size(tauri::LogicalSize::new(size_update.width, size_update.height)) {
+            if let Err(e) = window.set_size(tauri::LogicalSize::new(
+                size_update.width,
+                size_update.height,
+            )) {
                 return Err(format!("设置窗口大小失败: {}", e));
             }
 
-            if let Err(e) = window.set_min_size(Some(tauri::LogicalSize::new(size_update.width, size_update.height))) {
+            if let Err(e) = window.set_min_size(Some(tauri::LogicalSize::new(
+                size_update.width,
+                size_update.height,
+            ))) {
                 return Err(format!("设置最小窗口大小失败: {}", e));
             }
 
-            if let Err(e) = window.set_max_size(Some(tauri::LogicalSize::new(size_update.width, size_update.height))) {
+            if let Err(e) = window.set_max_size(Some(tauri::LogicalSize::new(
+                size_update.width,
+                size_update.height,
+            ))) {
                 return Err(format!("设置最大窗口大小失败: {}", e));
             }
 
-            log::debug!("窗口已设置为固定大小: {}x{}", size_update.width, size_update.height);
+            log::debug!(
+                "窗口已设置为固定大小: {}x{}",
+                size_update.width,
+                size_update.height
+            );
         } else {
             // 自由拉伸模式：设置合理的约束范围
-            if let Err(e) = window.set_min_size(Some(tauri::LogicalSize::new(window::MIN_WIDTH, window::MIN_HEIGHT))) {
+            if let Err(e) = window.set_min_size(Some(tauri::LogicalSize::new(
+                window::MIN_WIDTH,
+                window::MIN_HEIGHT,
+            ))) {
                 return Err(format!("设置最小窗口大小失败: {}", e));
             }
 
-            if let Err(e) = window.set_max_size(Some(tauri::LogicalSize::new(window::MAX_WIDTH, window::MAX_HEIGHT))) {
+            if let Err(e) = window.set_max_size(Some(tauri::LogicalSize::new(
+                window::MAX_WIDTH,
+                window::MAX_HEIGHT,
+            ))) {
                 return Err(format!("设置最大窗口大小失败: {}", e));
             }
 
             // 设置为默认大小
-            if let Err(e) = window.set_size(tauri::LogicalSize::new(size_update.width, size_update.height)) {
+            if let Err(e) = window.set_size(tauri::LogicalSize::new(
+                size_update.width,
+                size_update.height,
+            )) {
                 return Err(format!("设置窗口大小失败: {}", e));
             }
 
-            log::debug!("窗口已设置为自由拉伸模式，默认大小: {}x{}", size_update.width, size_update.height);
+            log::debug!(
+                "窗口已设置为自由拉伸模式，默认大小: {}x{}",
+                size_update.width,
+                size_update.height
+            );
         }
 
         // 重新应用置顶状态，确保窗口大小变更不会影响置顶设置

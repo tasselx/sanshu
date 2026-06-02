@@ -43,7 +43,10 @@ pub fn search_markdown(query: &str, max_results: usize) -> Vec<MarkdownHit> {
             let excerpt = build_excerpt(&chunk);
             let hit = MarkdownHit {
                 source: "local_markdown".to_string(),
-                location: format!("{}:{}-{}", UIUX_MARKDOWN_PATH, chunk.start_line, chunk.end_line),
+                location: format!(
+                    "{}:{}-{}",
+                    UIUX_MARKDOWN_PATH, chunk.start_line, chunk.end_line
+                ),
                 excerpt,
             };
             Some((score, hit))
@@ -51,11 +54,7 @@ pub fn search_markdown(query: &str, max_results: usize) -> Vec<MarkdownHit> {
         .collect();
 
     ranked.sort_by(|a, b| b.0.total_cmp(&a.0));
-    ranked
-        .into_iter()
-        .map(|(_, hit)| hit)
-        .take(limit)
-        .collect()
+    ranked.into_iter().map(|(_, hit)| hit).take(limit).collect()
 }
 
 fn chunk_markdown(text: &str) -> Vec<MarkdownChunk> {

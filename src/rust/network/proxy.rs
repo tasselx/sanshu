@@ -1,6 +1,6 @@
 // 代理检测和配置模块
+use crate::{log_debug, log_important};
 use serde::{Deserialize, Serialize};
-use crate::{log_important, log_debug};
 
 /// 代理类型
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -42,7 +42,7 @@ impl ProxyInfo {
             port,
         }
     }
-    
+
     /// 获取代理URL
     pub fn to_url(&self) -> String {
         format!("{}://{}:{}", self.proxy_type, self.host, self.port)
@@ -54,7 +54,7 @@ pub struct ProxyDetector;
 
 impl ProxyDetector {
     /// 常用代理端口列表（候选端口，最终按实测延迟选择）
-    /// 
+    ///
     /// - 7890: Clash 混合代理端口（HTTP + SOCKS5）
     /// - 7891: Clash HTTP 代理端口
     /// - 7892: Clash 常见备用代理端口
@@ -71,27 +71,34 @@ impl ProxyDetector {
         (1080, ProxyType::Socks5),  // 通用SOCKS5端口
         (8080, ProxyType::Http),    // 通用HTTP端口
     ];
-    
+
     /// 检测本地可用的代理
-    /// 
+    ///
     /// 检测常用代理端口并选择实测延迟最低的可用代理
-    /// 
+    ///
     /// # 返回值
     /// - `Some(ProxyInfo)`: 找到可用的代理
     /// - `None`: 没有找到可用的代理
     pub async fn detect_available_proxy() -> Option<ProxyInfo> {
         log_important!(info, "[network] 开始检测本地代理");
         let mut best_proxy: Option<(ProxyInfo, u128)> = None;
-        
+
         for (port, proxy_type) in Self::COMMON_PORTS {
             let proxy_info = ProxyInfo::new(proxy_type.clone(), "127.0.0.1".to_string(), *port);
-            
+
             log_debug!("[network] 检测代理端口: {} ({})", port, proxy_type);
-            
+
             let started = std::time::Instant::now();
             if Self::check_proxy(&proxy_info).await {
                 let latency_ms = started.elapsed().as_millis();
-                log_important!(info, "[network] 找到可用代理: {}:{} ({}) latency={}ms", proxy_info.host, proxy_info.port, proxy_info.proxy_type, latency_ms);
+                log_important!(
+                    info,
+                    "[network] 找到可用代理: {}:{} ({}) latency={}ms",
+                    proxy_info.host,
+                    proxy_info.port,
+                    proxy_info.proxy_type,
+                    latency_ms
+                );
                 match &best_proxy {
                     Some((_, best_latency)) if *best_latency <= latency_ms => {}
                     _ => best_proxy = Some((proxy_info, latency_ms)),
@@ -100,22 +107,29 @@ impl ProxyDetector {
         }
 
         if let Some((proxy_info, latency_ms)) = best_proxy {
-            log_important!(info, "[network] 选择延迟最低的本地代理: {}:{} ({}) latency={}ms", proxy_info.host, proxy_info.port, proxy_info.proxy_type, latency_ms);
+            log_important!(
+                info,
+                "[network] 选择延迟最低的本地代理: {}:{} ({}) latency={}ms",
+                proxy_info.host,
+                proxy_info.port,
+                proxy_info.proxy_type,
+                latency_ms
+            );
             return Some(proxy_info);
         }
-        
+
         log_important!(warn, "[network] 未找到可用的本地代理");
         None
     }
-    
+
     /// 检测指定代理是否可用
-    /// 
+    ///
     /// 通过代理发送测试请求到 Google 的 generate_204 端点
     /// 该端点专门用于网络连接测试，返回 HTTP 204 状态码
-    /// 
+    ///
     /// # 参数
     /// - `proxy_info`: 要检测的代理信息
-    /// 
+    ///
     /// # 返回值
     /// - `true`: 代理可用
     /// - `false`: 代理不可用
@@ -130,22 +144,30 @@ impl ProxyDetector {
                 // 端口可达，继续进行 HTTP 204 探测
             }
             Ok(Err(e)) => {
-                log_debug!("[network] 代理 {}:{} TCP 端口不可达: {}", proxy_info.host, proxy_info.port, e);
+                log_debug!(
+                    "[network] 代理 {}:{} TCP 端口不可达: {}",
+                    proxy_info.host,
+                    proxy_info.port,
+                    e
+                );
                 return false;
             }
             Err(_) => {
-                log_debug!("[network] 代理 {}:{} TCP 端口连接超时", proxy_info.host, proxy_info.port);
+                log_debug!(
+                    "[network] 代理 {}:{} TCP 端口连接超时",
+                    proxy_info.host,
+                    proxy_info.port
+                );
                 return false;
             }
         }
 
         // 创建代理URL
         let proxy_url = proxy_info.to_url();
-        
+
         // 尝试创建带代理的HTTP客户端
-        let client_builder = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(3));
-        
+        let client_builder = reqwest::Client::builder().timeout(std::time::Duration::from_secs(3));
+
         // 统一使用 Proxy::all() 让所有请求都走代理
         // 这样无论测试 http 还是 https 端点都能正确走代理
         let client = match proxy_info.proxy_type {
@@ -170,7 +192,7 @@ impl ProxyDetector {
                 }
             }
         };
-        
+
         let client = match client.build() {
             Ok(c) => c,
             Err(e) => {
@@ -178,7 +200,7 @@ impl ProxyDetector {
                 return false;
             }
         };
-        
+
         // 发送测试请求
         // 使用 Google 的 generate_204 端点进行连接测试
         match client
@@ -189,23 +211,35 @@ impl ProxyDetector {
             Ok(response) => {
                 let is_success = response.status().is_success() || response.status() == 204;
                 if is_success {
-                    log_debug!("[network] 代理 {}:{} 可用", proxy_info.host, proxy_info.port);
+                    log_debug!(
+                        "[network] 代理 {}:{} 可用",
+                        proxy_info.host,
+                        proxy_info.port
+                    );
                 } else {
-                    log_debug!("[network] 代理 {}:{} 响应异常: HTTP {}", 
-                        proxy_info.host, proxy_info.port, response.status());
+                    log_debug!(
+                        "[network] 代理 {}:{} 响应异常: HTTP {}",
+                        proxy_info.host,
+                        proxy_info.port,
+                        response.status()
+                    );
                 }
                 is_success
             }
             Err(e) => {
-                log_debug!("[network] 代理 {}:{} 连接失败: {}", 
-                    proxy_info.host, proxy_info.port, e);
+                log_debug!(
+                    "[network] 代理 {}:{} 连接失败: {}",
+                    proxy_info.host,
+                    proxy_info.port,
+                    e
+                );
                 false
             }
         }
     }
-    
+
     /// 检测指定端口的代理是否可用
-    /// 
+    ///
     /// 便捷方法，用于检测单个端口
     pub async fn check_port(port: u16, proxy_type: ProxyType) -> bool {
         let proxy_info = ProxyInfo::new(proxy_type, "127.0.0.1".to_string(), port);
@@ -222,14 +256,17 @@ mod tests {
         let proxy = ProxyDetector::detect_available_proxy().await;
         match proxy {
             Some(info) => {
-                println!("找到可用代理: {}:{} ({})", info.host, info.port, info.proxy_type);
+                println!(
+                    "找到可用代理: {}:{} ({})",
+                    info.host, info.port, info.proxy_type
+                );
             }
             None => {
                 println!("未找到可用代理");
             }
         }
     }
-    
+
     #[tokio::test]
     async fn test_check_specific_port() {
         // 测试 Clash 默认端口

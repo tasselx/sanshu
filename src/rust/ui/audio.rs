@@ -1,14 +1,14 @@
 use anyhow::Result;
+use rodio::{Decoder, OutputStream, Sink};
 use std::io::BufReader;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use tauri::{AppHandle, State, Manager};
-use rodio::{Decoder, OutputStream, Sink};
+use std::sync::Arc;
+use tauri::{AppHandle, Manager, State};
 
-use crate::config::{AppState, save_config};
-use crate::log_important;
 use super::audio_assets::{get_audio_asset_manager, AudioSource};
+use crate::config::{save_config, AppState};
+use crate::log_important;
 
 // 音频播放控制器 - 只存储控制信号，不存储音频流
 pub struct AudioController {
@@ -17,12 +17,19 @@ pub struct AudioController {
 
 #[tauri::command]
 pub async fn get_audio_notification_enabled(state: State<'_, AppState>) -> Result<bool, String> {
-    let config = state.config.lock().map_err(|e| format!("获取配置失败: {}", e))?;
+    let config = state
+        .config
+        .lock()
+        .map_err(|e| format!("获取配置失败: {}", e))?;
     Ok(config.audio_config.notification_enabled)
 }
 
 #[tauri::command]
-pub async fn set_audio_notification_enabled(enabled: bool, state: State<'_, AppState>, app: tauri::AppHandle) -> Result<(), String> {
+pub async fn set_audio_notification_enabled(
+    enabled: bool,
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
     // 如果是首次启用音频通知，先复制音频文件
     if enabled {
         if let Err(e) = ensure_audio_file_exists(&app).await {
@@ -31,39 +38,65 @@ pub async fn set_audio_notification_enabled(enabled: bool, state: State<'_, AppS
     }
 
     {
-        let mut config = state.config.lock().map_err(|e| format!("获取配置失败: {}", e))?;
+        let mut config = state
+            .config
+            .lock()
+            .map_err(|e| format!("获取配置失败: {}", e))?;
         config.audio_config.notification_enabled = enabled;
     }
 
     // 保存配置到文件
-    save_config(&state, &app).await.map_err(|e| format!("保存配置失败: {}", e))?;
+    save_config(&state, &app)
+        .await
+        .map_err(|e| format!("保存配置失败: {}", e))?;
     Ok(())
 }
 
 #[tauri::command]
 pub async fn get_audio_url(state: State<'_, AppState>) -> Result<String, String> {
-    let config = state.config.lock().map_err(|e| format!("获取配置失败: {}", e))?;
+    let config = state
+        .config
+        .lock()
+        .map_err(|e| format!("获取配置失败: {}", e))?;
     Ok(config.audio_config.custom_url.clone())
 }
 
 #[tauri::command]
-pub async fn set_audio_url(url: String, state: State<'_, AppState>, app: tauri::AppHandle) -> Result<(), String> {
+pub async fn set_audio_url(
+    url: String,
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
     {
-        let mut config = state.config.lock().map_err(|e| format!("获取配置失败: {}", e))?;
+        let mut config = state
+            .config
+            .lock()
+            .map_err(|e| format!("获取配置失败: {}", e))?;
         config.audio_config.custom_url = url;
     }
 
     // 保存配置到文件
-    save_config(&state, &app).await.map_err(|e| format!("保存配置失败: {}", e))?;
+    save_config(&state, &app)
+        .await
+        .map_err(|e| format!("保存配置失败: {}", e))?;
     Ok(())
 }
 
 #[tauri::command]
-pub async fn play_notification_sound(state: State<'_, AppState>, app: tauri::AppHandle) -> Result<(), String> {
+pub async fn play_notification_sound(
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
     // 检查是否启用音频通知
     let (enabled, audio_url) = {
-        let config = state.config.lock().map_err(|e| format!("获取配置失败: {}", e))?;
-        (config.audio_config.notification_enabled, config.audio_config.custom_url.clone())
+        let config = state
+            .config
+            .lock()
+            .map_err(|e| format!("获取配置失败: {}", e))?;
+        (
+            config.audio_config.notification_enabled,
+            config.audio_config.custom_url.clone(),
+        )
     };
 
     if !enabled {
@@ -81,17 +114,23 @@ pub async fn play_notification_sound(state: State<'_, AppState>, app: tauri::App
 }
 
 #[tauri::command]
-pub async fn test_audio_sound(state: State<'_, AppState>, app: tauri::AppHandle) -> Result<(), String> {
+pub async fn test_audio_sound(
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
     // 获取当前配置的音效URL
     let audio_url = {
-        let config = state.config.lock().map_err(|e| format!("获取配置失败: {}", e))?;
+        let config = state
+            .config
+            .lock()
+            .map_err(|e| format!("获取配置失败: {}", e))?;
         config.audio_config.custom_url.clone()
     };
 
     // 同步测试音频播放，确保能捕获错误
     match play_audio_file(&app, &audio_url).await {
         Ok(_) => Ok(()),
-        Err(e) => Err(format!("音效测试失败: {}", e))
+        Err(e) => Err(format!("音效测试失败: {}", e)),
     }
 }
 
@@ -112,7 +151,9 @@ pub async fn play_audio_file(app: &AppHandle, audio_url: &str) -> Result<()> {
 
     let audio_source = {
         let manager = get_audio_asset_manager();
-        let manager = manager.lock().map_err(|e| anyhow::anyhow!("获取管理器锁失败: {}", e))?;
+        let manager = manager
+            .lock()
+            .map_err(|e| anyhow::anyhow!("获取管理器锁失败: {}", e))?;
         manager.parse_audio_url(app, audio_url)?
     };
 
@@ -127,7 +168,8 @@ pub async fn play_audio_file(app: &AppHandle, audio_url: &str) -> Result<()> {
                 let app_handle = app.clone();
                 tokio::task::spawn_blocking(move || {
                     play_audio_sync_with_controller(&path, &app_handle)
-                }).await
+                })
+                .await
                 .map_err(|e| anyhow::anyhow!("音频播放任务失败: {}", e))?
             } else {
                 Err(anyhow::anyhow!("音频文件不存在: {:?}", path))
@@ -137,13 +179,16 @@ pub async fn play_audio_file(app: &AppHandle, audio_url: &str) -> Result<()> {
             // 内置音频资源
             let audio_path = {
                 let manager = get_audio_asset_manager();
-                let manager = manager.lock().map_err(|e| anyhow::anyhow!("获取管理器锁失败: {}", e))?;
+                let manager = manager
+                    .lock()
+                    .map_err(|e| anyhow::anyhow!("获取管理器锁失败: {}", e))?;
                 manager.ensure_audio_exists(app, &asset_id)?
             };
             let app_handle = app.clone();
             tokio::task::spawn_blocking(move || {
                 play_audio_sync_with_controller(&audio_path, &app_handle)
-            }).await
+            })
+            .await
             .map_err(|e| anyhow::anyhow!("音频播放任务失败: {}", e))?
         }
     }
@@ -151,14 +196,20 @@ pub async fn play_audio_file(app: &AppHandle, audio_url: &str) -> Result<()> {
 
 async fn play_audio_from_url(app: &AppHandle, url: &str) -> Result<()> {
     // 下载音频文件到临时目录
-    let response = reqwest::get(url).await
+    let response = reqwest::get(url)
+        .await
         .map_err(|e| anyhow::anyhow!("下载音频文件失败: {}", e))?;
 
     if !response.status().is_success() {
-        return Err(anyhow::anyhow!("下载音频文件失败，状态码: {}", response.status()));
+        return Err(anyhow::anyhow!(
+            "下载音频文件失败，状态码: {}",
+            response.status()
+        ));
     }
 
-    let bytes = response.bytes().await
+    let bytes = response
+        .bytes()
+        .await
         .map_err(|e| anyhow::anyhow!("读取音频数据失败: {}", e))?;
 
     // 将bytes转换为Vec<u8>以便移动到线程中
@@ -168,23 +219,23 @@ async fn play_audio_from_url(app: &AppHandle, url: &str) -> Result<()> {
     // 使用 tokio::task::spawn_blocking 来等待音频播放完成
     tokio::task::spawn_blocking(move || {
         play_audio_from_bytes_with_controller(bytes_vec, &app_handle)
-    }).await
+    })
+    .await
     .map_err(|e| anyhow::anyhow!("音频播放任务失败: {}", e))?
 }
 
 fn play_audio_from_bytes_with_controller(bytes: Vec<u8>, app: &AppHandle) -> Result<()> {
     // 创建音频输出流
-    let (_stream, stream_handle) = OutputStream::try_default()
-        .map_err(|e| anyhow::anyhow!("创建音频输出流失败: {}", e))?;
+    let (_stream, stream_handle) =
+        OutputStream::try_default().map_err(|e| anyhow::anyhow!("创建音频输出流失败: {}", e))?;
 
     // 创建音频播放器
-    let sink = Sink::try_new(&stream_handle)
-        .map_err(|e| anyhow::anyhow!("创建音频播放器失败: {}", e))?;
+    let sink =
+        Sink::try_new(&stream_handle).map_err(|e| anyhow::anyhow!("创建音频播放器失败: {}", e))?;
 
     // 从字节数据解码音频
     let cursor = std::io::Cursor::new(bytes);
-    let source = Decoder::new(cursor)
-        .map_err(|e| anyhow::anyhow!("解码音频数据失败: {}", e))?;
+    let source = Decoder::new(cursor).map_err(|e| anyhow::anyhow!("解码音频数据失败: {}", e))?;
 
     // 播放音频
     sink.append(source);
@@ -205,25 +256,23 @@ fn play_audio_from_bytes_with_controller(bytes: Vec<u8>, app: &AppHandle) -> Res
     Ok(())
 }
 
-
-
 fn play_audio_sync_with_controller(audio_path: &PathBuf, app: &AppHandle) -> Result<()> {
     // 创建音频输出流
-    let (_stream, stream_handle) = OutputStream::try_default()
-        .map_err(|e| anyhow::anyhow!("创建音频输出流失败: {}", e))?;
+    let (_stream, stream_handle) =
+        OutputStream::try_default().map_err(|e| anyhow::anyhow!("创建音频输出流失败: {}", e))?;
 
     // 创建音频播放器
-    let sink = Sink::try_new(&stream_handle)
-        .map_err(|e| anyhow::anyhow!("创建音频播放器失败: {}", e))?;
+    let sink =
+        Sink::try_new(&stream_handle).map_err(|e| anyhow::anyhow!("创建音频播放器失败: {}", e))?;
 
     // 读取音频文件
-    let file = std::fs::File::open(audio_path)
-        .map_err(|e| anyhow::anyhow!("打开音频文件失败: {}", e))?;
+    let file =
+        std::fs::File::open(audio_path).map_err(|e| anyhow::anyhow!("打开音频文件失败: {}", e))?;
     let buf_reader = BufReader::new(file);
 
     // 解码音频
-    let source = Decoder::new(buf_reader)
-        .map_err(|e| anyhow::anyhow!("解码音频文件失败: {}", e))?;
+    let source =
+        Decoder::new(buf_reader).map_err(|e| anyhow::anyhow!("解码音频文件失败: {}", e))?;
 
     // 播放音频
     sink.append(source);
@@ -245,12 +294,12 @@ fn play_audio_sync_with_controller(audio_path: &PathBuf, app: &AppHandle) -> Res
     Ok(())
 }
 
-
-
 /// 确保默认音频文件存在，如果不存在则从资源目录复制
 pub async fn ensure_audio_file_exists(app: &AppHandle) -> Result<()> {
     let manager = get_audio_asset_manager();
-    let manager = manager.lock().map_err(|e| anyhow::anyhow!("获取管理器锁失败: {}", e))?;
+    let manager = manager
+        .lock()
+        .map_err(|e| anyhow::anyhow!("获取管理器锁失败: {}", e))?;
 
     // 确保第一个可用的音频资源存在
     let all_assets = manager.get_all_assets();
@@ -262,5 +311,3 @@ pub async fn ensure_audio_file_exists(app: &AppHandle) -> Result<()> {
 
     Ok(())
 }
-
-

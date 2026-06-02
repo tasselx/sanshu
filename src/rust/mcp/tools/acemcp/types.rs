@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// Acemcp搜索请求参数
@@ -44,7 +44,6 @@ pub struct AcemcpConfig {
     /// 代理密码（可选）
     pub proxy_password: Option<String>,
 }
-
 
 /// 索引状态枚举
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -292,4 +291,3 @@ pub struct SpeedTestProgress {
     /// 子步骤名称（可选，用于更细粒度的进度，如 "代理 Ping"）
     pub sub_step: Option<String>,
 }
-
