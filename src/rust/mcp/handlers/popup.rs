@@ -1,5 +1,5 @@
 use anyhow::Result;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -138,6 +138,14 @@ struct PendingPopup {
 static PENDING_POPUPS: Lazy<Mutex<HashMap<String, PendingPopup>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
+/// 正在被轮询中的弹窗 key 集合。
+///
+/// 弹窗在轮询期间会从 PENDING_POPUPS 取出（获取所有权），此时若另一个 Cursor request
+/// 的 zhi 调用进来，会发现注册表为空而误创建重复弹窗。此集合记录「哪些 key 当前正在被
+/// 轮询」，新调用发现同 key 正在轮询时会等待其释放后重连，而非新建弹窗。
+static POLLING_IN_FLIGHT: Lazy<Mutex<HashSet<String>>> =
+    Lazy::new(|| Mutex::new(HashSet::new()));
+
 /// 弹窗轮询结果
 pub enum PopupPoll {
     /// 用户已响应（GUI 进程已退出），携带响应文本
@@ -152,37 +160,140 @@ pub enum PopupPoll {
 /// - 同一 workspace 已有在飞弹窗则复用（重连），否则 spawn 新弹窗；
 /// - 后台线程持续抽干 stdout/stderr，主线程用 `is_finished()` 判断 GUI 进程是否已退出；
 /// - 退出则收集输出作为结果；超过 `wait` 仍未退出则把子进程放回注册表，返回 Pending（不杀弹窗）。
+/// - 若同 key 弹窗正在被另一个 zhi 调用轮询中（POLLING_IN_FLIGHT），等待其释放后重连，
+///   而非创建重复弹窗。
 pub fn poll_or_start_popup(request: &PopupRequest, wait: Duration) -> Result<PopupPoll> {
     let key = popup_key(request);
 
-    // 仅在 remove/insert 时短暂持锁；轮询期间不持锁，避免阻塞其它工具。
-    let pending = {
+    let pending = acquire_popup(request, &key, wait)?;
+
+    // 如果 acquire_popup 返回 None，说明用户已通过另一个活跃弹窗完成了响应
+    let pending = match pending {
+        Some(p) => p,
+        None => return Ok(PopupPoll::Done(
+            "用户已通过另一个活跃的 zhi 弹窗完成了响应，本次调用无需再等。".to_string()
+        )),
+    };
+
+    // 标记正在轮询，防止并发 zhi 调用为同一 key 创建重复弹窗
+    {
+        let mut polling = POLLING_IN_FLIGHT
+            .lock()
+            .map_err(|e| anyhow::anyhow!("轮询标记锁中毒: {}", e))?;
+        polling.insert(key.clone());
+    }
+
+    let result = do_poll_loop(&key, pending, wait);
+
+    // 无论成功失败，都清除轮询标记
+    {
+        let mut polling = POLLING_IN_FLIGHT
+            .lock()
+            .map_err(|e| anyhow::anyhow!("轮询标记锁中毒: {}", e))?;
+        polling.remove(&key);
+    }
+
+    result
+}
+
+/// 获取弹窗：从注册表取出已有弹窗（重连），或等待并发轮询释放后重连，或新建。
+///
+/// 返回 `None` 表示并发轮询已完成（用户已通过另一个弹窗响应），无需再等。
+fn acquire_popup(request: &PopupRequest, key: &str, wait: Duration) -> Result<Option<PendingPopup>> {
+    // 先尝试从注册表直接取出（最常见路径：首次或重连）
+    {
         let mut map = PENDING_POPUPS
             .lock()
             .map_err(|e| anyhow::anyhow!("弹窗注册表锁中毒: {}", e))?;
-        // 顺手回收已遗弃的陈旧弹窗（进程已退出但一直没人重连收集），避免僵尸进程/线程/临时文件堆积。
-        reap_abandoned_popups(&mut map, &key);
-        match map.remove(&key) {
-            Some(mut p) => {
-                // 重连同一弹窗：累加计数并升到 info，便于直接从日志统计「重连风暴」强度。
+        reap_abandoned_popups(&mut map, key);
+        if let Some(mut p) = map.remove(key) {
+            p.reconnects = p.reconnects.saturating_add(1);
+            log_important!(
+                info,
+                "[popup] 重连弹窗 #{}: key={}, request_id={}, 已等待={}s（重连越多越接近 Cursor 单轮预算上限→易被动新开 request）",
+                p.reconnects,
+                key,
+                p.request_id,
+                p.started.elapsed().as_secs()
+            );
+            return Ok(Some(p));
+        }
+    }
+
+    // 注册表为空 → 检查是否有并发轮询正在进行
+    let is_polling = {
+        let polling = POLLING_IN_FLIGHT
+            .lock()
+            .map_err(|e| anyhow::anyhow!("轮询标记锁中毒: {}", e))?;
+        polling.contains(key)
+    };
+
+    if !is_polling {
+        // 确实没有活跃弹窗 → 新建
+        return Ok(Some(start_popup(request)?));
+    }
+
+    // 同 key 弹窗正在被另一个 zhi 调用轮询中 → 等待其释放后重连，避免创建重复弹窗
+    log_important!(
+        info,
+        "[popup] 同 key 弹窗正在被另一个 zhi 调用轮询中，等待释放后重连: key={}",
+        key
+    );
+    let deadline = Instant::now() + wait;
+    loop {
+        std::thread::sleep(Duration::from_millis(500));
+
+        if Instant::now() >= deadline {
+            log_important!(
+                warn,
+                "[popup] 等待并发轮询释放超时（同 key 弹窗仍被另一个 zhi 调用持有）: key={}",
+                key
+            );
+            anyhow::bail!(
+                "同 key 弹窗正在被另一个 zhi 调用轮询中且未在等待窗口内释放，请稍后重试"
+            );
+        }
+
+        // 检查弹窗是否已被放回注册表（轮询方超时放回）
+        {
+            let mut map = PENDING_POPUPS
+                .lock()
+                .map_err(|e| anyhow::anyhow!("弹窗注册表锁中毒: {}", e))?;
+            if let Some(mut p) = map.remove(key) {
                 p.reconnects = p.reconnects.saturating_add(1);
                 log_important!(
                     info,
-                    "[popup] 重连弹窗 #{}: key={}, request_id={}, 已等待={}s（重连越多越接近 Cursor 单轮预算上限→易被动新开 request）",
+                    "[popup] 并发轮询已释放弹窗，成功重连 #{}: key={}, request_id={}",
                     p.reconnects,
                     key,
-                    p.request_id,
-                    p.started.elapsed().as_secs()
+                    p.request_id
                 );
-                p
+                return Ok(Some(p));
             }
-            None => start_popup(request)?,
         }
-    };
 
+        // 检查轮询是否已结束（弹窗被消费为 Done，即用户已通过另一个调用响应）
+        let still_polling = {
+            let polling = POLLING_IN_FLIGHT
+                .lock()
+                .map_err(|e| anyhow::anyhow!("轮询标记锁中毒: {}", e))?;
+            polling.contains(key)
+        };
+        if !still_polling {
+            log_important!(
+                info,
+                "[popup] 并发轮询已完成（用户已响应），无需新建弹窗: key={}",
+                key
+            );
+            return Ok(None);
+        }
+    }
+}
+
+/// 轮询弹窗直到用户响应（Done）或超时（Pending）。
+fn do_poll_loop(key: &str, pending: PendingPopup, wait: Duration) -> Result<PopupPoll> {
     let deadline = Instant::now() + wait;
     loop {
-        // stdout_reader 完成 == GUI 关闭了 stdout == 进程已退出且输出已收齐。
         if pending.stdout_reader.is_finished() {
             let PendingPopup {
                 mut child,
@@ -201,7 +312,6 @@ pub fn poll_or_start_popup(request: &PopupRequest, wait: Duration) -> Result<Pop
                 started.elapsed().as_secs(),
                 reconnects
             );
-            // 进程已退出，wait() 立即返回退出状态。
             let status = child.wait()?;
             let stdout = stdout_reader
                 .join()
@@ -222,7 +332,6 @@ pub fn poll_or_start_popup(request: &PopupRequest, wait: Duration) -> Result<Pop
         }
 
         if Instant::now() >= deadline {
-            // 仍在等用户：放回注册表，下次 zhi 调用重连，不杀弹窗、不丢已输入内容。
             log_important!(
                 info,
                 "[popup] 等待窗口({}s)到，弹窗仍开启→返回 Pending 待 AI 重连: key={}, request_id={}, 已等待={}s, 当前重连次数={}",
@@ -235,7 +344,7 @@ pub fn poll_or_start_popup(request: &PopupRequest, wait: Duration) -> Result<Pop
             let mut map = PENDING_POPUPS
                 .lock()
                 .map_err(|e| anyhow::anyhow!("弹窗注册表锁中毒: {}", e))?;
-            map.insert(key, pending);
+            map.insert(key.to_string(), pending);
             return Ok(PopupPoll::Pending);
         }
 
