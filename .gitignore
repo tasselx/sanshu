@@ -85,9 +85,7 @@ scripts/
 metadata.json
 demo/
 
-/docs/
-!/docs/
-/docs/*
+
 
 
 test/

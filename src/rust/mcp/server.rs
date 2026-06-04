@@ -719,11 +719,12 @@ fn log_startup_watermark() {
 
     log_important!(
         info,
-        "[启动水印] version={} git={} built={} POPUP_POLL_WINDOW={}s",
+        "[启动水印] version={} git={} built={} POPUP_POLL_WINDOW={}s MAX_RECONNECTS={}",
         version,
         git_sha,
         build_time,
-        crate::mcp::handlers::POPUP_POLL_WINDOW.as_secs()
+        crate::mcp::handlers::POPUP_POLL_WINDOW.as_secs(),
+        crate::mcp::handlers::MAX_POPUP_RECONNECTS
     );
 }
 

@@ -1,5 +1,6 @@
 use anyhow::Result;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use rmcp::model::{
     CallToolResult, Content, ErrorData as McpError, NumberOrString, ProgressNotificationParam,
@@ -17,7 +18,7 @@ use crate::{log_debug, log_important};
 /// 心跳进度通知周期：10 秒。
 ///
 /// 中文说明：Cursor 等 MCP 客户端的工具调用超时多在 ~30 秒，zhi 等用户决策往往要数分钟。
-/// 配合方案A 把 POPUP_POLL_WINDOW 拉长到 240s 后，单次 zhi 调用会真正长时间阻塞、
+/// 配合方案A 把 POPUP_POLL_WINDOW 拉长到 600s 后，单次 zhi 调用会真正长时间阻塞、
 /// 完全依赖这里的 progress 心跳在 30s 超时前反复重置客户端计时器。
 /// 取 10s（而非旧值 15s）是为了留足安全余量：30s 内能稳定发出约 3 次心跳，
 /// 即使偶有一次丢包/抖动也不会逼近超时；从根上避免
@@ -113,11 +114,16 @@ impl InteractionTool {
             log_important!(info, "[zhi] 未启用心跳（无 peer，CLI/测试场景）: request_id={}", request_id);
         }
 
+        // 连接存活标志：心跳失败时置 false，通知轮询线程提前退出以避免空等
+        let connection_alive = Arc::new(AtomicBool::new(true));
+        let abort_flag_for_poll = connection_alive.clone();
+
         let heartbeat = peer.map(|peer| {
             let token = client_progress_token.unwrap_or_else(|| {
                 ProgressToken(NumberOrString::String(Arc::from(request_id.as_str())))
             });
             let heartbeat_request_id = request_id.clone();
+            let alive_flag = connection_alive.clone();
             tokio::spawn(async move {
                 let mut ticker = tokio::time::interval(PROGRESS_HEARTBEAT_INTERVAL);
                 // 跳过 interval 立即触发的首个 tick，让第一次心跳在一个周期后再发。
@@ -137,11 +143,11 @@ impl InteractionTool {
                         })
                         .await
                     {
-                        // 中文说明：通知失败通常意味着客户端连接已关闭（很可能正是「被动新开 request」发生的时刻），
-                        // 升到 warn 便于在日志里直接定位这一根因信号。
+                        // 客户端连接已关闭 → 通知轮询线程立即退出
+                        alive_flag.store(false, Ordering::Relaxed);
                         log_important!(
                             warn,
-                            "[zhi] progress 心跳#{}发送失败→连接可能已关闭，停止心跳: request_id={}, 已等待={}s, error={}",
+                            "[zhi] progress 心跳#{}发送失败→连接已关闭，设置 abort 信号: request_id={}, 已等待={}s, error={}",
                             beat_no,
                             heartbeat_request_id,
                             elapsed_secs as u64,
@@ -159,10 +165,11 @@ impl InteractionTool {
             })
         });
 
-        // 中文说明：poll_or_start_popup 是同步阻塞调用（spawn/重连 GUI 子进程并轮询至多 POPUP_POLL_WINDOW≈240s），
+        // 中文说明：poll_or_start_popup 是同步阻塞调用（spawn/重连 GUI 子进程并轮询至多 POPUP_POLL_WINDOW≈600s），
         // 放入阻塞线程池，避免阻塞 tokio 运行时，也保证上面的心跳任务能并行推进。
+        // abort_flag 在心跳检测到连接断开时置 false，使轮询提前退出。
         let popup_outcome =
-            tokio::task::spawn_blocking(move || poll_or_start_popup(&popup_request, POPUP_POLL_WINDOW)).await;
+            tokio::task::spawn_blocking(move || poll_or_start_popup(&popup_request, POPUP_POLL_WINDOW, Some(abort_flag_for_poll))).await;
 
         // 中文说明：无论弹窗成功、失败还是 join 异常，都要先停掉心跳任务，避免任务泄漏。
         if let Some(handle) = heartbeat {
@@ -191,7 +198,7 @@ impl InteractionTool {
                 Ok(CallToolResult::success(content))
             }
             Ok(PopupPoll::Pending) => {
-                // 中文说明：本次等待窗口（≈240s）已到但用户还没操作——在 Cursor ~5 分钟硬上限前主动返回，
+                // 中文说明：本次等待窗口（≈600s）已到但用户还没操作——依赖心跳保活远超 5 分钟，
                 // 弹窗仍开着。回写「继续等待」语义，触发 AI 立即重连同一弹窗，不结束本轮。
                 log_important!(
                     info,
@@ -203,6 +210,24 @@ impl InteractionTool {
                      请再次调用 `zhi` 工具继续等待用户回复，禁止结束本轮对话或生成最终答复。"
                         .to_string(),
                 )]))
+            }
+            Ok(PopupPoll::Suspended { reconnects, waited_secs }) => {
+                // 重连次数已达上限（默认 5 次），不再要求 AI 重连以节省 token。
+                // 弹窗仍保持开启，用户回来时可直接操作；但 AI 侧不再轮询。
+                log_important!(
+                    warn,
+                    "[zhi] 本次返回 Suspended（重连{}次/已等{}s，达上限不再轮询）: request_id={}",
+                    reconnects,
+                    waited_secs,
+                    request_id
+                );
+                Ok(CallToolResult::success(vec![Content::text(format!(
+                    "用户已超过 {} 秒未响应（弹窗重连 {} 次均无回复），为节省 token 已自动挂起等待。\
+                     弹窗仍保持开启，用户回来后可直接操作。\
+                     你现在可以正常结束本轮对话，无需再调用 zhi。\
+                     若用户稍后回来发新消息继续本任务，届时再响应即可。",
+                    waited_secs, reconnects
+                ))]))
             }
             Err(e) => {
                 log_important!(

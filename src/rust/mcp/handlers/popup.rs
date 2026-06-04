@@ -4,7 +4,8 @@ use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 use once_cell::sync::Lazy;
@@ -109,10 +110,16 @@ pub fn create_tauri_popup(request: &PopupRequest) -> Result<String> {
 /// 大量 zhi 往返（实测等 4.5 分钟 → 10 次调用），每次重连 AI 还会重发整段 brief/choices，
 /// 上下文按 N 倍膨胀、烧光 Cursor 迭代预算、触发后台新 request，最终把强约束规则挤出上下文、
 /// 回退到原生 ask。现改为依赖 PROGRESS_HEARTBEAT_INTERVAL 的 progress 心跳在 30s 超时前
-/// 反复重置客户端计时器，从而把窗口拉长到 240s（< Cursor ~5 分钟硬上限），
-/// 让「等 4.5 分钟」从 10 次往返降到约 1~2 次。超过 240s 仍未响应才返回 Pending 让 AI 重连，
-/// 因此任意长的等待仍被覆盖，只是往返次数下降约一个数量级。
-pub const POPUP_POLL_WINDOW: Duration = Duration::from_secs(240);
+/// 反复重置客户端计时器，从而把窗口拉长到 600s（心跳每 10s 一次，实测可稳定支撑）。
+/// 让「等 10 分钟」只需约 1 次重连。超过 600s 仍未响应才返回 Pending 让 AI 重连。
+/// 配合 MAX_POPUP_RECONNECTS 上限，超过指定次数后自动挂起、不再消耗 token。
+/// 另有 abort_flag 机制：心跳失败时立即通知轮询退出，避免客户端已断开后仍空等。
+pub const POPUP_POLL_WINDOW: Duration = Duration::from_secs(600);
+
+/// 最大重连次数上限：超过此次数后不再返回 Pending 让 AI 重连，
+/// 改为返回 Suspended 告知 AI 挂起等待、不再消耗 token。
+/// 10 次 × 600s = 100 分钟持续等待后自动挂起。
+pub const MAX_POPUP_RECONNECTS: u32 = 10;
 /// 轮询 GUI 进程是否结束的间隔。
 const POPUP_POLL_INTERVAL: Duration = Duration::from_millis(200);
 
@@ -152,6 +159,8 @@ pub enum PopupPoll {
     Done(String),
     /// 仍在等待用户（本次轮询窗口已到），弹窗保持开启，需 AI 再次调用 zhi 重连
     Pending,
+    /// 重连次数已达上限，弹窗仍开着但不再要求 AI 重连（节省 token）
+    Suspended { reconnects: u32, waited_secs: u64 },
 }
 
 /// 启动或重连弹窗，并轮询至多 `wait` 时长。
@@ -162,7 +171,8 @@ pub enum PopupPoll {
 /// - 退出则收集输出作为结果；超过 `wait` 仍未退出则把子进程放回注册表，返回 Pending（不杀弹窗）。
 /// - 若同 key 弹窗正在被另一个 zhi 调用轮询中（POLLING_IN_FLIGHT），等待其释放后重连，
 ///   而非创建重复弹窗。
-pub fn poll_or_start_popup(request: &PopupRequest, wait: Duration) -> Result<PopupPoll> {
+/// - `abort_flag`：外部（如心跳任务）检测到客户端连接已断开时置 false，轮询将提前中止以避免空等。
+pub fn poll_or_start_popup(request: &PopupRequest, wait: Duration, abort_flag: Option<Arc<AtomicBool>>) -> Result<PopupPoll> {
     let key = popup_key(request);
 
     let pending = acquire_popup(request, &key, wait)?;
@@ -183,7 +193,7 @@ pub fn poll_or_start_popup(request: &PopupRequest, wait: Duration) -> Result<Pop
         polling.insert(key.clone());
     }
 
-    let result = do_poll_loop(&key, pending, wait);
+    let result = do_poll_loop(&key, pending, wait, abort_flag.as_ref());
 
     // 无论成功失败，都清除轮询标记
     {
@@ -291,7 +301,8 @@ fn acquire_popup(request: &PopupRequest, key: &str, wait: Duration) -> Result<Op
 }
 
 /// 轮询弹窗直到用户响应（Done）或超时（Pending）。
-fn do_poll_loop(key: &str, pending: PendingPopup, wait: Duration) -> Result<PopupPoll> {
+/// `abort_flag` 为 false 时表示客户端连接已断开，应立即停止等待。
+fn do_poll_loop(key: &str, pending: PendingPopup, wait: Duration, abort_flag: Option<&Arc<AtomicBool>>) -> Result<PopupPoll> {
     let deadline = Instant::now() + wait;
     loop {
         if pending.stdout_reader.is_finished() {
@@ -331,15 +342,54 @@ fn do_poll_loop(key: &str, pending: PendingPopup, wait: Duration) -> Result<Popu
             return Ok(PopupPoll::Done(response));
         }
 
+        // 心跳失败 → 客户端连接已断开，继续等待无意义，立即返回 Pending 让弹窗留存
+        if let Some(flag) = abort_flag {
+            if !flag.load(Ordering::Relaxed) {
+                log_important!(
+                    warn,
+                    "[popup] 心跳检测到客户端已断开，提前结束轮询: key={}, request_id={}, 已等待={}s",
+                    key,
+                    pending.request_id,
+                    pending.started.elapsed().as_secs()
+                );
+                let mut map = PENDING_POPUPS
+                    .lock()
+                    .map_err(|e| anyhow::anyhow!("弹窗注册表锁中毒: {}", e))?;
+                map.insert(key.to_string(), pending);
+                return Ok(PopupPoll::Pending);
+            }
+        }
+
         if Instant::now() >= deadline {
+            let reconnects = pending.reconnects;
+            let waited_secs = pending.started.elapsed().as_secs();
+
+            if reconnects >= MAX_POPUP_RECONNECTS {
+                // 重连次数已达上限，挂起而非继续要求 AI 重连（节省 token）
+                log_important!(
+                    warn,
+                    "[popup] 重连次数已达上限({}/{})，挂起弹窗不再要求 AI 重连: key={}, request_id={}, 已等待={}s",
+                    reconnects,
+                    MAX_POPUP_RECONNECTS,
+                    key,
+                    pending.request_id,
+                    waited_secs
+                );
+                let mut map = PENDING_POPUPS
+                    .lock()
+                    .map_err(|e| anyhow::anyhow!("弹窗注册表锁中毒: {}", e))?;
+                map.insert(key.to_string(), pending);
+                return Ok(PopupPoll::Suspended { reconnects, waited_secs });
+            }
+
             log_important!(
                 info,
                 "[popup] 等待窗口({}s)到，弹窗仍开启→返回 Pending 待 AI 重连: key={}, request_id={}, 已等待={}s, 当前重连次数={}",
                 wait.as_secs(),
                 key,
                 pending.request_id,
-                pending.started.elapsed().as_secs(),
-                pending.reconnects
+                waited_secs,
+                reconnects
             );
             let mut map = PENDING_POPUPS
                 .lock()

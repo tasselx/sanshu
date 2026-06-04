@@ -3,7 +3,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 fn main() {
     // 中文注释：嵌入「启动水印」所需的构建信息，便于一眼判断 Cursor 实际运行的 MCP 二进制
-    // 是否为最新源码（历史上出现过「源码已改 240s、但跑的还是旧 20s 二进制」导致频繁新开 request）。
+    // 是否为最新源码（历史上出现过「源码已改 600s、但跑的还是旧 20s 二进制」导致频繁新开 request）。
 
     // 1) git 短 SHA；工作区有未提交改动时追加 -dirty，提示二进制可能与提交不一致。
     let git_sha = git_short_sha();
