@@ -266,14 +266,33 @@ export function useAcemcpSync() {
     stopPolling()
   })
 
-  // 检测 ACE 配置是否完整（base_url 和 token 均已配置）
+  // 检测代码搜索后端配置是否完整（根据实际后端策略判断）
   async function checkAcemcpConfigured(): Promise<boolean> {
     try {
-      const config = await invoke<{ base_url?: string; token?: string }>('get_acemcp_config')
-      return !!(config.base_url && config.token)
+      const config = await invoke<{
+        base_url?: string
+        token?: string
+        sou_default_backend?: string
+        fast_context_api_key?: string
+      }>('get_acemcp_config')
+
+      const backend = config.sou_default_backend || 'auto'
+
+      // fast_context 后端：只要有 API Key 即视为已配置
+      if (backend === 'fast_context') {
+        return !!config.fast_context_api_key
+      }
+      // ace 后端：需要 base_url 和 token
+      if (backend === 'ace') {
+        return !!(config.base_url && config.token)
+      }
+      // auto / both：任一后端配置完整即可
+      const aceOk = !!(config.base_url && config.token)
+      const fcOk = !!config.fast_context_api_key
+      return aceOk || fcOk
     }
     catch (err) {
-      console.error('检测 ACE 配置失败:', err)
+      console.error('检测代码搜索后端配置失败:', err)
       return false
     }
   }

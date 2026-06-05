@@ -111,6 +111,20 @@ onMounted(async () => {
       ],
     },
     {
+      icon: 'i-carbon-book text-xl text-teal-600 dark:text-teal-400',
+      title: 'DeepWiki 文档',
+      titleClass: 'text-teal-600 dark:text-teal-400',
+      subtitle: '纵览全局，知己知彼',
+      iconWrapperClass: 'bg-teal-50 dark:bg-teal-900/30',
+      features: [
+        '任意公开 GitHub 仓库文档',
+        'AI 生成的架构分析',
+        '智能问答：对仓库提问',
+        '文档结构浏览',
+        '免费无需认证',
+      ],
+    },
+    {
       icon: 'i-carbon-settings text-xl text-gray-600 dark:text-gray-400',
       title: '个性化设置',
       titleClass: 'text-gray-600 dark:text-gray-400',

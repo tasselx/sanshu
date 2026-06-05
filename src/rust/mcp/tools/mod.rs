@@ -3,6 +3,7 @@
 
 pub mod acemcp;
 pub mod context7;
+pub mod deepwiki;
 pub mod enhance;
 pub mod icon;
 pub mod interaction;
@@ -15,6 +16,7 @@ pub mod uiux;
 // 重新导出工具以便访问
 pub use acemcp::AcemcpTool;
 pub use context7::Context7Tool;
+pub use deepwiki::DeepwikiTool;
 pub use enhance::EnhanceTool;
 pub use icon::IconTool;
 pub use interaction::InteractionTool;

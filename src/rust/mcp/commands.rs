@@ -160,6 +160,24 @@ pub async fn get_mcp_tools_config(
         has_config: true, // Tavily 需要配置 API Key
     });
 
+    // DeepWiki 仓库文档工具 - 免费无需认证
+    tools.push(MCPToolConfig {
+        id: mcp::TOOL_DEEPWIKI.to_string(),
+        name: "DeepWiki 仓库文档".to_string(),
+        description: "查询任意公开 GitHub 仓库的 AI 生成文档，支持文档浏览与智能问答".to_string(),
+        enabled: config
+            .mcp_config
+            .tools
+            .get(mcp::TOOL_DEEPWIKI)
+            .copied()
+            .unwrap_or(true),
+        can_disable: true,
+        icon: "i-carbon-book text-lg text-teal-600 dark:text-teal-400".to_string(),
+        icon_bg: "bg-teal-100 dark:bg-teal-900".to_string(),
+        dark_icon_bg: "dark:bg-teal-800".to_string(),
+        has_config: false, // 免费无需配置
+    });
+
     // 图标工坊工具 - UI 功能工具，始终存在，有配置选项
     tools.push(MCPToolConfig {
         id: "icon".to_string(),

@@ -501,6 +501,7 @@ pub fn default_mcp_tools() -> HashMap<String, bool> {
     tools.insert(mcp::TOOL_UIUX.to_string(), true); // UI/UX 工具默认启用（内置技能）
     tools.insert(mcp::TOOL_ENHANCE.to_string(), false); // 提示词增强工具默认关闭（依赖 acemcp 配置）
     tools.insert(mcp::TOOL_TAVILY.to_string(), true); // Tavily AI 搜索工具默认启用（免费额度，需配置 API Key）
+    tools.insert(mcp::TOOL_DEEPWIKI.to_string(), true); // DeepWiki 仓库文档工具默认启用（免费无需认证）
     tools
 }
 

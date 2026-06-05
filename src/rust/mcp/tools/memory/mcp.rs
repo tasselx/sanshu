@@ -355,13 +355,31 @@ fn is_sou_enabled() -> bool {
 }
 
 /// 尝试触发后台索引（仅在项目未初始化或索引失败时）
+/// 当后端策略为 fast_context 时跳过 ACE 索引（fast-context 不依赖本地索引）
 async fn try_trigger_background_index(project_root: &str) -> Result<()> {
     use super::super::acemcp::mcp::{
         ensure_initial_index_background, get_initial_index_state, InitialIndexState,
     };
 
+    // 读取后端策略，仅在需要 ACE 时才触发索引
+    let app_config = crate::config::load_standalone_config()?;
+    let backend = app_config
+        .mcp_config
+        .sou_default_backend
+        .as_deref()
+        .unwrap_or("auto");
+    if backend == "fast_context" {
+        // fast-context 不依赖本地索引，无需触发 ACE 后台索引
+        return Ok(());
+    }
+
     // 获取 acemcp 配置：复用工具内部读取逻辑，避免字段新增/演进导致此处漏填
     let acemcp_config = super::super::acemcp::mcp::AcemcpTool::get_acemcp_config().await?;
+
+    // ACE 未配置时跳过（auto/both 模式下 ACE 可选，不应报错）
+    if acemcp_config.base_url.is_none() {
+        return Ok(());
+    }
 
     // 检查索引状态
     let initial_state = get_initial_index_state(project_root);

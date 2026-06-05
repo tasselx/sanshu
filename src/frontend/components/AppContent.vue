@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { invoke } from '@tauri-apps/api/core'
 import { useMessage } from 'naive-ui'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useAcemcpSync } from '../composables/useAcemcpSync'
@@ -108,8 +109,13 @@ const souEnabled = computed(() => mcpTools.value.some(tool => tool.id === 'sou' 
 // 是否启用提示词增强工具
 const enhanceEnabled = computed(() => mcpTools.value.some(tool => tool.id === 'enhance' && tool.enabled))
 
-// Header 中是否需要展示 MCP 索引状态指示器
+// 当前后端策略
+const souBackend = ref('auto')
+
+// Header 中是否需要展示 ACE 索引状态指示器（fast-context 无需 ACE 索引状态）
 const showMcpIndexStatus = computed(() => {
+  if (souBackend.value === 'fast_context')
+    return false
   return souEnabled.value
     && !!props.mcpRequest?.project_root_path
     && !!currentProjectStatus.value
@@ -188,6 +194,11 @@ onMounted(() => {
 
   // 加载 MCP 工具配置（用于检测 sou 是否启用）
   loadMcpTools()
+
+  // 读取后端策略
+  invoke<{ sou_default_backend?: string }>('get_acemcp_config')
+    .then((config) => { souBackend.value = config.sou_default_backend || 'auto' })
+    .catch(() => { /* 读取失败保持默认值 */ })
 })
 
 onUnmounted(() => {

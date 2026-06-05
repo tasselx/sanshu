@@ -91,7 +91,7 @@ export const CORE_RULES = `
 1. **代码哲学**：严格遵循 KISS / YAGNI / SOLID；不做过度设计、不加用不到的抽象
 2. **强制交互**：所有方案确认与任务收尾必须通过 \`三术\` / \`zhi\` 工具展示；未得到完成指令前禁止主动结束对话
 3. **证据优先**：任何分析必须基于真实搜索/读取到的代码；先用 \`sou\` 语义定位，再用 Read/Grep 确认实现，严禁臆测
-4. **知识权威**：需要框架/库的最新文档时优先用 \`context7\`，避免训练数据过时
+4. **知识权威**：需要框架/库的最新文档时优先用 \`context7\`；需要理解任意 GitHub 仓库的架构和实现时用 \`deepwiki\`；两者互补，避免训练数据过时
 5. **持久化记忆**：对话开始时调用 \`ji\` 加载项目记忆；用户说"请记住"时主动存储为合适分类
 6. **输出规范**：注释/日志默认中文；修改点必须有中文注释解释意图（why）；引用代码给出 \`文件路径:行号\`
 
@@ -186,9 +186,12 @@ export const MCP_TOOLS_CONFIG: ToolPromptConfig[] = [
       base: '',
       whenToUse: [
         'AI 知识可能过时或不确定时优先查询，避免幻觉',
+        '常见框架/库优先用 context7（官方文档），查不到再用 deepwiki',
+        '两者信息矛盾时，以 context7（官方文档）为准',
       ],
       howToUse: [
         '`library` 格式 `owner/repo`（如 `vercel/next.js`），不确定时可用短名',
+        '与 deepwiki 配合：context7 查 API 用法 → deepwiki 查内部实现；context7 查迁移指南 → deepwiki 查 breaking changes 源码',
       ],
     },
     ui: {
@@ -244,6 +247,38 @@ export const MCP_TOOLS_CONFIG: ToolPromptConfig[] = [
       icon: 'i-carbon-magic-wand text-lg text-indigo-600 dark:text-indigo-400',
       iconBg: 'bg-indigo-100',
       darkIconBg: 'dark:bg-indigo-900',
+    },
+  },
+
+  // deepwiki - 仓库文档查询
+  {
+    id: 'deepwiki',
+    name: 'DeepWiki 仓库文档',
+    description: '查询任意公开 GitHub 仓库的 AI 生成文档，支持文档浏览与智能问答',
+    prompt: {
+      base: '',
+      whenToUse: [
+        '需要理解某个 GitHub 仓库的架构、模块关系或实现细节时',
+        '分析第三方依赖库的内部实现（不是官方文档，而是源码级理解）时',
+        '与 context7 互补：context7 查**官方 API 文档**，deepwiki 查**仓库源码文档**',
+        '深度调试：遇到框架 bug 或异常行为时，用 deepwiki 看源码实现定位根因',
+        '选型对比：用 deepwiki 对比多个候选库的架构质量和设计理念',
+        '迁移辅助：配合 context7 的迁移指南，用 deepwiki 查 breaking changes 的具体源码改动',
+        'PR/Issue 研究：用 ask 功能研究仓库的设计决策和历史背景',
+      ],
+      howToUse: [
+        '`repo` 格式 `owner/repo`（如 `langchain-ai/langchain`、`tauri-apps/tauri`）',
+        '3 种操作：`structure`（文档结构）→ `content`（章节内容）→ `ask`（智能问答）',
+        '免费无需认证，直接使用',
+        '优先级降级：常见框架先用 context7，小众库直接用 deepwiki',
+      ],
+    },
+    ui: {
+      enabled: true,
+      canDisable: true,
+      icon: 'i-carbon-book text-lg text-teal-600 dark:text-teal-400',
+      iconBg: 'bg-teal-100',
+      darkIconBg: 'dark:bg-teal-900',
     },
   },
 

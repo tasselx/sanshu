@@ -94,8 +94,11 @@ const { mcpTools, loadMcpTools } = useMcpToolsReactive()
 // sou 代码搜索工具是否启用
 const souEnabled = computed(() => mcpTools.value.some(tool => tool.id === 'sou' && tool.enabled))
 
-// ACE 配置是否完整
+// 代码搜索后端配置是否完整
 const acemcpConfigured = ref(false)
+
+// 当前后端策略（auto / ace / fast_context / both）
+const souBackend = ref('auto')
 
 // 索引重新同步加载状态
 const resyncLoading = ref(false)
@@ -297,8 +300,13 @@ onMounted(async () => {
   setupTelegramListener()
   // 加载 MCP 工具配置（用于检测 sou 是否启用）
   await loadMcpTools()
-  // 检测 ACE 配置是否完整
+  // 检测代码搜索后端配置是否完整，并读取后端策略
   acemcpConfigured.value = await checkAcemcpConfigured()
+  try {
+    const config = await invoke<{ sou_default_backend?: string }>('get_acemcp_config')
+    souBackend.value = config.sou_default_backend || 'auto'
+  }
+  catch { /* 读取失败时保持默认 auto */ }
 })
 
 // 组件卸载时清理监听器
@@ -738,11 +746,12 @@ function handleOpenIndexStatus() {
 
 <template>
   <div v-if="isVisible" class="flex flex-col flex-1">
-    <!-- ACE 索引状态面板（智能降级：根据 sou 启用状态和 ACE 配置显示不同内容） -->
+    <!-- 代码搜索状态面板（根据 sou 启用状态和后端策略智能显示） -->
     <ZhiIndexPanel
       :project-root="request?.project_root_path"
       :sou-enabled="souEnabled"
       :acemcp-configured="acemcpConfigured"
+      :backend="souBackend"
       :project-status="currentProjectStatus"
       :is-indexing="isIndexing"
       :resync-loading="resyncLoading"

@@ -10,13 +10,14 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 use super::tools::{
-    Context7Tool, EnhanceTool, IconTool, InteractionTool, MemoryTool, SkillsTool, SouTool,
-    TavilyTool, UiuxTool,
+    Context7Tool, DeepwikiTool, EnhanceTool, IconTool, InteractionTool, MemoryTool, SkillsTool,
+    SouTool, TavilyTool, UiuxTool,
 };
 use super::types::{JiyiRequest, SkillRunRequest, TuRequest, ZhiRequest};
 use crate::config::load_standalone_config;
 use crate::mcp::tools::context7::types::Context7Request;
 use crate::mcp::tools::enhance::mcp::EnhanceMcpRequest;
+use crate::mcp::tools::deepwiki::types::DeepwikiRequest;
 use crate::mcp::tools::tavily::types::TavilyRequest;
 use crate::mcp::utils::generate_request_id;
 use crate::mcp::utils::safe_truncate_clean;
@@ -338,6 +339,11 @@ impl ServerHandler for ZhiServer {
             tools.push(TavilyTool::get_tool_definition());
         }
 
+        // DeepWiki 仓库文档工具 - 仅在启用时添加
+        if self.is_tool_enabled("deepwiki") {
+            tools.push(DeepwikiTool::get_tool_definition());
+        }
+
         // 技能运行时工具 - 动态发现 skills 并追加工具
         let project_root =
             std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
@@ -620,6 +626,31 @@ impl ServerHandler for ZhiServer {
                             log_important!(
                                 warn,
                                 "[MCP] 参数解析失败: call_id={}, tool=tavily, error={}",
+                                call_id,
+                                e
+                            );
+                            Err(McpError::invalid_params(
+                                format!("参数解析失败: {}", e),
+                                None,
+                            ))
+                        }
+                    }
+                }
+            }
+            "deepwiki" => {
+                if !self.is_tool_enabled("deepwiki") {
+                    log_important!(warn, "[MCP] 工具已禁用: call_id={}, tool=deepwiki", call_id);
+                    Err(McpError::internal_error(
+                        "DeepWiki 仓库文档工具已被禁用".to_string(),
+                        None,
+                    ))
+                } else {
+                    match serde_json::from_value::<DeepwikiRequest>(arguments_value) {
+                        Ok(deepwiki_request) => DeepwikiTool::query(deepwiki_request).await,
+                        Err(e) => {
+                            log_important!(
+                                warn,
+                                "[MCP] 参数解析失败: call_id={}, tool=deepwiki, error={}",
                                 call_id,
                                 e
                             );
