@@ -199,7 +199,7 @@ impl ApiKeySource {
         match self {
             Self::Config => "已保存配置",
             Self::Env => "WINDSURF_API_KEY 环境变量",
-            Self::WindsurfDb => "Windsurf 本地登录库",
+            Self::WindsurfDb => "Devin/Windsurf 本地登录库",
         }
     }
 }
@@ -303,7 +303,7 @@ pub async fn search(opts: SearchOptions) -> Result<SearchResult> {
     log::info!("[fast-context] 项目路径已解析: {}", project_root.display());
 
     let detected_key = detect_api_key(opts.api_key.as_deref())
-        .context("未找到 Windsurf API Key，请在设置中填写或登录 Windsurf 后重试")?;
+        .context("未找到 Windsurf API Key，请在设置中填写或登录 Devin Desktop / Windsurf 后重试")?;
     log::info!(
         "[fast-context] Windsurf API Key 已解析: source={}, label={}, masked={}, length={}",
         detected_key.source.as_str(),
@@ -588,7 +588,7 @@ pub fn detect_api_key(configured: Option<&str>) -> Result<ApiKeyDetection> {
             api_key,
             source: ApiKeySource::WindsurfDb,
         })
-        .ok_or_else(|| anyhow!("Windsurf 本地登录库中没有 apiKey"))
+        .ok_or_else(|| anyhow!("Devin/Windsurf 本地登录库中没有 apiKey"))
 }
 
 pub fn mask_api_key(api_key: &str) -> String {
@@ -610,21 +610,60 @@ pub fn mask_api_key(api_key: &str) -> String {
 }
 
 fn extract_windsurf_api_key() -> Result<Option<String>> {
-    let db_path = windsurf_state_db_path()?;
-    if !db_path.exists() {
-        log::warn!(
-            "[fast-context] Windsurf 登录数据库不存在: {}",
+    // 中文说明：Windsurf 于 2026-06-02 更名为 Devin Desktop，本地数据目录从
+    // Windsurf/ 迁移到 Devin/。新版优先写 Devin 目录，旧版仍使用 Windsurf 目录，
+    // 因此这里按「Devin 优先、Windsurf 回退」依次探测 state.vscdb。
+    let candidates = windsurf_state_db_paths()?;
+    let mut last_err: Option<anyhow::Error> = None;
+    for db_path in &candidates {
+        if !db_path.exists() {
+            log::debug!(
+                "[fast-context] 登录数据库不存在，跳过: {}",
+                db_path.display()
+            );
+            continue;
+        }
+        log::debug!(
+            "[fast-context] 尝试读取登录数据库: {}",
             db_path.display()
         );
-        return Ok(None);
-    }
-    log::debug!(
-        "[fast-context] 尝试读取 Windsurf 登录数据库: {}",
-        db_path.display()
-    );
 
-    let conn = Connection::open_with_flags(&db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .with_context(|| format!("打开 Windsurf 登录数据库失败: {}", db_path.display()))?;
+        match read_api_key_from_db(db_path) {
+            Ok(Some(key)) => return Ok(Some(key)),
+            Ok(None) => {
+                log::debug!(
+                    "[fast-context] 数据库中未发现 apiKey: {}",
+                    db_path.display()
+                );
+            }
+            Err(err) => {
+                log::warn!(
+                    "[fast-context] 读取登录数据库失败: {} ({})",
+                    db_path.display(),
+                    err
+                );
+                last_err = Some(err);
+            }
+        }
+    }
+
+    if let Some(err) = last_err {
+        return Err(err);
+    }
+    log::warn!(
+        "[fast-context] 未找到可用的 Devin/Windsurf 登录数据库，已尝试: {}",
+        candidates
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    Ok(None)
+}
+
+fn read_api_key_from_db(db_path: &Path) -> Result<Option<String>> {
+    let conn = Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .with_context(|| format!("打开登录数据库失败: {}", db_path.display()))?;
     let value: String = conn
         .query_row(
             "SELECT value FROM ItemTable WHERE key = 'windsurfAuthStatus'",
@@ -641,24 +680,36 @@ fn extract_windsurf_api_key() -> Result<Option<String>> {
         .map(ToOwned::to_owned))
 }
 
-fn windsurf_state_db_path() -> Result<PathBuf> {
+/// 返回 Devin / Windsurf 的 state.vscdb 候选路径，按优先级排序（Devin 在前）。
+fn windsurf_state_db_paths() -> Result<Vec<PathBuf>> {
+    // 目录品牌名：新版 Devin 优先，旧版 Windsurf 回退。
+    const APP_DIRS: [&str; 2] = ["Devin", "Windsurf"];
+
     if cfg!(target_os = "macos") {
         let home = dirs::home_dir().ok_or_else(|| anyhow!("无法定位用户主目录"))?;
-        return Ok(home
-            .join("Library")
-            .join("Application Support")
-            .join("Windsurf")
-            .join("User")
-            .join("globalStorage")
-            .join("state.vscdb"));
+        let base = home.join("Library").join("Application Support");
+        return Ok(APP_DIRS
+            .iter()
+            .map(|app| {
+                base.join(app)
+                    .join("User")
+                    .join("globalStorage")
+                    .join("state.vscdb")
+            })
+            .collect());
     }
     if cfg!(target_os = "windows") {
         let appdata = env::var("APPDATA").context("无法读取 APPDATA 环境变量")?;
-        return Ok(PathBuf::from(appdata)
-            .join("Windsurf")
-            .join("User")
-            .join("globalStorage")
-            .join("state.vscdb"));
+        let base = PathBuf::from(appdata);
+        return Ok(APP_DIRS
+            .iter()
+            .map(|app| {
+                base.join(app)
+                    .join("User")
+                    .join("globalStorage")
+                    .join("state.vscdb")
+            })
+            .collect());
     }
 
     let config_root = env::var("XDG_CONFIG_HOME")
@@ -669,11 +720,16 @@ fn windsurf_state_db_path() -> Result<PathBuf> {
                 .ok_or(env::VarError::NotPresent)
         })
         .context("无法定位 Linux 配置目录")?;
-    Ok(config_root
-        .join("Windsurf")
-        .join("User")
-        .join("globalStorage")
-        .join("state.vscdb"))
+    Ok(APP_DIRS
+        .iter()
+        .map(|app| {
+            config_root
+                .join(app)
+                .join("User")
+                .join("globalStorage")
+                .join("state.vscdb")
+        })
+        .collect())
 }
 
 async fn fetch_jwt(client: &Client, api_key: &str) -> Result<String> {

@@ -97,7 +97,7 @@
 
 ### Fast Context
 - `Windsurf API Key` 可在设置中填写；如果留空，将读取 `WINDSURF_API_KEY` 或尝试从本机 Windsurf 安装中自动提取。
-- 自动提取会读取 Windsurf 登录数据库中的 `windsurfAuthStatus.apiKey`：macOS `~/Library/Application Support/Windsurf/User/globalStorage/state.vscdb`、Windows `%APPDATA%/Windsurf/User/globalStorage/state.vscdb`、Linux `~/.config/Windsurf/User/globalStorage/state.vscdb`。
+- 自动提取会读取登录数据库中的 `windsurfAuthStatus.apiKey`。Windsurf 已于 2026-06-02 更名为 Devin Desktop，本地目录从 `Windsurf/` 迁移到 `Devin/`，按「Devin 优先、Windsurf 回退」探测：macOS `~/Library/Application Support/{Devin,Windsurf}/User/globalStorage/state.vscdb`、Windows `%APPDATA%/{Devin,Windsurf}/User/globalStorage/state.vscdb`、Linux `~/.config/{Devin,Windsurf}/User/globalStorage/state.vscdb`。
 - fast-context 返回文件路径和行号范围，三术会在本地读取对应代码片段并格式化为兼容 `Path: ...` 的 `sou` 输出。
 
 ### MCP 调用参数

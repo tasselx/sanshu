@@ -276,7 +276,7 @@ async function loadAcemcpConfig() {
       fast_context_exclude_paths: res.fast_context_exclude_paths || ['node_modules', '.git', 'dist', 'build', 'target'],
     }
     if (!config.value.fast_context_api_key) {
-      // 中文说明：配置页首次加载时主动尝试读取并保存 Windsurf API Key，失败时保留手动填写入口。
+      // 中文说明：配置页首次加载时主动尝试从 Devin/Windsurf 读取并保存 Windsurf API Key，失败时保留手动填写入口。
       await detectFastContextApiKey(false)
     }
     lastSavedConnection.value = {
@@ -837,7 +837,7 @@ defineExpose({ saveConfig })
               </n-space>
             </ConfigSection>
 
-            <ConfigSection title="Fast Context" description="Rust 原生 fast-context，无需 Node bridge；仅配置 Windsurf 搜索参数">
+            <ConfigSection title="Fast Context" description="Rust 原生 fast-context，无需 Node bridge；仅配置 Devin/Windsurf 搜索参数">
               <n-space vertical size="medium">
                 <n-form-item label="Windsurf API Key">
                   <n-space vertical size="small" class="w-full">
@@ -854,7 +854,7 @@ defineExpose({ saveConfig })
                         v-model:value="config.fast_context_api_key"
                         type="password"
                         show-password-on="click"
-                        placeholder="自动读取失败时请手动填写"
+                        placeholder="自动读取 Devin/Windsurf 登录信息，失败时请手动填写"
                         clearable
                       />
                     </n-input-group>

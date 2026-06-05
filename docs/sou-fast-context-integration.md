@@ -58,11 +58,11 @@ Remove-Item Env:SANSHU_LIVE_FAST_CONTEXT
 
 ## 注意事项
 
-- 如未在设置中填写 Windsurf API Key，会读取 `WINDSURF_API_KEY` 或尝试从本机 Windsurf 安装中自动提取。
-- 自动提取会读取 Windsurf 的 `state.vscdb` 中 `windsurfAuthStatus` 的 `apiKey` 字段：
-  - macOS：`~/Library/Application Support/Windsurf/User/globalStorage/state.vscdb`
-  - Windows：`%APPDATA%/Windsurf/User/globalStorage/state.vscdb`
-  - Linux：`~/.config/Windsurf/User/globalStorage/state.vscdb`
+- 如未在设置中填写 Windsurf API Key，会读取 `WINDSURF_API_KEY` 或尝试从本机 Windsurf / Devin Desktop 安装中自动提取。
+- 自动提取会读取 `state.vscdb` 中 `windsurfAuthStatus` 的 `apiKey` 字段。Windsurf 已于 2026-06-02 更名为 Devin Desktop，本地目录从 `Windsurf/` 迁移到 `Devin/`，因此按「Devin 优先、Windsurf 回退」依次探测：
+  - macOS：`~/Library/Application Support/Devin/User/globalStorage/state.vscdb`，回退 `~/Library/Application Support/Windsurf/User/globalStorage/state.vscdb`
+  - Windows：`%APPDATA%/Devin/User/globalStorage/state.vscdb`，回退 `%APPDATA%/Windsurf/User/globalStorage/state.vscdb`
+  - Linux：`~/.config/Devin/User/globalStorage/state.vscdb`，回退 `~/.config/Windsurf/User/globalStorage/state.vscdb`
 - 读取 SQL：`SELECT value FROM ItemTable WHERE key = 'windsurfAuthStatus';`
 - 本地受限命令会优先调用系统 PATH 中的 `rg`；如果不可用，会降级为 Rust 内置文件遍历和正则搜索。
 
