@@ -1112,19 +1112,31 @@ pub async fn get_acemcp_config(state: State<'_, AppState>) -> Result<AcemcpConfi
         token: config.mcp_config.acemcp_token.clone(),
         batch_size: config.mcp_config.acemcp_batch_size.unwrap_or(10),
         max_lines_per_blob: config.mcp_config.acemcp_max_lines_per_blob.unwrap_or(800),
-        // 默认文件扩展名列表（与前端 McpToolsTab.vue 保持一致）
+        // 默认文件扩展名列表（与前端 SouConfig.vue 保持一致）
         // 用户首次打开设置界面时，所有扩展名默认全部勾选
         text_extensions: config
             .mcp_config
             .acemcp_text_extensions
             .clone()
             .unwrap_or_else(|| {
+                // 中文说明：默认索引现代前后端常见文本代码文件，确保 Vue/Svelte 等单文件组件首次可用。
                 vec![
-                    ".py".to_string(),
                     ".js".to_string(),
+                    ".mjs".to_string(),
+                    ".cjs".to_string(),
                     ".ts".to_string(),
                     ".jsx".to_string(),
                     ".tsx".to_string(),
+                    ".vue".to_string(),
+                    ".svelte".to_string(),
+                    ".astro".to_string(),
+                    ".html".to_string(),
+                    ".css".to_string(),
+                    ".scss".to_string(),
+                    ".sass".to_string(),
+                    ".less".to_string(),
+                    ".postcss".to_string(),
+                    ".py".to_string(),
                     ".java".to_string(),
                     ".go".to_string(),
                     ".rs".to_string(),
@@ -1135,19 +1147,33 @@ pub async fn get_acemcp_config(state: State<'_, AppState>) -> Result<AcemcpConfi
                     ".cs".to_string(),
                     ".rb".to_string(),
                     ".php".to_string(),
-                    ".md".to_string(),
-                    ".txt".to_string(),
+                    ".kt".to_string(),
+                    ".kts".to_string(),
+                    ".swift".to_string(),
+                    ".scala".to_string(),
+                    ".lua".to_string(),
                     ".json".to_string(),
+                    ".jsonc".to_string(),
                     ".yaml".to_string(),
                     ".yml".to_string(),
                     ".toml".to_string(),
                     ".xml".to_string(),
-                    ".html".to_string(),
-                    ".css".to_string(),
-                    ".scss".to_string(),
                     ".sql".to_string(),
+                    ".graphql".to_string(),
+                    ".gql".to_string(),
+                    ".proto".to_string(),
+                    ".ini".to_string(),
+                    ".md".to_string(),
+                    ".mdx".to_string(),
+                    ".txt".to_string(),
+                    ".rst".to_string(),
+                    ".adoc".to_string(),
                     ".sh".to_string(),
                     ".bash".to_string(),
+                    ".zsh".to_string(),
+                    ".fish".to_string(),
+                    ".ps1".to_string(),
+                    ".bat".to_string(),
                 ]
             }),
         exclude_patterns: config

@@ -102,37 +102,147 @@ const detectingFastContextKey = ref(false)
 const fastContextKeyStatus = ref('')
 const fastContextKeyStatusType = ref<'success' | 'warning' | 'error' | 'info'>('info')
 
+type ExtensionGroup = {
+  id: string
+  label: string
+  description: string
+  icon: string
+  extensions: string[]
+}
+
+type ExtensionPreset = {
+  label: string
+  description: string
+  icon: string
+  extensions: string[]
+}
+
+// 中文说明：扩展名预设按常见工程角色分组，既补齐 Vue/Svelte 等前端文件，也避免模板里维护散落列表。
+const extensionGroups: ExtensionGroup[] = [
+  {
+    id: 'frontend',
+    label: '前端',
+    description: '组件、页面、样式',
+    icon: 'i-carbon-application-web',
+    extensions: [
+      '.js',
+      '.mjs',
+      '.cjs',
+      '.ts',
+      '.jsx',
+      '.tsx',
+      '.vue',
+      '.svelte',
+      '.astro',
+      '.html',
+      '.css',
+      '.scss',
+      '.sass',
+      '.less',
+      '.postcss',
+    ],
+  },
+  {
+    id: 'backend',
+    label: '后端',
+    description: '服务端与系统语言',
+    icon: 'i-carbon-code',
+    extensions: [
+      '.py',
+      '.java',
+      '.go',
+      '.rs',
+      '.cpp',
+      '.c',
+      '.h',
+      '.hpp',
+      '.cs',
+      '.rb',
+      '.php',
+      '.kt',
+      '.kts',
+      '.swift',
+      '.scala',
+      '.lua',
+    ],
+  },
+  {
+    id: 'config',
+    label: '配置/数据',
+    description: '配置、Schema、查询',
+    icon: 'i-carbon-data-structured',
+    extensions: [
+      '.json',
+      '.jsonc',
+      '.yaml',
+      '.yml',
+      '.toml',
+      '.xml',
+      '.sql',
+      '.graphql',
+      '.gql',
+      '.proto',
+      '.ini',
+    ],
+  },
+  {
+    id: 'docs',
+    label: '文档/脚本',
+    description: '说明文档与自动化脚本',
+    icon: 'i-carbon-document',
+    extensions: [
+      '.md',
+      '.mdx',
+      '.txt',
+      '.rst',
+      '.adoc',
+      '.sh',
+      '.bash',
+      '.zsh',
+      '.fish',
+      '.ps1',
+      '.bat',
+    ],
+  },
+]
+
+const allPresetExtensions = Array.from(new Set(extensionGroups.flatMap(group => group.extensions)))
+const presetExtensionSet = new Set(allPresetExtensions)
+const extensionPresets: ExtensionPreset[] = [
+  {
+    label: '现代前端',
+    description: 'Vue/Svelte/React/Astro + 样式',
+    icon: 'i-carbon-application-web',
+    extensions: ['.js', '.mjs', '.cjs', '.ts', '.jsx', '.tsx', '.vue', '.svelte', '.astro', '.html', '.css', '.scss', '.sass', '.less', '.postcss'],
+  },
+  {
+    label: '全栈常用',
+    description: '前端、后端、配置、文档',
+    icon: 'i-carbon-assembly-cluster',
+    extensions: allPresetExtensions,
+  },
+  {
+    label: 'Rust/Tauri',
+    description: 'Rust + Vue + 配置脚本',
+    icon: 'i-carbon-terminal',
+    extensions: ['.rs', '.toml', '.json', '.jsonc', '.ts', '.tsx', '.js', '.vue', '.html', '.css', '.scss', '.md', '.ps1', '.sh'],
+  },
+  {
+    label: '文档配置',
+    description: '文档、Schema、脚本',
+    icon: 'i-carbon-settings',
+    extensions: ['.md', '.mdx', '.txt', '.rst', '.adoc', '.json', '.jsonc', '.yaml', '.yml', '.toml', '.xml', '.graphql', '.gql', '.proto', '.sh', '.bash', '.ps1'],
+  },
+]
+
 // 选项数据
-const extOptions = ref([
-  '.py',
-  '.js',
-  '.ts',
-  '.jsx',
-  '.tsx',
-  '.java',
-  '.go',
-  '.rs',
-  '.cpp',
-  '.c',
-  '.h',
-  '.hpp',
-  '.cs',
-  '.rb',
-  '.php',
-  '.md',
-  '.txt',
-  '.json',
-  '.yaml',
-  '.yml',
-  '.toml',
-  '.xml',
-  '.html',
-  '.css',
-  '.scss',
-  '.sql',
-  '.sh',
-  '.bash',
-].map(v => ({ label: v, value: v })))
+const extOptions = ref(allPresetExtensions.map(v => ({ label: v, value: v })))
+const extensionSearchQuery = ref('')
+const extensionGroupActionOptions = [
+  { label: '反选本组', key: 'invert' },
+  { label: '仅保留本组', key: 'keep' },
+  { label: '移除本组', key: 'remove' },
+]
 
 const excludeOptions = ref([
   '.venv',
@@ -202,6 +312,27 @@ const autoOrderOptions = [
 ]
 
 const backendConfigOptions = backendOptions.filter(item => item.value !== 'default')
+
+const selectedExtensionSet = computed(() => new Set(config.value.text_extensions || []))
+const selectedPresetCount = computed(() =>
+  allPresetExtensions.filter(ext => selectedExtensionSet.value.has(ext)).length,
+)
+const customExtensions = computed(() =>
+  (config.value.text_extensions || []).filter(ext => !presetExtensionSet.has(ext)),
+)
+const filteredExtensionGroups = computed(() => {
+  const keyword = extensionSearchQuery.value.trim().toLowerCase()
+  if (!keyword) {
+    return extensionGroups
+  }
+
+  return extensionGroups
+    .map(group => ({
+      ...group,
+      extensions: group.extensions.filter(ext => ext.includes(keyword)),
+    }))
+    .filter(group => group.extensions.length > 0)
+})
 
 const aceEnabledInStrategy = computed(() => {
   const backend = config.value.sou_default_backend
@@ -589,12 +720,94 @@ function getProjectName(projectRoot: string): string {
   return parts.length > 0 ? parts[parts.length - 1] : projectRoot
 }
 
-// 监听扩展名变化，自动规范化
-watch(() => config.value.text_extensions, (list) => {
-  const norm = Array.from(new Set((list || []).map((s) => {
-    const t = s.trim().toLowerCase()
+function normalizeExtensionList(list: string[]): string[] {
+  return Array.from(new Set((list || []).map((s) => {
+    const t = String(s || '').trim().toLowerCase()
     return t ? (t.startsWith('.') ? t : `.${t}`) : ''
   }).filter(Boolean)))
+}
+
+function setExtensions(list: string[]) {
+  config.value.text_extensions = normalizeExtensionList(list)
+}
+
+function addExtensions(list: string[]) {
+  setExtensions([...(config.value.text_extensions || []), ...list])
+}
+
+function addExtensionGroup(group: ExtensionGroup) {
+  addExtensions(group.extensions)
+  message.success(`已加入${group.label}扩展名`)
+}
+
+function applyExtensionPreset(preset: ExtensionPreset) {
+  setExtensions(preset.extensions)
+  message.success(`已应用${preset.label}模板`)
+}
+
+function addAllPresetExtensions() {
+  addExtensions(allPresetExtensions)
+  message.success('已加入全部预设扩展名')
+}
+
+function clearExtensions() {
+  config.value.text_extensions = []
+}
+
+function toggleExtension(ext: string) {
+  const normalized = normalizeExtensionList([ext])[0]
+  if (!normalized) {
+    return
+  }
+
+  const current = selectedExtensionSet.value
+  if (current.has(normalized)) {
+    setExtensions((config.value.text_extensions || []).filter(item => item !== normalized))
+  }
+  else {
+    addExtensions([normalized])
+  }
+}
+
+function invertExtensionGroup(group: ExtensionGroup) {
+  const current = selectedExtensionSet.value
+  const next = [
+    ...(config.value.text_extensions || []).filter(ext => !group.extensions.includes(ext)),
+    ...group.extensions.filter(ext => !current.has(ext)),
+  ]
+  setExtensions(next)
+}
+
+function keepOnlyExtensionGroup(group: ExtensionGroup) {
+  setExtensions(group.extensions)
+  message.success(`已仅保留${group.label}扩展名`)
+}
+
+function removeExtensionGroup(group: ExtensionGroup) {
+  setExtensions((config.value.text_extensions || []).filter(ext => !group.extensions.includes(ext)))
+  message.success(`已移除${group.label}扩展名`)
+}
+
+function handleExtensionGroupAction(key: string, group: ExtensionGroup) {
+  if (key === 'invert') {
+    invertExtensionGroup(group)
+  }
+  else if (key === 'keep') {
+    keepOnlyExtensionGroup(group)
+  }
+  else if (key === 'remove') {
+    removeExtensionGroup(group)
+  }
+}
+
+function groupSelectedCount(group: ExtensionGroup): number {
+  const current = selectedExtensionSet.value
+  return group.extensions.filter(ext => current.has(ext)).length
+}
+
+// 监听扩展名变化，自动规范化
+watch(() => config.value.text_extensions, (list) => {
+  const norm = normalizeExtensionList(list || [])
 
   if (norm.join(',') !== list.join(',')) {
     config.value.text_extensions = norm
@@ -901,14 +1114,143 @@ defineExpose({ saveConfig })
             <ConfigSection title="文件过滤" description="设置需索引的文件类型和排除规则">
               <n-space vertical size="medium">
                 <n-form-item label="包含扩展名">
-                  <n-select
-                    v-model:value="config.text_extensions"
-                    :options="extOptions"
-                    multiple tag filterable clearable
-                    placeholder="输入或选择扩展名 (.py)"
-                  />
+                  <div class="extension-manager">
+                    <div class="extension-manager-head">
+                      <div class="extension-stats">
+                        <n-tag type="success" size="small" :bordered="false">
+                          已选 {{ config.text_extensions.length }}
+                        </n-tag>
+                        <n-tag size="small" :bordered="false">
+                          预设 {{ selectedPresetCount }}/{{ allPresetExtensions.length }}
+                        </n-tag>
+                        <n-tag v-if="customExtensions.length" type="info" size="small" :bordered="false">
+                          自定义 {{ customExtensions.length }}
+                        </n-tag>
+                      </div>
+                      <div class="extension-actions">
+                        <n-button size="tiny" secondary @click="addAllPresetExtensions">
+                          <template #icon>
+                            <div class="i-carbon-add-alt" />
+                          </template>
+                          加入全部
+                        </n-button>
+                        <n-button size="tiny" quaternary @click="clearExtensions">
+                          <template #icon>
+                            <div class="i-carbon-trash-can" />
+                          </template>
+                          清空
+                        </n-button>
+                      </div>
+                    </div>
+
+                    <n-select
+                      v-model:value="config.text_extensions"
+                      :options="extOptions"
+                      multiple tag filterable clearable
+                      :max-tag-count="12"
+                      placeholder="输入或选择扩展名 (.vue)"
+                    />
+
+                    <div class="extension-presets">
+                      <button
+                        v-for="preset in extensionPresets"
+                        :key="preset.label"
+                        type="button"
+                        class="extension-preset"
+                        @click="applyExtensionPreset(preset)"
+                      >
+                        <div class="extension-preset-icon" :class="preset.icon" />
+                        <div class="extension-preset-copy">
+                          <div class="extension-preset-title">
+                            {{ preset.label }}
+                          </div>
+                          <div class="extension-preset-desc">
+                            {{ preset.description }}
+                          </div>
+                        </div>
+                      </button>
+                    </div>
+
+                    <div class="extension-toolbar">
+                      <n-input
+                        v-model:value="extensionSearchQuery"
+                        size="small"
+                        clearable
+                        placeholder="搜索预设扩展名"
+                        class="extension-search"
+                      >
+                        <template #prefix>
+                          <div class="i-carbon-search text-xs opacity-60" />
+                        </template>
+                      </n-input>
+                    </div>
+
+                    <div class="extension-groups">
+                      <div
+                        v-for="group in filteredExtensionGroups"
+                        :key="group.id"
+                        class="extension-group"
+                      >
+                        <div class="extension-group-header">
+                          <div class="extension-group-title">
+                            <div class="extension-group-icon" :class="group.icon" />
+                            <div>
+                              <div class="extension-group-name">
+                                {{ group.label }}
+                              </div>
+                              <div class="extension-group-desc">
+                                {{ group.description }}
+                              </div>
+                            </div>
+                          </div>
+                          <div class="extension-group-actions">
+                            <n-button size="tiny" secondary @click="addExtensionGroup(group)">
+                              补齐 {{ groupSelectedCount(group) }}/{{ group.extensions.length }}
+                            </n-button>
+                            <n-dropdown
+                              trigger="click"
+                              :options="extensionGroupActionOptions"
+                              @select="key => handleExtensionGroupAction(String(key), group)"
+                            >
+                              <n-button size="tiny" quaternary circle>
+                                <template #icon>
+                                  <div class="i-carbon-overflow-menu-horizontal" />
+                                </template>
+                              </n-button>
+                            </n-dropdown>
+                          </div>
+                        </div>
+
+                        <div class="extension-chip-row">
+                          <button
+                            v-for="ext in group.extensions"
+                            :key="ext"
+                            type="button"
+                            class="extension-chip"
+                            :class="{ 'extension-chip-selected': selectedExtensionSet.has(ext) }"
+                            @click="toggleExtension(ext)"
+                          >
+                            {{ ext }}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div v-if="customExtensions.length" class="custom-extension-row">
+                      <span class="custom-extension-label">自定义</span>
+                      <button
+                        v-for="ext in customExtensions"
+                        :key="ext"
+                        type="button"
+                        class="extension-chip extension-chip-selected"
+                        @click="toggleExtension(ext)"
+                      >
+                        {{ ext }}
+                      </button>
+                    </div>
+                  </div>
                   <template #feedback>
-                    <span class="form-feedback">小写，点开头，自动去重</span>
+                    <span class="form-feedback">小写，点开头，自动去重；点击标签可快速加入或移除</span>
                   </template>
                 </n-form-item>
 
@@ -1323,6 +1665,252 @@ defineExpose({ saveConfig })
 .form-feedback {
   font-size: 11px;
   color: var(--color-on-surface-muted, #9ca3af);
+}
+
+/* 扩展名管理器 */
+.extension-manager {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+}
+
+.extension-manager-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.extension-stats,
+.extension-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.extension-toolbar {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.extension-presets {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.extension-preset {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--color-border, rgba(128, 128, 128, 0.2));
+  background: rgba(20, 184, 166, 0.04);
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.16s ease, background-color 0.16s ease;
+}
+
+.extension-preset:hover {
+  border-color: rgba(20, 184, 166, 0.45);
+  background: rgba(20, 184, 166, 0.08);
+}
+
+.extension-preset-icon {
+  flex: 0 0 auto;
+  font-size: 18px;
+  color: rgb(20, 184, 166);
+}
+
+.extension-preset-copy {
+  min-width: 0;
+}
+
+.extension-preset-title {
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 18px;
+  color: var(--color-on-surface, #111827);
+}
+
+.extension-preset-desc {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--color-on-surface-secondary, #6b7280);
+}
+
+.extension-search {
+  max-width: 220px;
+}
+
+.extension-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.extension-group {
+  padding-top: 10px;
+  border-top: 1px solid var(--color-border, rgba(128, 128, 128, 0.18));
+}
+
+.extension-group-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.extension-group-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.extension-group-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.extension-group-icon {
+  flex: 0 0 auto;
+  font-size: 18px;
+  color: rgb(20, 184, 166);
+}
+
+.extension-group-name {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 18px;
+  color: var(--color-on-surface, #111827);
+}
+
+.extension-group-desc {
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--color-on-surface-secondary, #6b7280);
+}
+
+.extension-chip-row,
+.custom-extension-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.custom-extension-row {
+  align-items: center;
+  padding-top: 10px;
+  border-top: 1px dashed var(--color-border, rgba(128, 128, 128, 0.22));
+}
+
+.custom-extension-label {
+  font-size: 11px;
+  color: var(--color-on-surface-secondary, #6b7280);
+}
+
+.extension-chip {
+  min-height: 24px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--color-border, rgba(128, 128, 128, 0.25));
+  background: transparent;
+  color: var(--color-on-surface-secondary, #4b5563);
+  font-size: 12px;
+  line-height: 18px;
+  font-family: ui-monospace, monospace;
+  cursor: pointer;
+  transition: color 0.16s ease, border-color 0.16s ease, background-color 0.16s ease;
+}
+
+.extension-chip:hover {
+  border-color: rgba(20, 184, 166, 0.45);
+  color: var(--color-on-surface, #111827);
+}
+
+.extension-chip-selected {
+  border-color: rgba(20, 184, 166, 0.55);
+  background: rgba(20, 184, 166, 0.12);
+  color: rgb(13, 148, 136);
+}
+
+:root.dark .extension-group {
+  border-top-color: rgba(255, 255, 255, 0.08);
+}
+
+:root.dark .extension-group-name {
+  color: #e5e7eb;
+}
+
+:root.dark .extension-preset {
+  border-color: rgba(255, 255, 255, 0.08);
+  background: rgba(20, 184, 166, 0.08);
+}
+
+:root.dark .extension-preset:hover {
+  border-color: rgba(45, 212, 191, 0.45);
+  background: rgba(20, 184, 166, 0.14);
+}
+
+:root.dark .extension-preset-title {
+  color: #e5e7eb;
+}
+
+:root.dark .extension-group-desc,
+:root.dark .extension-preset-desc,
+:root.dark .custom-extension-label {
+  color: #9ca3af;
+}
+
+:root.dark .custom-extension-row {
+  border-top-color: rgba(255, 255, 255, 0.12);
+}
+
+:root.dark .extension-chip {
+  border-color: rgba(255, 255, 255, 0.12);
+  color: #d1d5db;
+}
+
+:root.dark .extension-chip:hover {
+  border-color: rgba(45, 212, 191, 0.45);
+  color: #f3f4f6;
+}
+
+:root.dark .extension-chip-selected {
+  border-color: rgba(45, 212, 191, 0.55);
+  background: rgba(20, 184, 166, 0.18);
+  color: #5eead4;
+}
+
+@media (max-width: 640px) {
+  .extension-manager-head,
+  .extension-group-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .extension-presets {
+    grid-template-columns: 1fr;
+  }
+
+  .extension-toolbar {
+    justify-content: stretch;
+  }
+
+  .extension-search {
+    max-width: none;
+  }
 }
 
 /* 信息提示 */
