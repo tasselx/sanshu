@@ -56,7 +56,8 @@ const shortcutText = quickSubmitShortcutText
 
 // 中文注释：增强按钮的工具辅助提示文本
 const enhanceToolHint = computed(() => {
-  if (!props.enhanceToolNames || props.enhanceToolNames.length === 0) return ''
+  if (!props.enhanceToolNames || props.enhanceToolNames.length === 0)
+    return ''
   return `增强时将引导 AI 使用 ${props.enhanceToolNames.join('、')} 辅助`
 })
 

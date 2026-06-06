@@ -50,15 +50,18 @@ function handleClearAll() {
 
 // 截断历史摘要文本，保持列表紧凑
 function truncateText(text: string, maxLength = 50) {
-  if (!text) return ''
+  if (!text)
+    return ''
   return text.length > maxLength ? `${text.slice(0, maxLength)}...` : text
 }
 
 // 格式化时间戳，便于快速浏览
 function formatTimestamp(timestamp: string) {
-  if (!timestamp) return ''
+  if (!timestamp)
+    return ''
   const date = new Date(timestamp)
-  if (Number.isNaN(date.getTime())) return timestamp
+  if (Number.isNaN(date.getTime()))
+    return timestamp
   return date.toLocaleString()
 }
 </script>
@@ -114,8 +117,12 @@ function formatTimestamp(timestamp: string) {
             <div class="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
               <span>最近 5 条增强记录</span>
               <div class="flex items-center gap-2">
-                <n-button size="tiny" secondary @click="handleSelectAll">全选</n-button>
-                <n-button size="tiny" secondary @click="handleClearAll">全不选</n-button>
+                <n-button size="tiny" secondary @click="handleSelectAll">
+                  全选
+                </n-button>
+                <n-button size="tiny" secondary @click="handleClearAll">
+                  全不选
+                </n-button>
               </div>
             </div>
 

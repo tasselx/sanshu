@@ -352,7 +352,8 @@ function buildUserReplySummary() {
 // 记录 zhi 历史（不影响主流程）
 async function recordZhiHistory(userReplySummary = buildUserReplySummary()) {
   const projectRoot = props.request?.project_root_path
-  if (!projectRoot) return
+  if (!projectRoot)
+    return
 
   const prompt = props.request?.message || ''
   const requestId = props.request?.id || ''
@@ -645,10 +646,14 @@ function getEnabledToolNames(): string[] {
   const names: string[] = []
   const isToolEnabled = (id: string) => mcpTools.value.some(t => t.id === id && t.enabled)
 
-  if (isToolEnabled('sou') && hasProject) names.push('sou')
-  if (isToolEnabled('uiux')) names.push('uiux')
-  if (isToolEnabled('context7')) names.push('context7')
-  if (isToolEnabled('ji') && hasProject) names.push('ji')
+  if (isToolEnabled('sou') && hasProject)
+    names.push('sou')
+  if (isToolEnabled('uiux'))
+    names.push('uiux')
+  if (isToolEnabled('context7'))
+    names.push('context7')
+  if (isToolEnabled('ji') && hasProject)
+    names.push('ji')
   return names
 }
 
@@ -783,7 +788,9 @@ function handleOpenIndexStatus() {
           </div>
         </template>
         <div class="text-xs space-y-1 max-w-[280px]">
-          <div class="font-medium">UI/UX 上下文策略详情</div>
+          <div class="font-medium">
+            UI/UX 上下文策略详情
+          </div>
           <div>{{ policyStatus.reason }}</div>
           <div class="text-white/60 pt-1 border-t border-white/10">
             意图：{{ policyStatus.intent }} · 策略：{{ policyStatus.policy }}

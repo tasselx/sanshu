@@ -77,6 +77,8 @@ src-tauri/Cargo.lock
 # scripts
 temp/
 scripts/
+!scripts/
+!scripts/verify-log-viewer.ps1
 *.exe
 # *.md
 !ACEMCP.md
@@ -92,3 +94,5 @@ test/
 
 # AI
 .claude
+
+issue/*

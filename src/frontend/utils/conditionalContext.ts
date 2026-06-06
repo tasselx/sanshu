@@ -62,7 +62,8 @@ export function getContextPolicyStatus(request?: McpRequest | null): ContextPoli
     colorClass = 'text-red-400'
     label = '上下文已禁止'
     generatedReason = reason || '策略设置为禁止追加上下文'
-  } else if (isAutoBlocked) {
+  }
+  else if (isAutoBlocked) {
     // 自动策略下因无意图而阻止
     icon = 'i-carbon-warning'
     colorClass = 'text-yellow-400'
@@ -70,13 +71,15 @@ export function getContextPolicyStatus(request?: McpRequest | null): ContextPoli
     generatedReason = reason || (hasExplicitSignal
       ? '当前无 UI/UX 相关意图，未追加条件性上下文'
       : '未传入 UI/UX 上下文信号，按默认策略未追加')
-  } else if (policy === 'force') {
+  }
+  else if (policy === 'force') {
     // 强制追加
     icon = 'i-carbon-checkmark-filled'
     colorClass = 'text-green-400'
     label = '上下文已追加'
     generatedReason = reason || `强制追加上下文（意图：${INTENT_LABELS[intent] || intent}）`
-  } else {
+  }
+  else {
     // 自动策略下允许追加（有意图）
     icon = 'i-carbon-checkmark'
     colorClass = 'text-blue-400'
@@ -101,7 +104,8 @@ export function getContextPolicyStatus(request?: McpRequest | null): ContextPoli
  * @returns 只有显式传入 UI/UX 信号时才显示策略指示器（YAGNI：不显示用户不需要的信息）
  */
 export function shouldShowPolicyIndicator(request?: McpRequest | null): boolean {
-  if (!request) return false
+  if (!request)
+    return false
   // 只有 AI 显式传入 UI/UX 参数时才显示策略指示器，避免非 UI 美化场景的无关提示
   return !!(request.uiux_intent || request.uiux_context_policy || request.uiux_reason)
 }

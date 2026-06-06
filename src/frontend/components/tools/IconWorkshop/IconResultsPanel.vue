@@ -1,10 +1,10 @@
 <script setup lang="ts">
+import type { IconItem } from '../../../types/icon'
 /**
  * 图标结果面板
  * 负责瀑布流渲染、加载更多与滚动触发
  */
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
-import type { IconItem } from '../../../types/icon'
 import IconCard from './IconCard.vue'
 import IconCardSkeleton from './IconCardSkeleton.vue'
 
@@ -23,12 +23,12 @@ interface Props {
 const props = defineProps<Props>()
 
 const emit = defineEmits<{
-  toggle: [iconId: number]
-  copy: [icon: IconItem]
-  dblclick: [icon: IconItem]
-  contextmenu: [icon: IconItem, event: MouseEvent]
+  'toggle': [iconId: number]
+  'copy': [icon: IconItem]
+  'dblclick': [icon: IconItem]
+  'contextmenu': [icon: IconItem, event: MouseEvent]
   'load-more': []
-  jump: [page: number]
+  'jump': [page: number]
 }>()
 
 const hasResults = computed(() => props.icons.length > 0)
@@ -158,14 +158,20 @@ onBeforeUnmount(() => {
       <div class="w-24 h-24 rounded-full bg-slate-100/80 dark:bg-white/5 flex items-center justify-center mb-4">
         <div class="i-carbon-search-locate text-4xl opacity-50" />
       </div>
-      <p class="text-sm">未找到相关图标，请尝试其他关键词</p>
+      <p class="text-sm">
+        未找到相关图标，请尝试其他关键词
+      </p>
     </div>
 
     <!-- 空状态 - 初始 -->
     <div v-else-if="showEmptyState" class="h-full flex flex-col items-center justify-center text-slate-300 dark:text-slate-600">
       <div class="i-carbon-image text-8xl opacity-10 mb-6" />
-      <p class="text-lg font-medium opacity-80 mb-2">搜索 Iconfont 图标库</p>
-      <p class="text-sm opacity-50">输入关键词开始探索无限创意</p>
+      <p class="text-lg font-medium opacity-80 mb-2">
+        搜索 Iconfont 图标库
+      </p>
+      <p class="text-sm opacity-50">
+        输入关键词开始探索无限创意
+      </p>
     </div>
   </div>
 

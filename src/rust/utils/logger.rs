@@ -342,7 +342,8 @@ pub fn init_logger(config: LogConfig) -> Result<(), Box<dyn std::error::Error>> 
         builder.format(|buf, record| {
             let log_line = format!(
                 "{} [{}] [{}] {}",
-                chrono::Utc::now().format("%Y-%m-%d %H:%M:%S%.3f"),
+                // 中文说明：日志面向本机用户查看，使用本地时区避免 UTC 时间被误认为系统时间异常。
+                chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f"),
                 record.level(),
                 record.module_path().unwrap_or("unknown"),
                 record.args()

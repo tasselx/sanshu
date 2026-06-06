@@ -195,12 +195,13 @@ const targetOptions = computed(() => {
 })
 
 const parentRef = ref<HTMLElement | null>(null)
-const rowVirtualizer = useVirtualizer({
-  count: () => filteredItems.value.length,
+const rowVirtualizer = useVirtualizer(computed(() => ({
+  // 中文说明：TanStack Virtual 的 count 需要数值；用 computed 让日志过滤结果变化时重新计算可见行。
+  count: filteredItems.value.length,
   getScrollElement: () => parentRef.value,
   estimateSize: () => 24,
   overscan: 24,
-})
+})))
 
 const virtualRows = computed(() => rowVirtualizer.value.getVirtualItems())
 const totalSize = computed(() => rowVirtualizer.value.getTotalSize())
@@ -251,6 +252,8 @@ async function loadInitial() {
     const lines = await invoke('read_acemcp_logs', { maxLines: maxLines.value, target: selectedTarget.value }) as string[]
     allItems.value = (lines || []).map(parseLine)
     clampBuffer()
+    await nextTick()
+    rowVirtualizer.value.measure()
   }
   catch (e: any) {
     message.error(`加载日志失败: ${e?.message || String(e)}`)
@@ -408,7 +411,14 @@ watch(selectedTarget, async () => {
 
 watch(maxLines, async () => {
   clampBuffer()
+  rowVirtualizer.value.measure()
   await scrollToBottom()
+})
+
+watch(() => filteredItems.value.length, async () => {
+  // 中文说明：过滤条件或日志内容变化后刷新虚拟列表测量，避免出现有数据但内容区空白。
+  await nextTick()
+  rowVirtualizer.value.measure()
 })
 
 onBeforeUnmount(async () => {
@@ -501,7 +511,10 @@ onBeforeUnmount(async () => {
           ref="parentRef"
           class="h-[70vh] overflow-auto rounded-md border border-slate-700/30 bg-black/10"
         >
-          <div class="relative w-full" :style="{ height: `${totalSize}px` }">
+          <div v-if="filteredItems.length === 0" class="h-full flex items-center justify-center text-sm text-slate-300/70">
+            暂无匹配日志
+          </div>
+          <div v-else class="relative w-full" :style="{ height: `${totalSize}px` }">
             <div
               v-for="v in virtualRows"
               :key="v.key"
@@ -538,4 +551,3 @@ onBeforeUnmount(async () => {
     </n-drawer-content>
   </n-drawer>
 </template>
-

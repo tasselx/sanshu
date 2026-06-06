@@ -7,7 +7,6 @@ import { invoke } from '@tauri-apps/api/core'
 import { useMessage } from 'naive-ui'
 import { computed, onMounted, ref, watch } from 'vue'
 import { useAcemcpSync } from '../../composables/useAcemcpSync'
-import { useLogViewer } from '../../composables/useLogViewer'
 import ConfigSection from '../common/ConfigSection.vue'
 import ProjectIndexManager from '../settings/ProjectIndexManager.vue'
 import ProxySettingsModal from './SouProxySettingsModal.vue'
@@ -62,12 +61,10 @@ const config = ref({
 
 const loadingConfig = ref(false)
 const showProxyModal = ref(false)
-const logFilePath = ref('')
 const lastSavedConnection = ref({
   base_url: '',
   token: '',
 })
-const { open: openLogViewer } = useLogViewer()
 // 调试状态
 const debugProjectRoot = ref('')
 const debugQuery = ref('')
@@ -105,37 +102,147 @@ const detectingFastContextKey = ref(false)
 const fastContextKeyStatus = ref('')
 const fastContextKeyStatusType = ref<'success' | 'warning' | 'error' | 'info'>('info')
 
+interface ExtensionGroup {
+  id: string
+  label: string
+  description: string
+  icon: string
+  extensions: string[]
+}
+
+interface ExtensionPreset {
+  label: string
+  description: string
+  icon: string
+  extensions: string[]
+}
+
+// 中文说明：扩展名预设按常见工程角色分组，既补齐 Vue/Svelte 等前端文件，也避免模板里维护散落列表。
+const extensionGroups: ExtensionGroup[] = [
+  {
+    id: 'frontend',
+    label: '前端',
+    description: '组件、页面、样式',
+    icon: 'i-carbon-application-web',
+    extensions: [
+      '.js',
+      '.mjs',
+      '.cjs',
+      '.ts',
+      '.jsx',
+      '.tsx',
+      '.vue',
+      '.svelte',
+      '.astro',
+      '.html',
+      '.css',
+      '.scss',
+      '.sass',
+      '.less',
+      '.postcss',
+    ],
+  },
+  {
+    id: 'backend',
+    label: '后端',
+    description: '服务端与系统语言',
+    icon: 'i-carbon-code',
+    extensions: [
+      '.py',
+      '.java',
+      '.go',
+      '.rs',
+      '.cpp',
+      '.c',
+      '.h',
+      '.hpp',
+      '.cs',
+      '.rb',
+      '.php',
+      '.kt',
+      '.kts',
+      '.swift',
+      '.scala',
+      '.lua',
+    ],
+  },
+  {
+    id: 'config',
+    label: '配置/数据',
+    description: '配置、Schema、查询',
+    icon: 'i-carbon-data-structured',
+    extensions: [
+      '.json',
+      '.jsonc',
+      '.yaml',
+      '.yml',
+      '.toml',
+      '.xml',
+      '.sql',
+      '.graphql',
+      '.gql',
+      '.proto',
+      '.ini',
+    ],
+  },
+  {
+    id: 'docs',
+    label: '文档/脚本',
+    description: '说明文档与自动化脚本',
+    icon: 'i-carbon-document',
+    extensions: [
+      '.md',
+      '.mdx',
+      '.txt',
+      '.rst',
+      '.adoc',
+      '.sh',
+      '.bash',
+      '.zsh',
+      '.fish',
+      '.ps1',
+      '.bat',
+    ],
+  },
+]
+
+const allPresetExtensions = Array.from(new Set(extensionGroups.flatMap(group => group.extensions)))
+const presetExtensionSet = new Set(allPresetExtensions)
+const extensionPresets: ExtensionPreset[] = [
+  {
+    label: '现代前端',
+    description: 'Vue/Svelte/React/Astro + 样式',
+    icon: 'i-carbon-application-web',
+    extensions: ['.js', '.mjs', '.cjs', '.ts', '.jsx', '.tsx', '.vue', '.svelte', '.astro', '.html', '.css', '.scss', '.sass', '.less', '.postcss'],
+  },
+  {
+    label: '全栈常用',
+    description: '前端、后端、配置、文档',
+    icon: 'i-carbon-assembly-cluster',
+    extensions: allPresetExtensions,
+  },
+  {
+    label: 'Rust/Tauri',
+    description: 'Rust + Vue + 配置脚本',
+    icon: 'i-carbon-terminal',
+    extensions: ['.rs', '.toml', '.json', '.jsonc', '.ts', '.tsx', '.js', '.vue', '.html', '.css', '.scss', '.md', '.ps1', '.sh'],
+  },
+  {
+    label: '文档配置',
+    description: '文档、Schema、脚本',
+    icon: 'i-carbon-settings',
+    extensions: ['.md', '.mdx', '.txt', '.rst', '.adoc', '.json', '.jsonc', '.yaml', '.yml', '.toml', '.xml', '.graphql', '.gql', '.proto', '.sh', '.bash', '.ps1'],
+  },
+]
+
 // 选项数据
-const extOptions = ref([
-  '.py',
-  '.js',
-  '.ts',
-  '.jsx',
-  '.tsx',
-  '.java',
-  '.go',
-  '.rs',
-  '.cpp',
-  '.c',
-  '.h',
-  '.hpp',
-  '.cs',
-  '.rb',
-  '.php',
-  '.md',
-  '.txt',
-  '.json',
-  '.yaml',
-  '.yml',
-  '.toml',
-  '.xml',
-  '.html',
-  '.css',
-  '.scss',
-  '.sql',
-  '.sh',
-  '.bash',
-].map(v => ({ label: v, value: v })))
+const extOptions = ref(allPresetExtensions.map(v => ({ label: v, value: v })))
+const extensionSearchQuery = ref('')
+const extensionGroupActionOptions = [
+  { label: '反选本组', key: 'invert' },
+  { label: '仅保留本组', key: 'keep' },
+  { label: '移除本组', key: 'remove' },
+]
 
 const excludeOptions = ref([
   '.venv',
@@ -206,6 +313,27 @@ const autoOrderOptions = [
 
 const backendConfigOptions = backendOptions.filter(item => item.value !== 'default')
 
+const selectedExtensionSet = computed(() => new Set(config.value.text_extensions || []))
+const selectedPresetCount = computed(() =>
+  allPresetExtensions.filter(ext => selectedExtensionSet.value.has(ext)).length,
+)
+const customExtensions = computed(() =>
+  (config.value.text_extensions || []).filter(ext => !presetExtensionSet.has(ext)),
+)
+const filteredExtensionGroups = computed(() => {
+  const keyword = extensionSearchQuery.value.trim().toLowerCase()
+  if (!keyword) {
+    return extensionGroups
+  }
+
+  return extensionGroups
+    .map(group => ({
+      ...group,
+      extensions: group.extensions.filter(ext => ext.includes(keyword)),
+    }))
+    .filter(group => group.extensions.length > 0)
+})
+
 const aceEnabledInStrategy = computed(() => {
   const backend = config.value.sou_default_backend
   return backend === 'ace'
@@ -231,6 +359,95 @@ const backendStrategySummary = computed(() => {
     default:
       return '当前默认 ACE 优先，ACE 失败或索引不可用时自动切换到 fast-context。'
   }
+})
+
+type DebugStatusTone = 'neutral' | 'info' | 'success' | 'warning' | 'danger'
+
+interface DebugStatusItem {
+  key: string
+  label: string
+  value: string
+  detail: string
+  icon: string
+  tone: DebugStatusTone
+}
+
+const debugBackendLabel = computed(() =>
+  backendOptions.find(item => item.value === debugBackend.value)?.label || '默认配置',
+)
+
+const debugCanRun = computed(() =>
+  debugProjectRoot.value.trim().length > 0 && debugQuery.value.trim().length > 0,
+)
+
+// 中文说明：顶部状态栏集中展示运行前最关键的环境信息，减少用户在多个区块之间来回判断。
+const debugStatusItems = computed<DebugStatusItem[]>(() => {
+  const lastResult = debugResultData.value
+  const lastDebugTone: DebugStatusTone = lastResult
+    ? (lastResult.success ? 'success' : 'danger')
+    : 'neutral'
+
+  return [
+    {
+      key: 'backend',
+      label: '调试后端',
+      value: debugBackendLabel.value,
+      detail: debugBackend.value === 'default' ? '跟随默认策略' : '本次运行指定',
+      icon: 'i-carbon-assembly-cluster',
+      tone: debugBackend.value === 'default' ? 'info' : 'success',
+    },
+    {
+      key: 'proxy',
+      label: '代理',
+      value: config.value.proxy_enabled ? '已启用' : '未启用',
+      detail: config.value.proxy_enabled
+        ? `${config.value.proxy_type.toUpperCase()} ${config.value.proxy_host}:${config.value.proxy_port}`
+        : '直连或系统默认网络',
+      icon: config.value.proxy_enabled ? 'i-carbon-connection-signal' : 'i-carbon-direct-link',
+      tone: config.value.proxy_enabled ? 'success' : 'neutral',
+    },
+    {
+      key: 'projects',
+      label: '索引项目',
+      value: `${debugProjectOptions.value.length} 个`,
+      detail: debugProjectOptionsLoading.value
+        ? '正在刷新项目列表'
+        : (debugProjectOptions.value.length > 0 ? '可直接选择调试' : '聚焦项目框加载'),
+      icon: 'i-carbon-folder-shared',
+      tone: debugProjectOptions.value.length > 0 ? 'success' : 'warning',
+    },
+    {
+      key: 'last-debug',
+      label: '上次调试',
+      value: lastResult ? (lastResult.success ? '成功' : '失败') : '未执行',
+      detail: lastResult
+        ? `${lastResult.total_duration_ms}ms · ${lastResult.result_count ?? '-'} 结果`
+        : '等待运行',
+      icon: lastResult
+        ? (lastResult.success ? 'i-carbon-checkmark-filled' : 'i-carbon-warning-alt')
+        : 'i-carbon-pending',
+      tone: lastDebugTone,
+    },
+  ]
+})
+
+const debugResultTagType = computed<'success' | 'error'>(() =>
+  debugResultData.value?.success ? 'success' : 'error',
+)
+
+const debugResultIcon = computed(() =>
+  debugResultData.value?.success ? 'i-carbon-checkmark-filled' : 'i-carbon-warning-alt',
+)
+
+const debugResultTitle = computed(() =>
+  debugResultData.value?.success ? '调试成功' : '调试失败',
+)
+
+const debugResultSubtitle = computed(() => {
+  if (!debugResultData.value)
+    return ''
+
+  return `${formatDebugTime(debugResultData.value.response_time)} · ${debugBackendLabel.value}`
 })
 
 // --- 操作函数 ---
@@ -341,16 +558,6 @@ async function detectFastContextApiKey(showFeedback = true) {
   }
   finally {
     detectingFastContextKey.value = false
-  }
-}
-
-async function loadLogFilePath() {
-  try {
-    const path = await invoke('get_acemcp_log_file_path') as string
-    logFilePath.value = path || ''
-  }
-  catch {
-    logFilePath.value = ''
   }
 }
 
@@ -574,22 +781,6 @@ async function copyDebugResult() {
   }
 }
 
-async function viewLogs() {
-  try {
-    const lines = await invoke('read_acemcp_logs') as string[]
-    if (lines.length > 0) {
-      await navigator.clipboard.writeText(lines.join('\n'))
-      message.success(`已复制 ${lines.length} 行日志`)
-    }
-    else {
-      message.info('日志为空')
-    }
-  }
-  catch (e) {
-    message.error(`读取日志失败: ${e}`)
-  }
-}
-
 async function clearCache() {
   try {
     message.loading('正在清除...')
@@ -618,12 +809,94 @@ function getProjectName(projectRoot: string): string {
   return parts.length > 0 ? parts[parts.length - 1] : projectRoot
 }
 
-// 监听扩展名变化，自动规范化
-watch(() => config.value.text_extensions, (list) => {
-  const norm = Array.from(new Set((list || []).map((s) => {
-    const t = s.trim().toLowerCase()
+function normalizeExtensionList(list: string[]): string[] {
+  return Array.from(new Set((list || []).map((s) => {
+    const t = String(s || '').trim().toLowerCase()
     return t ? (t.startsWith('.') ? t : `.${t}`) : ''
   }).filter(Boolean)))
+}
+
+function setExtensions(list: string[]) {
+  config.value.text_extensions = normalizeExtensionList(list)
+}
+
+function addExtensions(list: string[]) {
+  setExtensions([...(config.value.text_extensions || []), ...list])
+}
+
+function addExtensionGroup(group: ExtensionGroup) {
+  addExtensions(group.extensions)
+  message.success(`已加入${group.label}扩展名`)
+}
+
+function applyExtensionPreset(preset: ExtensionPreset) {
+  setExtensions(preset.extensions)
+  message.success(`已应用${preset.label}模板`)
+}
+
+function addAllPresetExtensions() {
+  addExtensions(allPresetExtensions)
+  message.success('已加入全部预设扩展名')
+}
+
+function clearExtensions() {
+  config.value.text_extensions = []
+}
+
+function toggleExtension(ext: string) {
+  const normalized = normalizeExtensionList([ext])[0]
+  if (!normalized) {
+    return
+  }
+
+  const current = selectedExtensionSet.value
+  if (current.has(normalized)) {
+    setExtensions((config.value.text_extensions || []).filter(item => item !== normalized))
+  }
+  else {
+    addExtensions([normalized])
+  }
+}
+
+function invertExtensionGroup(group: ExtensionGroup) {
+  const current = selectedExtensionSet.value
+  const next = [
+    ...(config.value.text_extensions || []).filter(ext => !group.extensions.includes(ext)),
+    ...group.extensions.filter(ext => !current.has(ext)),
+  ]
+  setExtensions(next)
+}
+
+function keepOnlyExtensionGroup(group: ExtensionGroup) {
+  setExtensions(group.extensions)
+  message.success(`已仅保留${group.label}扩展名`)
+}
+
+function removeExtensionGroup(group: ExtensionGroup) {
+  setExtensions((config.value.text_extensions || []).filter(ext => !group.extensions.includes(ext)))
+  message.success(`已移除${group.label}扩展名`)
+}
+
+function handleExtensionGroupAction(key: string, group: ExtensionGroup) {
+  if (key === 'invert') {
+    invertExtensionGroup(group)
+  }
+  else if (key === 'keep') {
+    keepOnlyExtensionGroup(group)
+  }
+  else if (key === 'remove') {
+    removeExtensionGroup(group)
+  }
+}
+
+function groupSelectedCount(group: ExtensionGroup): number {
+  const current = selectedExtensionSet.value
+  return group.extensions.filter(ext => current.has(ext)).length
+}
+
+// 监听扩展名变化，自动规范化
+watch(() => config.value.text_extensions, (list) => {
+  const norm = normalizeExtensionList(list || [])
 
   if (norm.join(',') !== list.join(',')) {
     config.value.text_extensions = norm
@@ -634,7 +907,6 @@ watch(() => config.value.text_extensions, (list) => {
 onMounted(async () => {
   if (props.active) {
     await loadAcemcpConfig()
-    await loadLogFilePath()
     await Promise.all([
       fetchAutoIndexEnabled(),
       fetchWatchingProjects(),
@@ -931,14 +1203,143 @@ defineExpose({ saveConfig })
             <ConfigSection title="文件过滤" description="设置需索引的文件类型和排除规则">
               <n-space vertical size="medium">
                 <n-form-item label="包含扩展名">
-                  <n-select
-                    v-model:value="config.text_extensions"
-                    :options="extOptions"
-                    multiple tag filterable clearable
-                    placeholder="输入或选择扩展名 (.py)"
-                  />
+                  <div class="extension-manager">
+                    <div class="extension-manager-head">
+                      <div class="extension-stats">
+                        <n-tag type="success" size="small" :bordered="false">
+                          已选 {{ config.text_extensions.length }}
+                        </n-tag>
+                        <n-tag size="small" :bordered="false">
+                          预设 {{ selectedPresetCount }}/{{ allPresetExtensions.length }}
+                        </n-tag>
+                        <n-tag v-if="customExtensions.length" type="info" size="small" :bordered="false">
+                          自定义 {{ customExtensions.length }}
+                        </n-tag>
+                      </div>
+                      <div class="extension-actions">
+                        <n-button size="tiny" secondary @click="addAllPresetExtensions">
+                          <template #icon>
+                            <div class="i-carbon-add-alt" />
+                          </template>
+                          加入全部
+                        </n-button>
+                        <n-button size="tiny" quaternary @click="clearExtensions">
+                          <template #icon>
+                            <div class="i-carbon-trash-can" />
+                          </template>
+                          清空
+                        </n-button>
+                      </div>
+                    </div>
+
+                    <n-select
+                      v-model:value="config.text_extensions"
+                      :options="extOptions"
+                      multiple tag filterable clearable
+                      :max-tag-count="12"
+                      placeholder="输入或选择扩展名 (.vue)"
+                    />
+
+                    <div class="extension-presets">
+                      <button
+                        v-for="preset in extensionPresets"
+                        :key="preset.label"
+                        type="button"
+                        class="extension-preset"
+                        @click="applyExtensionPreset(preset)"
+                      >
+                        <div class="extension-preset-icon" :class="preset.icon" />
+                        <div class="extension-preset-copy">
+                          <div class="extension-preset-title">
+                            {{ preset.label }}
+                          </div>
+                          <div class="extension-preset-desc">
+                            {{ preset.description }}
+                          </div>
+                        </div>
+                      </button>
+                    </div>
+
+                    <div class="extension-toolbar">
+                      <n-input
+                        v-model:value="extensionSearchQuery"
+                        size="small"
+                        clearable
+                        placeholder="搜索预设扩展名"
+                        class="extension-search"
+                      >
+                        <template #prefix>
+                          <div class="i-carbon-search text-xs opacity-60" />
+                        </template>
+                      </n-input>
+                    </div>
+
+                    <div class="extension-groups">
+                      <div
+                        v-for="group in filteredExtensionGroups"
+                        :key="group.id"
+                        class="extension-group"
+                      >
+                        <div class="extension-group-header">
+                          <div class="extension-group-title">
+                            <div class="extension-group-icon" :class="group.icon" />
+                            <div>
+                              <div class="extension-group-name">
+                                {{ group.label }}
+                              </div>
+                              <div class="extension-group-desc">
+                                {{ group.description }}
+                              </div>
+                            </div>
+                          </div>
+                          <div class="extension-group-actions">
+                            <n-button size="tiny" secondary @click="addExtensionGroup(group)">
+                              补齐 {{ groupSelectedCount(group) }}/{{ group.extensions.length }}
+                            </n-button>
+                            <n-dropdown
+                              trigger="click"
+                              :options="extensionGroupActionOptions"
+                              @select="key => handleExtensionGroupAction(String(key), group)"
+                            >
+                              <n-button size="tiny" quaternary circle>
+                                <template #icon>
+                                  <div class="i-carbon-overflow-menu-horizontal" />
+                                </template>
+                              </n-button>
+                            </n-dropdown>
+                          </div>
+                        </div>
+
+                        <div class="extension-chip-row">
+                          <button
+                            v-for="ext in group.extensions"
+                            :key="ext"
+                            type="button"
+                            class="extension-chip"
+                            :class="{ 'extension-chip-selected': selectedExtensionSet.has(ext) }"
+                            @click="toggleExtension(ext)"
+                          >
+                            {{ ext }}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div v-if="customExtensions.length" class="custom-extension-row">
+                      <span class="custom-extension-label">自定义</span>
+                      <button
+                        v-for="ext in customExtensions"
+                        :key="ext"
+                        type="button"
+                        class="extension-chip extension-chip-selected"
+                        @click="toggleExtension(ext)"
+                      >
+                        {{ ext }}
+                      </button>
+                    </div>
+                  </div>
                   <template #feedback>
-                    <span class="form-feedback">小写，点开头，自动去重</span>
+                    <span class="form-feedback">小写，点开头，自动去重；点击标签可快速加入或移除</span>
                   </template>
                 </n-form-item>
 
@@ -970,280 +1371,259 @@ defineExpose({ saveConfig })
         </n-scrollbar>
       </n-tab-pane>
 
-      <!-- 日志与调试 -->
-      <n-tab-pane name="debug" tab="日志与调试">
+      <!-- Sou 专属调试 -->
+      <n-tab-pane name="debug" tab="调试">
         <n-scrollbar class="tab-scrollbar">
-          <n-space vertical size="large" class="tab-content">
-            <ConfigSection title="工具状态" :no-card="true">
-              <n-alert type="info" :bordered="false" class="info-alert">
-                <template #icon>
+          <div class="tab-content debug-tab">
+            <section class="debug-topbar">
+              <div class="debug-topbar-main">
+                <div class="debug-eyebrow">
                   <div class="i-carbon-terminal" />
-                </template>
-                日志路径: <code class="code-inline">{{ logFilePath || '默认：%APPDATA%/sanshu/log/sanshu-mcp.log (Windows) / ~/.config/sanshu/log/sanshu-mcp.log (macOS/Linux)' }}</code>
-              </n-alert>
-
-              <n-space class="mt-3">
+                  Sou 调试工作台
+                </div>
+                <div class="debug-status-grid">
+                  <div
+                    v-for="item in debugStatusItems"
+                    :key="item.key"
+                    class="debug-status-pill"
+                    :class="`debug-status-pill--${item.tone}`"
+                  >
+                    <div class="debug-status-icon">
+                      <div :class="item.icon" />
+                    </div>
+                    <div class="debug-status-copy">
+                      <div class="debug-status-label">
+                        {{ item.label }}
+                      </div>
+                      <div class="debug-status-value">
+                        {{ item.value }}
+                      </div>
+                      <div class="debug-status-detail">
+                        {{ item.detail }}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div class="debug-topbar-actions">
                 <n-button size="small" secondary :disabled="!aceEnabledInStrategy" @click="testConnection">
                   <template #icon>
                     <div class="i-carbon-connection-signal" />
                   </template>
-                  测试 ACE 连接
+                  测试 ACE
                 </n-button>
-                <n-button size="small" secondary @click="viewLogs">
-                  <template #icon>
-                    <div class="i-carbon-document" />
-                  </template>
-                  查看日志
-                </n-button>
-                <n-button size="small" secondary @click="openLogViewer()">
-                  <template #icon>
-                    <div class="i-carbon-view" />
-                  </template>
-                  实时日志
-                </n-button>
-                <n-button size="small" secondary @click="clearCache">
+                <n-button size="small" tertiary @click="clearCache">
                   <template #icon>
                     <div class="i-carbon-clean" />
                   </template>
-                  清除缓存
+                  清缓存
                 </n-button>
-              </n-space>
-            </ConfigSection>
+              </div>
+            </section>
 
-            <!-- 状态信息卡片 -->
-            <ConfigSection title="运行状态" :no-card="true">
-              <n-grid :x-gap="12" :y-gap="12" :cols="12">
-                <n-grid-item :span="4">
-                  <div class="status-card">
-                    <div class="status-icon">
-                      <div :class="config.proxy_enabled ? 'i-carbon-checkmark-outline text-emerald-500' : 'i-carbon-close-outline text-slate-400'" />
-                    </div>
-                    <div class="status-info">
-                      <div class="status-title">
-                        代理状态
-                      </div>
-                      <div class="status-value">
-                        {{ config.proxy_enabled ? '已启用' : '未启用' }}
-                      </div>
-                      <div v-if="config.proxy_enabled" class="status-detail">
-                        {{ config.proxy_host }}:{{ config.proxy_port }}
-                      </div>
-                    </div>
-                  </div>
-                </n-grid-item>
-                <n-grid-item :span="4">
-                  <div class="status-card">
-                    <div class="status-icon">
-                      <div class="i-carbon-folder-shared text-blue-500" />
-                    </div>
-                    <div class="status-info">
-                      <div class="status-title">
-                        索引项目
-                      </div>
-                      <div class="status-value">
-                        {{ debugProjectOptions.length }} 个
-                      </div>
-                    </div>
-                  </div>
-                </n-grid-item>
-                <n-grid-item :span="4">
-                  <div class="status-card">
-                    <div class="status-icon">
-                      <div :class="debugResultData?.success ? 'i-carbon-checkmark-filled text-emerald-500' : (debugResultData === null ? 'i-carbon-pending text-slate-400' : 'i-carbon-warning-alt text-amber-500')" />
-                    </div>
-                    <div class="status-info">
-                      <div class="status-title">
-                        上次调试
-                      </div>
-                      <div class="status-value">
-                        {{ debugResultData ? (debugResultData.success ? '成功' : '失败') : '未执行' }}
-                      </div>
-                      <div v-if="debugResultData" class="status-detail">
-                        {{ debugResultData.total_duration_ms }}ms
-                      </div>
-                    </div>
-                  </div>
-                </n-grid-item>
-              </n-grid>
-            </ConfigSection>
+            <n-alert type="info" :bordered="false" class="info-alert debug-note">
+              <template #icon>
+                <div class="i-carbon-information" />
+              </template>
+              全局日志已迁移到主界面的“日志”页；此处仅保留 Sou / ACE 连接、缓存和搜索调试。
+            </n-alert>
 
-            <ConfigSection title="搜索调试" description="模拟搜索请求以验证配置">
-              <n-space vertical size="medium">
-                <!-- 项目选择 -->
-                <n-form-item :show-feedback="false">
-                  <template #label>
-                    <div class="flex items-center gap-2">
-                      <span>项目路径</span>
-                      <n-button
-                        text
-                        size="tiny"
-                        type="primary"
-                        @click="debugUseManualInput = !debugUseManualInput"
-                      >
-                        {{ debugUseManualInput ? '选择已索引' : '手动输入' }}
-                      </n-button>
-                    </div>
-                  </template>
-                  <n-select
-                    v-if="!debugUseManualInput"
-                    v-model:value="debugProjectRoot"
-                    :options="debugProjectOptions"
-                    :loading="debugProjectOptionsLoading"
-                    placeholder="选择已索引的项目..."
-                    filterable
-                    clearable
-                    @focus="loadDebugProjectOptions"
-                  />
-                  <n-input
-                    v-else
-                    v-model:value="debugProjectRoot"
-                    placeholder="/abs/path/to/project"
-                    clearable
-                  />
-                </n-form-item>
-
-                <n-form-item label="搜索后端" :show-feedback="false">
-                  <n-select
-                    v-model:value="debugBackend"
-                    :options="backendOptions"
-                  />
-                </n-form-item>
-
-                <n-form-item label="查询语句" :show-feedback="false">
-                  <n-input
-                    v-model:value="debugQuery"
-                    type="textarea"
-                    :rows="2"
-                    placeholder="输入搜索意图..."
-                  />
-                </n-form-item>
-
-                <n-button
-                  type="primary"
-                  ghost
-                  :loading="debugLoading"
-                  :disabled="!debugProjectRoot || !debugQuery"
-                  @click="runToolDebug"
-                >
-                  <template #icon>
-                    <div class="i-carbon-play" />
-                  </template>
-                  运行调试
-                </n-button>
-
-                <!-- 骨架屏加载态 -->
-                <div v-if="debugLoading" class="debug-skeleton">
-                  <n-skeleton text :repeat="3" />
-                  <n-skeleton text style="width: 60%" />
-                </div>
-
-                <!-- 结构化结果展示 -->
-                <n-collapse-transition :show="debugResultData !== null && !debugLoading">
-                  <div v-if="debugResultData" class="debug-result-panel">
-                    <!-- 请求信息 -->
-                    <div class="result-section">
-                      <div class="section-header">
-                        <div class="i-carbon-send text-blue-500" />
-                        <span>请求信息</span>
-                      </div>
-                      <div class="section-content">
-                        <div class="info-row">
-                          <span class="info-label">项目:</span>
-                          <code class="info-value">{{ debugResultData.project_path }}</code>
-                        </div>
-                        <div class="info-row">
-                          <span class="info-label">查询:</span>
-                          <span class="info-value">{{ debugResultData.query }}</span>
-                        </div>
-                        <div class="info-row">
-                          <span class="info-label">发送时间:</span>
-                          <span class="info-value">{{ formatDebugTime(debugResultData.request_time) }}</span>
-                        </div>
-                      </div>
-                    </div>
-
-                    <!-- 性能指标 -->
-                    <div class="result-section">
-                      <div class="section-header">
-                        <div class="i-carbon-timer text-amber-500" />
-                        <span>性能指标</span>
-                      </div>
-                      <div class="section-content">
-                        <n-grid :x-gap="12" :cols="12">
-                          <n-grid-item :span="4">
-                            <div class="metric-item">
-                              <div class="metric-value" :class="debugResultData.success ? 'text-emerald-500' : 'text-red-500'">
-                                {{ debugResultData.total_duration_ms }}ms
-                              </div>
-                              <div class="metric-label">
-                                总耗时
-                              </div>
-                            </div>
-                          </n-grid-item>
-                          <n-grid-item :span="4">
-                            <div class="metric-item">
-                              <div class="metric-value">
-                                {{ debugResultData.result_count ?? '-' }}
-                              </div>
-                              <div class="metric-label">
-                                结果数
-                              </div>
-                            </div>
-                          </n-grid-item>
-                          <n-grid-item :span="4">
-                            <div class="metric-item">
-                              <n-tag :type="debugResultData.success ? 'success' : 'error'" size="small">
-                                {{ debugResultData.success ? '成功' : '失败' }}
-                              </n-tag>
-                              <div class="metric-label">
-                                状态
-                              </div>
-                            </div>
-                          </n-grid-item>
-                        </n-grid>
-                      </div>
-                    </div>
-
-                    <!-- 响应数据 / 错误信息 -->
-                    <div class="result-section">
-                      <div class="section-header">
-                        <div :class="debugResultData.success ? 'i-carbon-document text-emerald-500' : 'i-carbon-warning text-red-500'" />
-                        <span>{{ debugResultData.success ? '响应数据' : '错误信息' }}</span>
+            <ConfigSection title="搜索调试" description="模拟 Sou 搜索请求，验证后端策略、项目索引和响应内容。">
+              <div class="debug-console">
+                <div class="debug-console-row debug-console-row--controls">
+                  <n-form-item :show-feedback="false" class="debug-field debug-field--project">
+                    <template #label>
+                      <div class="debug-field-label">
+                        <span>项目路径</span>
                         <n-button
-                          v-if="debugResultData.success && debugResultData.result"
-                          size="tiny"
                           text
-                          class="ml-auto"
-                          @click="copyDebugResult"
+                          size="tiny"
+                          type="primary"
+                          @click="debugUseManualInput = !debugUseManualInput"
                         >
-                          <template #icon>
-                            <div class="i-carbon-copy" />
-                          </template>
-                          复制
+                          {{ debugUseManualInput ? '选择已索引' : '手动输入' }}
                         </n-button>
                       </div>
-                      <div class="section-content">
-                        <n-alert
-                          v-if="debugResultData.success"
-                          type="info"
-                          :bordered="false"
-                          class="compact-alert mb-2"
-                        >
-                          fast-context 的 Path/Lines/L行号 是三术按 answer 文件范围本地读取后生成的 ACE 兼容格式，不是 fast-context 原生直出文本。
-                        </n-alert>
-                        <div v-if="debugResultData.error" class="error-content">
-                          {{ debugResultData.error }}
+                    </template>
+                    <n-select
+                      v-if="!debugUseManualInput"
+                      v-model:value="debugProjectRoot"
+                      :options="debugProjectOptions"
+                      :loading="debugProjectOptionsLoading"
+                      placeholder="选择已索引的项目..."
+                      filterable
+                      clearable
+                      @focus="loadDebugProjectOptions"
+                    />
+                    <n-input
+                      v-else
+                      v-model:value="debugProjectRoot"
+                      placeholder="/abs/path/to/project"
+                      clearable
+                    />
+                  </n-form-item>
+
+                  <n-form-item label="搜索后端" :show-feedback="false" class="debug-field debug-field--backend">
+                    <n-select
+                      v-model:value="debugBackend"
+                      :options="backendOptions"
+                    />
+                  </n-form-item>
+                </div>
+
+                <div class="debug-console-row debug-console-row--query">
+                  <n-form-item label="查询语句" :show-feedback="false" class="debug-field debug-field--query">
+                    <n-input
+                      v-model:value="debugQuery"
+                      type="textarea"
+                      :rows="3"
+                      placeholder="输入搜索意图，例如：SouConfig 调试 tab 状态栏"
+                    />
+                  </n-form-item>
+
+                  <div class="debug-run-panel">
+                    <n-button
+                      type="primary"
+                      size="large"
+                      :loading="debugLoading"
+                      :disabled="!debugCanRun"
+                      class="debug-run-button"
+                      @click="runToolDebug"
+                    >
+                      <template #icon>
+                        <div class="i-carbon-play" />
+                      </template>
+                      运行调试
+                    </n-button>
+                    <div class="debug-run-hint">
+                      {{ debugCanRun ? '将按当前后端策略执行一次真实搜索' : '请先选择项目并填写查询语句' }}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- 骨架屏加载态 -->
+              <div v-if="debugLoading" class="debug-skeleton">
+                <div class="debug-skeleton-header">
+                  <div class="i-carbon-in-progress animate-spin" />
+                  正在请求 Sou 后端...
+                </div>
+                <n-skeleton text :repeat="3" />
+                <n-skeleton text style="width: 60%" />
+              </div>
+
+              <!-- 结构化结果展示 -->
+              <n-collapse-transition :show="debugResultData !== null && !debugLoading">
+                <div v-if="debugResultData" class="debug-result-panel">
+                  <div class="debug-result-header" :class="debugResultData.success ? 'is-success' : 'is-error'">
+                    <div class="debug-result-title-group">
+                      <div class="debug-result-icon">
+                        <div :class="debugResultIcon" />
+                      </div>
+                      <div>
+                        <div class="debug-result-title">
+                          {{ debugResultTitle }}
                         </div>
-                        <n-scrollbar v-else style="max-height: 200px">
-                          <pre class="result-pre">{{ debugResultData.result || '无返回结果' }}</pre>
-                        </n-scrollbar>
+                        <div class="debug-result-subtitle">
+                          {{ debugResultSubtitle }}
+                        </div>
+                      </div>
+                    </div>
+                    <div class="debug-result-actions">
+                      <n-tag :type="debugResultTagType" size="small" :bordered="false">
+                        {{ debugResultData.success ? '成功' : '失败' }}
+                      </n-tag>
+                      <n-button
+                        v-if="debugResultData.success && debugResultData.result"
+                        size="tiny"
+                        secondary
+                        @click="copyDebugResult"
+                      >
+                        <template #icon>
+                          <div class="i-carbon-copy" />
+                        </template>
+                        复制结果
+                      </n-button>
+                    </div>
+                  </div>
+
+                  <!-- 性能指标 -->
+                  <div class="result-section result-section--metrics">
+                    <div class="metric-item">
+                      <div class="metric-value" :class="debugResultData.success ? 'text-emerald-500' : 'text-red-500'">
+                        {{ debugResultData.total_duration_ms }}ms
+                      </div>
+                      <div class="metric-label">
+                        总耗时
+                      </div>
+                    </div>
+                    <div class="metric-item">
+                      <div class="metric-value">
+                        {{ debugResultData.result_count ?? '-' }}
+                      </div>
+                      <div class="metric-label">
+                        结果数
+                      </div>
+                    </div>
+                    <div class="metric-item">
+                      <div class="metric-value metric-value--small">
+                        {{ debugBackendLabel }}
+                      </div>
+                      <div class="metric-label">
+                        本次后端
                       </div>
                     </div>
                   </div>
-                </n-collapse-transition>
-              </n-space>
+
+                  <!-- 请求信息 -->
+                  <div class="result-section">
+                    <div class="section-header">
+                      <div class="i-carbon-send text-blue-500" />
+                      <span>请求信息</span>
+                    </div>
+                    <div class="section-content debug-info-grid">
+                      <div class="info-row">
+                        <span class="info-label">项目</span>
+                        <code class="info-value">{{ debugResultData.project_path }}</code>
+                      </div>
+                      <div class="info-row">
+                        <span class="info-label">查询</span>
+                        <span class="info-value">{{ debugResultData.query }}</span>
+                      </div>
+                      <div class="info-row">
+                        <span class="info-label">发送时间</span>
+                        <span class="info-value">{{ formatDebugTime(debugResultData.request_time) }}</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <!-- 响应数据 / 错误信息 -->
+                  <div class="result-section">
+                    <div class="section-header">
+                      <div :class="debugResultData.success ? 'i-carbon-document text-emerald-500' : 'i-carbon-warning text-red-500'" />
+                      <span>{{ debugResultData.success ? '响应数据' : '错误信息' }}</span>
+                    </div>
+                    <div class="section-content">
+                      <n-alert
+                        v-if="debugResultData.success"
+                        type="info"
+                        :bordered="false"
+                        class="compact-alert mb-2"
+                      >
+                        fast-context 的 Path/Lines/L行号 是三术按 answer 文件范围本地读取后生成的 ACE 兼容格式，不是 fast-context 原生直出文本。
+                      </n-alert>
+                      <div v-if="debugResultData.error" class="error-content">
+                        {{ debugResultData.error }}
+                      </div>
+                      <n-scrollbar v-else class="result-scrollbar">
+                        <pre class="result-pre">{{ debugResultData.result || '无返回结果' }}</pre>
+                      </n-scrollbar>
+                    </div>
+                  </div>
+                </div>
+              </n-collapse-transition>
             </ConfigSection>
-          </n-space>
+          </div>
         </n-scrollbar>
       </n-tab-pane>
 
@@ -1253,75 +1633,89 @@ defineExpose({ saveConfig })
           <n-space vertical size="large" class="tab-content">
             <ConfigSection title="全局策略">
               <n-alert type="info" :bordered="false" class="mb-3">
-                监听索引的长期职责由三术 MCP 进程维护；此页面只记录监听项目并展示状态。等一下窗口关闭后，三术进程会按配置恢复监听。
+                监听索引的长期职责由三术 MCP 进程维护；此页面只记录监听项目并展示状态。窗口关闭后，三术进程会按配置自动恢复监听。
               </n-alert>
 
-              <div class="auto-index-toggle">
-                <div class="toggle-info">
-                  <div class="toggle-icon">
-                    <div class="i-carbon-automatic w-5 h-5 text-primary-500" />
-                  </div>
-                  <div>
-                    <div class="toggle-title">
-                      自动索引
+              <div class="policy-card-grid">
+                <!-- 自动索引策略卡片 -->
+                <div class="policy-card">
+                  <div class="policy-card-header">
+                    <div class="policy-icon-wrapper">
+                      <div class="i-carbon-automatic w-5 h-5" />
                     </div>
-                    <div class="toggle-desc">
-                      文件变更时自动更新索引
+                    <div class="policy-meta">
+                      <div class="policy-title">
+                        自动索引
+                      </div>
+                      <div class="policy-desc">
+                        文件变更时自动更新索引
+                      </div>
+                    </div>
+                    <div class="policy-action">
+                      <n-switch :value="autoIndexEnabled" @update:value="toggleAutoIndex" />
                     </div>
                   </div>
                 </div>
-                <n-switch :value="autoIndexEnabled" @update:value="toggleAutoIndex" />
+
+                <!-- 自动索引嵌套项目策略卡片 -->
+                <div class="policy-card">
+                  <div class="policy-card-header">
+                    <div class="policy-icon-wrapper nested">
+                      <div class="i-carbon-folder-parent w-5 h-5" />
+                    </div>
+                    <div class="policy-meta">
+                      <div class="policy-title">
+                        自动索引嵌套项目
+                      </div>
+                      <div class="policy-desc">
+                        自动检测并索引所有 Git 子项目
+                      </div>
+                    </div>
+                    <div class="policy-action">
+                      <n-switch
+                        v-model:value="config.index_nested_projects"
+                        @update:value="saveConfig"
+                      />
+                    </div>
+                  </div>
+                </div>
               </div>
 
-              <!-- 嵌套项目自动索引开关 -->
-              <div class="auto-index-toggle mt-4">
-                <div class="toggle-info">
-                  <div class="toggle-icon nested-icon">
-                    <div class="i-carbon-folder-parent w-5 h-5 text-amber-500" />
-                  </div>
-                  <div>
-                    <div class="toggle-title">
-                      自动索引嵌套项目
+              <!-- 防抖延迟时间配置卡片 -->
+              <div class="policy-config-card mt-3">
+                <div class="config-card-content">
+                  <div class="config-meta">
+                    <div class="config-title-row">
+                      <span class="config-title">防抖延迟时间</span>
+                      <n-tooltip trigger="hover">
+                        <template #trigger>
+                          <div class="i-carbon-help text-xs opacity-50 ml-1 cursor-help" />
+                        </template>
+                        文件修改后等待指定时间无新修改才触发索引更新
+                      </n-tooltip>
                     </div>
-                    <div class="toggle-desc">
-                      对父目录索引时，自动检测并索引所有 Git 子项目
+                    <div class="config-desc">
+                      防止频繁保存导致多次不必要的索引重建
+                    </div>
+                  </div>
+                  <div class="config-action">
+                    <div class="debounce-input-wrapper">
+                      <n-input-number
+                        v-model:value="config.watch_debounce_minutes"
+                        :min="1"
+                        :max="30"
+                        :step="1"
+                        size="small"
+                        class="debounce-input"
+                      />
+                      <span class="debounce-unit">分钟</span>
                     </div>
                   </div>
                 </div>
-                <n-switch
-                  v-model:value="config.index_nested_projects"
-                  @update:value="saveConfig"
-                />
               </div>
 
-              <n-divider class="my-3" />
-
-              <n-form-item label="防抖延迟时间" :show-feedback="false">
-                <div class="debounce-input-wrapper">
-                  <n-input-number
-                    v-model:value="config.watch_debounce_minutes"
-                    :min="1"
-                    :max="30"
-                    :step="1"
-                    class="debounce-input"
-                  />
-                  <span class="debounce-unit">分钟</span>
-                </div>
-                <template #label>
-                  <div class="form-label-with-desc">
-                    <span>防抖延迟时间</span>
-                    <n-tooltip trigger="hover">
-                      <template #trigger>
-                        <div class="i-carbon-help text-xs opacity-50 ml-1" />
-                      </template>
-                      文件修改后等待指定时间无新修改才触发索引更新
-                    </n-tooltip>
-                  </div>
-                </template>
-              </n-form-item>
-
-              <div class="flex justify-end mt-3">
-                <n-button type="primary" size="small" @click="saveConfig">
+              <div class="policy-footer">
+                <n-button type="primary" size="small" class="save-btn" @click="saveConfig">
                   <template #icon>
                     <div class="i-carbon-save" />
                   </template>
@@ -1365,6 +1759,252 @@ defineExpose({ saveConfig })
 .form-feedback {
   font-size: 11px;
   color: var(--color-on-surface-muted, #9ca3af);
+}
+
+/* 扩展名管理器 */
+.extension-manager {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+}
+
+.extension-manager-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.extension-stats,
+.extension-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.extension-toolbar {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.extension-presets {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.extension-preset {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--color-border, rgba(128, 128, 128, 0.2));
+  background: rgba(20, 184, 166, 0.04);
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.16s ease, background-color 0.16s ease;
+}
+
+.extension-preset:hover {
+  border-color: rgba(20, 184, 166, 0.45);
+  background: rgba(20, 184, 166, 0.08);
+}
+
+.extension-preset-icon {
+  flex: 0 0 auto;
+  font-size: 18px;
+  color: rgb(20, 184, 166);
+}
+
+.extension-preset-copy {
+  min-width: 0;
+}
+
+.extension-preset-title {
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 18px;
+  color: var(--color-on-surface, #111827);
+}
+
+.extension-preset-desc {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--color-on-surface-secondary, #6b7280);
+}
+
+.extension-search {
+  max-width: 220px;
+}
+
+.extension-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.extension-group {
+  padding-top: 10px;
+  border-top: 1px solid var(--color-border, rgba(128, 128, 128, 0.18));
+}
+
+.extension-group-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.extension-group-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.extension-group-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.extension-group-icon {
+  flex: 0 0 auto;
+  font-size: 18px;
+  color: rgb(20, 184, 166);
+}
+
+.extension-group-name {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 18px;
+  color: var(--color-on-surface, #111827);
+}
+
+.extension-group-desc {
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--color-on-surface-secondary, #6b7280);
+}
+
+.extension-chip-row,
+.custom-extension-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.custom-extension-row {
+  align-items: center;
+  padding-top: 10px;
+  border-top: 1px dashed var(--color-border, rgba(128, 128, 128, 0.22));
+}
+
+.custom-extension-label {
+  font-size: 11px;
+  color: var(--color-on-surface-secondary, #6b7280);
+}
+
+.extension-chip {
+  min-height: 24px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--color-border, rgba(128, 128, 128, 0.25));
+  background: transparent;
+  color: var(--color-on-surface-secondary, #4b5563);
+  font-size: 12px;
+  line-height: 18px;
+  font-family: ui-monospace, monospace;
+  cursor: pointer;
+  transition: color 0.16s ease, border-color 0.16s ease, background-color 0.16s ease;
+}
+
+.extension-chip:hover {
+  border-color: rgba(20, 184, 166, 0.45);
+  color: var(--color-on-surface, #111827);
+}
+
+.extension-chip-selected {
+  border-color: rgba(20, 184, 166, 0.55);
+  background: rgba(20, 184, 166, 0.12);
+  color: rgb(13, 148, 136);
+}
+
+:root.dark .extension-group {
+  border-top-color: rgba(255, 255, 255, 0.08);
+}
+
+:root.dark .extension-group-name {
+  color: #e5e7eb;
+}
+
+:root.dark .extension-preset {
+  border-color: rgba(255, 255, 255, 0.08);
+  background: rgba(20, 184, 166, 0.08);
+}
+
+:root.dark .extension-preset:hover {
+  border-color: rgba(45, 212, 191, 0.45);
+  background: rgba(20, 184, 166, 0.14);
+}
+
+:root.dark .extension-preset-title {
+  color: #e5e7eb;
+}
+
+:root.dark .extension-group-desc,
+:root.dark .extension-preset-desc,
+:root.dark .custom-extension-label {
+  color: #9ca3af;
+}
+
+:root.dark .custom-extension-row {
+  border-top-color: rgba(255, 255, 255, 0.12);
+}
+
+:root.dark .extension-chip {
+  border-color: rgba(255, 255, 255, 0.12);
+  color: #d1d5db;
+}
+
+:root.dark .extension-chip:hover {
+  border-color: rgba(45, 212, 191, 0.45);
+  color: #f3f4f6;
+}
+
+:root.dark .extension-chip-selected {
+  border-color: rgba(45, 212, 191, 0.55);
+  background: rgba(20, 184, 166, 0.18);
+  color: #5eead4;
+}
+
+@media (max-width: 640px) {
+  .extension-manager-head,
+  .extension-group-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .extension-presets {
+    grid-template-columns: 1fr;
+  }
+
+  .extension-toolbar {
+    justify-content: stretch;
+  }
+
+  .extension-search {
+    max-width: none;
+  }
 }
 
 /* 信息提示 */
@@ -1422,55 +2062,176 @@ defineExpose({ saveConfig })
   border-color: rgba(255, 255, 255, 0.08);
 }
 
-/* 自动索引开关 */
-.auto-index-toggle {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.toggle-info {
-  display: flex;
-  align-items: center;
+/* 莫兰迪全局策略样式重构 */
+.policy-card-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
+  margin-bottom: 12px;
 }
 
-.toggle-icon {
+@media (max-width: 640px) {
+  .policy-card-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.policy-card {
+  padding: 12px 16px;
+  border-radius: 10px;
+  border: 1px solid var(--color-border, rgba(128, 128, 128, 0.15));
+  background: var(--color-container, rgba(255, 255, 255, 0.5));
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.policy-card:hover {
+  border-color: rgba(20, 184, 166, 0.35);
+  background: rgba(20, 184, 166, 0.02);
+  box-shadow: 0 4px 12px -2px rgba(20, 184, 166, 0.08);
+}
+
+:root.dark .policy-card:hover {
+  background: rgba(20, 184, 166, 0.04);
+}
+
+.policy-card-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+}
+
+.policy-icon-wrapper {
+  display: flex;
+  align-items: center;
+  justify-content: center;
   padding: 8px;
   border-radius: 8px;
-  background: rgba(20, 184, 166, 0.1);
+  font-size: 18px;
+  color: rgb(20, 184, 166);
+  background: rgba(20, 184, 166, 0.08);
+  transition: background-color 0.2s ease;
 }
 
-:root.dark .toggle-icon {
-  background: rgba(20, 184, 166, 0.15);
+.policy-icon-wrapper.nested {
+  color: rgb(245, 158, 11);
+  background: rgba(245, 158, 11, 0.08);
 }
 
-/* 嵌套项目图标样式 */
-.toggle-icon.nested-icon {
-  background: rgba(245, 158, 11, 0.1);
+.policy-meta {
+  flex: 1;
+  min-width: 0;
 }
 
-:root.dark .toggle-icon.nested-icon {
-  background: rgba(245, 158, 11, 0.15);
-}
-
-.toggle-title {
-  font-size: 14px;
-  font-weight: 500;
+.policy-title {
+  font-size: 13px;
+  font-weight: 600;
   color: var(--color-on-surface, #111827);
+  line-height: 1.4;
 }
 
-:root.dark .toggle-title {
+:root.dark .policy-title {
   color: #e5e7eb;
 }
 
-.toggle-desc {
+.policy-desc {
+  font-size: 11px;
+  color: var(--color-on-surface-secondary, #6b7280);
+  line-height: 1.4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:root.dark .policy-desc {
+  color: #9ca3af;
+}
+
+/* 防抖配置卡片 */
+.policy-config-card {
+  padding: 12px 16px;
+  border-radius: 10px;
+  border: 1px solid var(--color-border, rgba(128, 128, 128, 0.15));
+  background: var(--color-container, rgba(255, 255, 255, 0.5));
+  transition: all 0.2s ease;
+}
+
+.policy-config-card:hover {
+  border-color: rgba(20, 184, 166, 0.25);
+  box-shadow: 0 4px 10px -2px rgba(0, 0, 0, 0.04);
+}
+
+.config-card-content {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.config-meta {
+  flex: 1;
+}
+
+.config-title-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.config-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-on-surface, #111827);
+}
+
+:root.dark .config-title {
+  color: #e5e7eb;
+}
+
+.config-desc {
+  font-size: 11px;
+  color: var(--color-on-surface-secondary, #6b7280);
+  line-height: 1.4;
+}
+
+:root.dark .config-desc {
+  color: #9ca3af;
+}
+
+.debounce-input-wrapper {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.debounce-input {
+  width: 100px;
+}
+
+.debounce-unit {
   font-size: 12px;
   color: var(--color-on-surface-secondary, #6b7280);
 }
 
-:root.dark .toggle-desc {
+:root.dark .debounce-unit {
   color: #9ca3af;
+}
+
+/* 页脚保存区域 */
+.policy-footer {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 16px;
+}
+
+.save-btn {
+  border-radius: 8px;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.save-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(20, 184, 166, 0.25);
 }
 
 /* 项目列表滚动容器 */
@@ -1504,87 +2265,340 @@ defineExpose({ saveConfig })
   align-items: center;
 }
 
-/* 调试界面 - 状态卡片 */
-.status-card {
+/* 调试界面 - 专业工作台布局 */
+.debug-tab {
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.debug-topbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 12px;
+  align-items: stretch;
   padding: 12px;
-  border-radius: 10px;
-  background: var(--color-container, rgba(128, 128, 128, 0.06));
-  border: 1px solid var(--color-border, rgba(128, 128, 128, 0.12));
-  transition: all 0.2s ease;
+  border: 1px solid rgba(20, 184, 166, 0.16);
+  border-radius: 8px;
+  background:
+    linear-gradient(135deg, rgba(20, 184, 166, 0.08), rgba(59, 130, 246, 0.05)),
+    var(--color-container, rgba(249, 250, 251, 0.82));
+  box-shadow: 0 12px 30px -24px rgba(15, 23, 42, 0.45);
 }
 
-.status-card:hover {
-  border-color: rgba(99, 102, 241, 0.3);
+:root.dark .debug-topbar {
+  border-color: rgba(45, 212, 191, 0.16);
+  background:
+    linear-gradient(135deg, rgba(20, 184, 166, 0.12), rgba(59, 130, 246, 0.08)),
+    rgba(24, 24, 28, 0.78);
+  box-shadow: 0 16px 34px -26px rgba(0, 0, 0, 0.8);
 }
 
-:root.dark .status-card {
-  background: rgba(30, 30, 35, 0.6);
-  border-color: rgba(255, 255, 255, 0.08);
-}
-
-.status-icon {
-  font-size: 20px;
-}
-
-.status-info {
-  flex: 1;
+.debug-topbar-main {
   min-width: 0;
 }
 
-.status-title {
-  font-size: 11px;
-  color: var(--color-on-surface-muted, #9ca3af);
-  margin-bottom: 2px;
-}
-
-.status-value {
-  font-size: 14px;
+.debug-eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 10px;
+  color: rgb(13, 148, 136);
+  font-size: 12px;
   font-weight: 600;
-  color: var(--color-on-surface, #111827);
 }
 
-:root.dark .status-value {
+:root.dark .debug-eyebrow {
+  color: #5eead4;
+}
+
+.debug-status-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.debug-status-pill {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 9px;
+  padding: 9px 10px;
+  border: 1px solid var(--debug-pill-border, rgba(148, 163, 184, 0.18));
+  border-radius: 8px;
+  background: var(--debug-pill-bg, rgba(255, 255, 255, 0.48));
+  transition: border-color 0.18s ease, background-color 0.18s ease, transform 0.18s ease;
+}
+
+.debug-status-pill:hover {
+  transform: translateY(-1px);
+  border-color: var(--debug-pill-border-hover, rgba(20, 184, 166, 0.32));
+}
+
+.debug-status-pill--neutral {
+  --debug-pill-bg: rgba(148, 163, 184, 0.08);
+  --debug-pill-border: rgba(148, 163, 184, 0.18);
+  --debug-pill-color: #64748b;
+}
+
+.debug-status-pill--info {
+  --debug-pill-bg: rgba(59, 130, 246, 0.08);
+  --debug-pill-border: rgba(59, 130, 246, 0.18);
+  --debug-pill-color: #3b82f6;
+}
+
+.debug-status-pill--success {
+  --debug-pill-bg: rgba(20, 184, 166, 0.09);
+  --debug-pill-border: rgba(20, 184, 166, 0.22);
+  --debug-pill-color: #0d9488;
+}
+
+.debug-status-pill--warning {
+  --debug-pill-bg: rgba(245, 158, 11, 0.08);
+  --debug-pill-border: rgba(245, 158, 11, 0.2);
+  --debug-pill-color: #d97706;
+}
+
+.debug-status-pill--danger {
+  --debug-pill-bg: rgba(244, 63, 94, 0.08);
+  --debug-pill-border: rgba(244, 63, 94, 0.2);
+  --debug-pill-color: #e11d48;
+}
+
+:root.dark .debug-status-pill {
+  background: var(--debug-pill-bg, rgba(255, 255, 255, 0.05));
+  border-color: var(--debug-pill-border, rgba(255, 255, 255, 0.08));
+}
+
+.debug-status-icon {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  color: var(--debug-pill-color, #64748b);
+  background: rgba(255, 255, 255, 0.55);
+  font-size: 16px;
+}
+
+:root.dark .debug-status-icon {
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.debug-status-copy {
+  min-width: 0;
+}
+
+.debug-status-label,
+.debug-status-detail {
+  overflow: hidden;
+  color: var(--color-on-surface-muted, #9ca3af);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  line-height: 15px;
+}
+
+.debug-status-value {
+  overflow: hidden;
+  margin: 1px 0;
+  color: var(--color-on-surface, #111827);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 18px;
+}
+
+:root.dark .debug-status-value {
   color: #f3f4f6;
 }
 
-.status-detail {
-  font-size: 11px;
+.debug-topbar-actions {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 8px;
+  min-width: 104px;
+}
+
+.debug-note {
+  margin-top: -2px;
+}
+
+.debug-console {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.debug-console-row {
+  display: grid;
+  gap: 12px;
+}
+
+.debug-console-row--controls {
+  grid-template-columns: minmax(0, 1fr) minmax(190px, 0.38fr);
+}
+
+.debug-console-row--query {
+  grid-template-columns: minmax(0, 1fr) 150px;
+  align-items: stretch;
+}
+
+.debug-field {
+  margin-bottom: 0;
+}
+
+.debug-field-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.debug-run-panel {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 22px;
+}
+
+.debug-run-button {
+  width: 100%;
+  min-height: 40px;
+}
+
+.debug-run-hint {
   color: var(--color-on-surface-muted, #9ca3af);
-  margin-top: 2px;
-  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  line-height: 16px;
 }
 
 /* 调试界面 - 骨架屏 */
 .debug-skeleton {
-  padding: 16px;
-  border-radius: 10px;
-  background: var(--color-container, rgba(128, 128, 128, 0.06));
-  border: 1px solid var(--color-border, rgba(128, 128, 128, 0.12));
+  margin-top: 12px;
+  padding: 14px;
+  border: 1px solid rgba(20, 184, 166, 0.16);
+  border-radius: 8px;
+  background: rgba(20, 184, 166, 0.05);
 }
 
 :root.dark .debug-skeleton {
-  background: rgba(30, 30, 35, 0.6);
-  border-color: rgba(255, 255, 255, 0.08);
+  border-color: rgba(45, 212, 191, 0.14);
+  background: rgba(20, 184, 166, 0.08);
 }
 
-/* 调试界面 - 结果面板 */
+.debug-skeleton-header {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  color: rgb(13, 148, 136);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+:root.dark .debug-skeleton-header {
+  color: #5eead4;
+}
+
+/* 调试界面 - 结果工作台 */
 .debug-result-panel {
-  border-radius: 10px;
-  background: var(--color-container, rgba(128, 128, 128, 0.04));
-  border: 1px solid var(--color-border, rgba(128, 128, 128, 0.12));
+  margin-top: 12px;
   overflow: hidden;
+  border: 1px solid var(--color-border, rgba(128, 128, 128, 0.14));
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.72);
+  box-shadow: 0 14px 28px -24px rgba(15, 23, 42, 0.55);
 }
 
 :root.dark .debug-result-panel {
-  background: rgba(20, 20, 25, 0.5);
   border-color: rgba(255, 255, 255, 0.08);
+  background: rgba(20, 20, 25, 0.62);
+  box-shadow: 0 16px 34px -28px rgba(0, 0, 0, 0.9);
+}
+
+.debug-result-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--color-border, rgba(128, 128, 128, 0.14));
+  background: linear-gradient(135deg, rgba(20, 184, 166, 0.08), rgba(148, 163, 184, 0.05));
+}
+
+.debug-result-header.is-error {
+  background: linear-gradient(135deg, rgba(244, 63, 94, 0.08), rgba(245, 158, 11, 0.05));
+}
+
+:root.dark .debug-result-header {
+  border-bottom-color: rgba(255, 255, 255, 0.08);
+  background: linear-gradient(135deg, rgba(20, 184, 166, 0.12), rgba(148, 163, 184, 0.06));
+}
+
+:root.dark .debug-result-header.is-error {
+  background: linear-gradient(135deg, rgba(244, 63, 94, 0.12), rgba(245, 158, 11, 0.07));
+}
+
+.debug-result-title-group,
+.debug-result-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.debug-result-actions {
+  flex: 0 0 auto;
+}
+
+.debug-result-icon {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  color: #0d9488;
+  background: rgba(20, 184, 166, 0.12);
+  font-size: 18px;
+}
+
+.debug-result-header.is-error .debug-result-icon {
+  color: #e11d48;
+  background: rgba(244, 63, 94, 0.12);
+}
+
+.debug-result-title {
+  color: var(--color-on-surface, #111827);
+  font-size: 14px;
+  font-weight: 650;
+  line-height: 20px;
+}
+
+.debug-result-subtitle {
+  overflow: hidden;
+  max-width: 430px;
+  color: var(--color-on-surface-secondary, #6b7280);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  line-height: 17px;
+}
+
+:root.dark .debug-result-title {
+  color: #f3f4f6;
+}
+
+:root.dark .debug-result-subtitle {
+  color: #9ca3af;
 }
 
 .result-section {
-  padding: 12px 16px;
+  padding: 13px 16px;
   border-bottom: 1px solid var(--color-border, rgba(128, 128, 128, 0.1));
 }
 
@@ -1596,14 +2610,25 @@ defineExpose({ saveConfig })
   border-bottom-color: rgba(255, 255, 255, 0.06);
 }
 
+.result-section--metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  background: rgba(148, 163, 184, 0.05);
+}
+
+:root.dark .result-section--metrics {
+  background: rgba(255, 255, 255, 0.03);
+}
+
 .section-header {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--color-on-surface, #374151);
   margin-bottom: 10px;
+  color: var(--color-on-surface, #374151);
+  font-size: 13px;
+  font-weight: 600;
 }
 
 :root.dark .section-header {
@@ -1614,26 +2639,27 @@ defineExpose({ saveConfig })
   font-size: 12px;
 }
 
-.info-row {
-  display: flex;
-  align-items: flex-start;
+.debug-info-grid {
+  display: grid;
   gap: 8px;
-  margin-bottom: 6px;
 }
 
-.info-row:last-child {
-  margin-bottom: 0;
+.info-row {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  align-items: flex-start;
+  gap: 10px;
 }
 
 .info-label {
   color: var(--color-on-surface-muted, #9ca3af);
   white-space: nowrap;
-  min-width: 60px;
 }
 
 .info-value {
+  min-width: 0;
   color: var(--color-on-surface, #374151);
-  word-break: break-all;
+  word-break: break-word;
 }
 
 :root.dark .info-value {
@@ -1642,21 +2668,32 @@ defineExpose({ saveConfig })
 
 /* 调试界面 - 性能指标 */
 .metric-item {
-  text-align: center;
-  padding: 8px;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--color-border, rgba(128, 128, 128, 0.12));
   border-radius: 8px;
-  background: rgba(128, 128, 128, 0.04);
+  background: rgba(255, 255, 255, 0.62);
 }
 
 :root.dark .metric-item {
-  background: rgba(255, 255, 255, 0.04);
+  border-color: rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.045);
 }
 
 .metric-value {
+  overflow: hidden;
+  margin-bottom: 3px;
+  color: var(--color-on-surface, #111827);
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: 18px;
   font-weight: 700;
-  color: var(--color-on-surface, #111827);
-  margin-bottom: 4px;
+  line-height: 24px;
+}
+
+.metric-value--small {
+  font-size: 13px;
+  font-weight: 650;
 }
 
 :root.dark .metric-value {
@@ -1664,41 +2701,93 @@ defineExpose({ saveConfig })
 }
 
 .metric-label {
-  font-size: 11px;
   color: var(--color-on-surface-muted, #9ca3af);
+  font-size: 11px;
+  line-height: 15px;
 }
 
 /* 调试界面 - 错误内容 */
 .error-content {
   padding: 12px;
+  border: 1px solid rgba(244, 63, 94, 0.18);
   border-radius: 8px;
-  background: rgba(239, 68, 68, 0.08);
-  color: #dc2626;
+  background: rgba(244, 63, 94, 0.08);
+  color: #be123c;
   font-size: 12px;
-  line-height: 1.5;
+  line-height: 1.55;
 }
 
 :root.dark .error-content {
-  background: rgba(239, 68, 68, 0.15);
-  color: #fca5a5;
+  border-color: rgba(251, 113, 133, 0.22);
+  background: rgba(244, 63, 94, 0.14);
+  color: #fda4af;
 }
 
 /* 调试界面 - 结果预览 */
+.result-scrollbar {
+  max-height: 260px;
+}
+
 .result-pre {
   margin: 0;
-  padding: 12px;
-  font-size: 12px;
-  font-family: ui-monospace, monospace;
-  line-height: 1.5;
+  padding: 13px;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.035);
+  color: var(--color-on-surface, #374151);
   white-space: pre-wrap;
   word-break: break-word;
-  background: rgba(128, 128, 128, 0.04);
-  border-radius: 8px;
-  color: var(--color-on-surface, #374151);
+  font-size: 12px;
+  font-family: ui-monospace, monospace;
+  line-height: 1.55;
 }
 
 :root.dark .result-pre {
-  background: rgba(0, 0, 0, 0.3);
+  border-color: rgba(255, 255, 255, 0.08);
+  background: rgba(0, 0, 0, 0.28);
   color: #d1d5db;
+}
+
+@media (max-width: 820px) {
+  .debug-topbar,
+  .debug-console-row--query {
+    grid-template-columns: 1fr;
+  }
+
+  .debug-topbar-actions {
+    flex-direction: row;
+    justify-content: flex-start;
+  }
+
+  .debug-status-grid,
+  .debug-console-row--controls {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .debug-run-panel {
+    padding-top: 0;
+  }
+}
+
+@media (max-width: 560px) {
+  .debug-status-grid,
+  .debug-console-row--controls,
+  .result-section--metrics {
+    grid-template-columns: 1fr;
+  }
+
+  .debug-result-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .debug-result-actions {
+    flex-wrap: wrap;
+  }
+
+  .info-row {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
 }
 </style>

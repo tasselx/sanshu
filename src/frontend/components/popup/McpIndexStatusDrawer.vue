@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { invoke } from '@tauri-apps/api/core'
 import type { TreeOption } from 'naive-ui'
+import type { FileIndexStatusType, NestedProjectInfo, ProjectFilesStatus, ProjectIndexStatus, ProjectWithNestedStatus } from '../../types/tauri'
+import { invoke } from '@tauri-apps/api/core'
 import { useMessage } from 'naive-ui'
 import { computed, h, ref, watch } from 'vue'
-import type { FileIndexStatusType, NestedProjectInfo, ProjectFilesStatus, ProjectIndexStatus, ProjectWithNestedStatus } from '../../types/tauri'
 
 interface Props {
   show: boolean

@@ -2,7 +2,6 @@ import type { ProjectIndexStatus, ProjectsIndexStatus, ProjectWithNestedStatus }
 import { invoke } from '@tauri-apps/api/core'
 import { computed, onUnmounted, ref } from 'vue'
 
-
 /**
  * 规范化项目路径，去除 Windows 扩展路径前缀并统一使用正斜杠
  * 确保前后端路径格式一致，避免 HashMap 查找失败

@@ -36,10 +36,10 @@
 
 | 🖥️ 平台 | 📥 GitHub 直链 | 🌏 国内加速 | 📋 说明 |
 |:-------:|:-------------:|:-----------:|:------:|
-| **Windows x64** | [下载 .zip ⏬](https://github.com/yuaotian/sanshu/releases/download/v0.6.2/sanshu-cli-v0.6.2-windows-x86_64.zip) | [wget.la ⏬](https://wget.la/https://github.com/yuaotian/sanshu/releases/download/v0.6.2/sanshu-cli-v0.6.2-windows-x86_64.zip) | 64位 Windows 系统 |
-| **macOS ARM64** | [下载 .tar.gz ⏬](https://github.com/yuaotian/sanshu/releases/download/v0.6.2/sanshu-cli-v0.6.2-macos-aarch64.tar.gz) | [wget.la ⏬](https://wget.la/https://github.com/yuaotian/sanshu/releases/download/v0.6.2/sanshu-cli-v0.6.2-macos-aarch64.tar.gz) | Apple Silicon (M1/M2/M3) |
-| **macOS Intel** | [下载 .tar.gz ⏬](https://github.com/yuaotian/sanshu/releases/download/v0.6.2/sanshu-cli-v0.6.2-macos-x86_64.tar.gz) | [wget.la ⏬](https://wget.la/https://github.com/yuaotian/sanshu/releases/download/v0.6.2/sanshu-cli-v0.6.2-macos-x86_64.tar.gz) | Intel 芯片 Mac |
-| **Linux x64** | [下载 .tar.gz ⏬](https://github.com/yuaotian/sanshu/releases/download/v0.6.2/sanshu-cli-v0.6.2-linux-x86_64.tar.gz) | [wget.la ⏬](https://wget.la/https://github.com/yuaotian/sanshu/releases/download/v0.6.2/sanshu-cli-v0.6.2-linux-x86_64.tar.gz) | 64位 Linux 系统 |
+| **Windows x64** | [下载 .zip ⏬](https://github.com/yuaotian/sanshu/releases/download/v0.6.3/sanshu-cli-v0.6.3-windows-x86_64.zip) | [wget.la ⏬](https://wget.la/https://github.com/yuaotian/sanshu/releases/download/v0.6.3/sanshu-cli-v0.6.3-windows-x86_64.zip) | 64位 Windows 系统 |
+| **macOS ARM64** | [下载 .tar.gz ⏬](https://github.com/yuaotian/sanshu/releases/download/v0.6.3/sanshu-cli-v0.6.3-macos-aarch64.tar.gz) | [wget.la ⏬](https://wget.la/https://github.com/yuaotian/sanshu/releases/download/v0.6.3/sanshu-cli-v0.6.3-macos-aarch64.tar.gz) | Apple Silicon (M1/M2/M3) |
+| **macOS Intel** | [下载 .tar.gz ⏬](https://github.com/yuaotian/sanshu/releases/download/v0.6.3/sanshu-cli-v0.6.3-macos-x86_64.tar.gz) | [wget.la ⏬](https://wget.la/https://github.com/yuaotian/sanshu/releases/download/v0.6.3/sanshu-cli-v0.6.3-macos-x86_64.tar.gz) | Intel 芯片 Mac |
+| **Linux x64** | [下载 .tar.gz ⏬](https://github.com/yuaotian/sanshu/releases/download/v0.6.3/sanshu-cli-v0.6.3-linux-x86_64.tar.gz) | [wget.la ⏬](https://wget.la/https://github.com/yuaotian/sanshu/releases/download/v0.6.3/sanshu-cli-v0.6.3-linux-x86_64.tar.gz) | 64位 Linux 系统 |
 
 > **🎯 如何选择下载链接？**
 >
@@ -65,7 +65,7 @@
 > **💡 wget.la 是什么？**
 > wget.la 是专业的 GitHub 加速服务，为中国大陆用户提供更快的下载体验。所有链接均指向官方 GitHub Releases，确保安全性和完整性。
 
-> **📋 版本信息**：当前最新版本 0.6.2 | 上次更新：2026-06-02
+> **📋 版本信息**：当前最新版本 0.6.3 | 上次更新：2026-06-06
 
 ### 安装说明
 
@@ -535,6 +535,9 @@ pnpm install
 #    pnpm build
 #    cargo build --release --features custom-protocol
 
+# Windows 可使用项目脚本一键构建并输出构建信息、MD5/SHA256（默认 Debug+Release）
+powershell -ExecutionPolicy Bypass -File scripts/build-windows.ps1
+
 # 4. 安装 CLI 工具到系统 PATH
 # Linux/macOS
 ./install.sh
@@ -578,13 +581,29 @@ cargo build --features custom-protocol
 # Cargo 构建后端（Release 模式，优化体积和性能）
 cargo build --release --features custom-protocol
 
+# Windows 一键构建（先构建前端，再按 -Mode 构建后端，并输出 Hash 信息）
+# 仅 Debug 构建
+powershell -ExecutionPolicy Bypass -File scripts/build-windows.ps1 -Mode Debug
+
+# 仅 Release 构建
+powershell -ExecutionPolicy Bypass -File scripts/build-windows.ps1 -Mode Release
+
+# 同时构建 Debug + Release（默认）
+powershell -ExecutionPolicy Bypass -File scripts/build-windows.ps1 -Mode All
+
+# Windows 构建信息输出位置：
+# - target/build-info/windows-build-info-debug.json
+# - target/build-info/windows-build-info-debug.md
+# - target/build-info/windows-build-info-release.json
+# - target/build-info/windows-build-info-release.md
+
 # Tauri 完整打包（生成安装包，包含前后端；CLI 会自动启用 custom-protocol）
 pnpm tauri:build
 # 或
 cargo tauri build
 
 # 打包产物位置：
-# - Windows: src-tauri/target/release/bundle/
+# - Windows: target/release/bundle/
 # - macOS: src-tauri/target/release/bundle/dmg/ 或 .app
 # - Linux: src-tauri/target/release/bundle/deb/ 或 .AppImage
 ```

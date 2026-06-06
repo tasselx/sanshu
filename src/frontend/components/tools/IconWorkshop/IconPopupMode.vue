@@ -1,9 +1,9 @@
 <script setup lang="ts">
+import type { IconFormat, IconItem, IconSaveItem, IconSaveRequest, IconSaveResult } from '../../../types/icon'
 import { invoke } from '@tauri-apps/api/core'
 import { useMessage } from 'naive-ui'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useIconSearch } from '../../../composables/useIconSearch'
-import type { IconFormat, IconItem, IconSaveItem, IconSaveRequest, IconSaveResult } from '../../../types/icon'
 import IconWorkshop from './IconWorkshop.vue'
 
 interface Props {
@@ -1312,7 +1312,9 @@ async function handleCancel() {
               </n-tag>
             </div>
             <n-button size="small" quaternary circle @click="closeEditorModal">
-              <template #icon><div class="i-carbon-close" /></template>
+              <template #icon>
+                <div class="i-carbon-close" />
+              </template>
             </n-button>
           </div>
 
@@ -1340,9 +1342,15 @@ async function handleCancel() {
                   <label class="text-xs font-semibold text-slate-400 dark:text-gray-500 uppercase tracking-wider">实时预览</label>
                   <div class="flex flex-wrap items-center gap-2">
                     <n-radio-group v-model:value="previewBackground" size="small">
-                      <n-radio-button value="grid">网格</n-radio-button>
-                      <n-radio-button value="light">浅色</n-radio-button>
-                      <n-radio-button value="dark">深色</n-radio-button>
+                      <n-radio-button value="grid">
+                        网格
+                      </n-radio-button>
+                      <n-radio-button value="light">
+                        浅色
+                      </n-radio-button>
+                      <n-radio-button value="dark">
+                        深色
+                      </n-radio-button>
                     </n-radio-group>
                     <n-select
                       v-model:value="previewScale"
@@ -1423,7 +1431,9 @@ async function handleCancel() {
                             :disabled="!activeState"
                             @update:value="(value: number | null) => value !== null && updateActiveState('width', value)"
                           >
-                            <template #prefix><span class="text-xs text-slate-400">W</span></template>
+                            <template #prefix>
+                              <span class="text-xs text-slate-400">W</span>
+                            </template>
                           </n-input-number>
                           <n-input-number
                             :value="activeState?.height"
@@ -1433,7 +1443,9 @@ async function handleCancel() {
                             :disabled="!activeState"
                             @update:value="(value: number | null) => value !== null && updateActiveState('height', value)"
                           >
-                            <template #prefix><span class="text-xs text-slate-400">H</span></template>
+                            <template #prefix>
+                              <span class="text-xs text-slate-400">H</span>
+                            </template>
                           </n-input-number>
                         </div>
 
@@ -1459,8 +1471,12 @@ async function handleCancel() {
                           :disabled="!activeState"
                           @update:value="(value: number | null) => value !== null && updateActiveState('rotate', value)"
                         >
-                          <template #prefix><span class="text-xs text-slate-400">旋转</span></template>
-                          <template #suffix><span class="text-xs text-slate-400">°</span></template>
+                          <template #prefix>
+                            <span class="text-xs text-slate-400">旋转</span>
+                          </template>
+                          <template #suffix>
+                            <span class="text-xs text-slate-400">°</span>
+                          </template>
                         </n-input-number>
 
                         <div class="flex gap-2">
@@ -1471,7 +1487,9 @@ async function handleCancel() {
                             :disabled="!activeState"
                             @click="toggleActiveState('flipX')"
                           >
-                            <template #icon><div class="i-carbon-flip-horizontal" /></template>
+                            <template #icon>
+                              <div class="i-carbon-flip-horizontal" />
+                            </template>
                             水平
                           </n-button>
                           <n-button
@@ -1481,7 +1499,9 @@ async function handleCancel() {
                             :disabled="!activeState"
                             @click="toggleActiveState('flipY')"
                           >
-                            <template #icon><div class="i-carbon-flip-vertical" /></template>
+                            <template #icon>
+                              <div class="i-carbon-flip-vertical" />
+                            </template>
                             垂直
                           </n-button>
                         </div>
@@ -1508,7 +1528,9 @@ async function handleCancel() {
                           :disabled="!activeState"
                           @update:value="(value: number | null) => updateActiveState('strokeWidth', value)"
                         >
-                          <template #prefix><span class="text-xs text-slate-400">粗细</span></template>
+                          <template #prefix>
+                            <span class="text-xs text-slate-400">粗细</span>
+                          </template>
                         </n-input-number>
 
                         <n-input-number
@@ -1519,7 +1541,9 @@ async function handleCancel() {
                           :disabled="!activeState"
                           @update:value="(value: number | null) => updateActiveState('rectRadius', value)"
                         >
-                          <template #prefix><span class="text-xs text-slate-400">圆角</span></template>
+                          <template #prefix>
+                            <span class="text-xs text-slate-400">圆角</span>
+                          </template>
                         </n-input-number>
                       </div>
                     </n-collapse-item>
@@ -1533,7 +1557,9 @@ async function handleCancel() {
                           placeholder="搜索元素（名称/类型）"
                           :disabled="!activeElementOptions.length"
                         >
-                          <template #prefix><div class="i-carbon-search text-slate-400" /></template>
+                          <template #prefix>
+                            <div class="i-carbon-search text-slate-400" />
+                          </template>
                         </n-input>
 
                         <n-select
@@ -1569,7 +1595,9 @@ async function handleCancel() {
                               :step="0.5"
                               @update:value="(value: number | null) => updateActiveElementStyle('strokeWidth', value)"
                             >
-                              <template #prefix><span class="text-xs">粗细</span></template>
+                              <template #prefix>
+                                <span class="text-xs">粗细</span>
+                              </template>
                             </n-input-number>
                             <div class="flex items-center justify-between">
                               <span class="text-xs text-slate-500">圆角</span>
@@ -1604,9 +1632,15 @@ async function handleCancel() {
               <div class="flex items-center gap-2">
                 <span class="text-xs text-slate-500">保存格式</span>
                 <n-radio-group v-model:value="editorSaveFormat" size="small">
-                  <n-radio-button value="svg">SVG</n-radio-button>
-                  <n-radio-button value="png">PNG</n-radio-button>
-                  <n-radio-button value="both">Both</n-radio-button>
+                  <n-radio-button value="svg">
+                    SVG
+                  </n-radio-button>
+                  <n-radio-button value="png">
+                    PNG
+                  </n-radio-button>
+                  <n-radio-button value="both">
+                    Both
+                  </n-radio-button>
                 </n-radio-group>
               </div>
               <div v-if="needsPngSize" class="flex flex-wrap items-center gap-2">
@@ -1642,14 +1676,20 @@ async function handleCancel() {
                 placeholder="保存目录"
                 class="flex-1"
               >
-                <template #prefix><div class="i-carbon-folder text-gray-400" /></template>
+                <template #prefix>
+                  <div class="i-carbon-folder text-gray-400" />
+                </template>
               </n-input>
-              <n-button size="small" secondary @click="selectEditorDirectory">...</n-button>
+              <n-button size="small" secondary @click="selectEditorDirectory">
+                ...
+              </n-button>
             </div>
-            
+
             <div class="grid grid-cols-3 gap-2">
               <n-button size="small" secondary :disabled="!editorPreviewSvg" @click="copyEditedSvg">
-                <template #icon><div class="i-carbon-copy" /></template>
+                <template #icon>
+                  <div class="i-carbon-copy" />
+                </template>
                 复制
               </n-button>
               <n-button size="small" secondary :disabled="!activeState" @click="resetActiveEditor">

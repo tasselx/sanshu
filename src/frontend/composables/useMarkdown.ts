@@ -1,5 +1,5 @@
-import hljs from 'highlight.js'
 import { katex as markdownItKatex } from '@mdit/plugin-katex'
+import hljs from 'highlight.js'
 import { renderToString as renderKatexToString } from 'katex'
 import MarkdownIt from 'markdown-it'
 import taskLists from 'markdown-it-task-lists'
@@ -7,10 +7,13 @@ import { ref } from 'vue'
 
 // 可执行语言列表
 const EXECUTABLE_LANGUAGES = new Set([
-  'python', 'py',
-  'javascript', 'js',
+  'python',
+  'py',
+  'javascript',
+  'js',
   'node',
-  'go', 'golang',
+  'go',
+  'golang',
   'java',
   'html',
 ])
@@ -31,69 +34,69 @@ const MATH_LANGUAGES = new Set([
 
 // 语言显示名称映射
 const LANG_DISPLAY_NAMES: Record<string, string> = {
-  'js': 'JavaScript',
-  'javascript': 'JavaScript',
-  'ts': 'TypeScript',
-  'typescript': 'TypeScript',
-  'py': 'Python',
-  'python': 'Python',
-  'go': 'Go',
-  'golang': 'Go',
-  'java': 'Java',
-  'rs': 'Rust',
-  'rust': 'Rust',
-  'html': 'HTML',
-  'css': 'CSS',
-  'scss': 'SCSS',
-  'less': 'Less',
-  'json': 'JSON',
-  'yaml': 'YAML',
-  'yml': 'YAML',
-  'xml': 'XML',
-  'sql': 'SQL',
-  'bash': 'Bash',
-  'sh': 'Shell',
-  'shell': 'Shell',
-  'zsh': 'Zsh',
-  'powershell': 'PowerShell',
-  'ps1': 'PowerShell',
-  'c': 'C',
-  'cpp': 'C++',
-  'csharp': 'C#',
-  'cs': 'C#',
-  'swift': 'Swift',
-  'kotlin': 'Kotlin',
-  'kt': 'Kotlin',
-  'ruby': 'Ruby',
-  'rb': 'Ruby',
-  'php': 'PHP',
-  'lua': 'Lua',
-  'r': 'R',
-  'dart': 'Dart',
-  'scala': 'Scala',
-  'toml': 'TOML',
-  'ini': 'INI',
-  'dockerfile': 'Dockerfile',
-  'docker': 'Dockerfile',
-  'makefile': 'Makefile',
-  'graphql': 'GraphQL',
-  'vue': 'Vue',
-  'svelte': 'Svelte',
-  'jsx': 'JSX',
-  'tsx': 'TSX',
-  'md': 'Markdown',
-  'markdown': 'Markdown',
-  'mermaid': 'Mermaid',
-  'mmd': 'Mermaid',
-  'flowchart': 'Mermaid',
-  'math': 'Math',
-  'tex': 'TeX',
-  'latex': 'LaTeX',
-  'diff': 'Diff',
-  'text': 'Text',
-  'txt': 'Text',
-  'plaintext': 'Text',
-  'node': 'Node.js',
+  js: 'JavaScript',
+  javascript: 'JavaScript',
+  ts: 'TypeScript',
+  typescript: 'TypeScript',
+  py: 'Python',
+  python: 'Python',
+  go: 'Go',
+  golang: 'Go',
+  java: 'Java',
+  rs: 'Rust',
+  rust: 'Rust',
+  html: 'HTML',
+  css: 'CSS',
+  scss: 'SCSS',
+  less: 'Less',
+  json: 'JSON',
+  yaml: 'YAML',
+  yml: 'YAML',
+  xml: 'XML',
+  sql: 'SQL',
+  bash: 'Bash',
+  sh: 'Shell',
+  shell: 'Shell',
+  zsh: 'Zsh',
+  powershell: 'PowerShell',
+  ps1: 'PowerShell',
+  c: 'C',
+  cpp: 'C++',
+  csharp: 'C#',
+  cs: 'C#',
+  swift: 'Swift',
+  kotlin: 'Kotlin',
+  kt: 'Kotlin',
+  ruby: 'Ruby',
+  rb: 'Ruby',
+  php: 'PHP',
+  lua: 'Lua',
+  r: 'R',
+  dart: 'Dart',
+  scala: 'Scala',
+  toml: 'TOML',
+  ini: 'INI',
+  dockerfile: 'Dockerfile',
+  docker: 'Dockerfile',
+  makefile: 'Makefile',
+  graphql: 'GraphQL',
+  vue: 'Vue',
+  svelte: 'Svelte',
+  jsx: 'JSX',
+  tsx: 'TSX',
+  md: 'Markdown',
+  markdown: 'Markdown',
+  mermaid: 'Mermaid',
+  mmd: 'Mermaid',
+  flowchart: 'Mermaid',
+  math: 'Math',
+  tex: 'TeX',
+  latex: 'LaTeX',
+  diff: 'Diff',
+  text: 'Text',
+  txt: 'Text',
+  plaintext: 'Text',
+  node: 'Node.js',
 }
 
 // hljs 主题映射（使用 Vite ?inline 导入，离线可用）
@@ -132,7 +135,8 @@ export function safeBase64Decode(str: string): string {
 
 // 获取语言显示名称
 function getDisplayLang(lang: string): string {
-  if (!lang) return ''
+  if (!lang)
+    return ''
   return LANG_DISPLAY_NAMES[lang.toLowerCase()] || lang.toUpperCase()
 }
 
@@ -296,9 +300,9 @@ function createMarkdownInstance() {
     return `<div class="code-block-wrapper" data-lang="${escapeHtml(lang)}">`
       + `<div class="code-block-header">`
       + `<span class="code-block-lang">${escapeHtml(displayLang)}</span>`
-      + `<div class="code-block-actions">`
-      + runButton
-      + `<button class="code-block-copy" data-code="${encodedCode}" title="复制代码"><div class="i-carbon-copy" style="width:14px;height:14px;display:block;"></div></button>`
+      + `<div class="code-block-actions">${
+        runButton
+      }<button class="code-block-copy" data-code="${encodedCode}" title="复制代码"><div class="i-carbon-copy" style="width:14px;height:14px;display:block;"></div></button>`
       + `</div>`
       + `</div>`
       + `<pre><code class="${lang ? `language-${escapeHtml(lang)} ` : ''}hljs">${highlighted}</code></pre>`
@@ -379,14 +383,16 @@ function createMarkdownInstance() {
       : themeName
 
     const loader = THEME_LOADERS[resolvedTheme]
-    if (!loader) return
+    if (!loader)
+      return
 
     try {
       const css = await loader()
 
       // 移除旧样式
       const old = document.querySelector('style[data-hljs-theme]')
-      if (old) old.remove()
+      if (old)
+        old.remove()
 
       // 插入新样式
       const style = document.createElement('style')

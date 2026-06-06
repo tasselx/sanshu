@@ -1,10 +1,10 @@
 <script setup lang="ts">
+import type { IconItem } from '../../../types/icon'
 /**
  * 图标卡片组件
  * 展示单个图标，支持选择、复制操作
  */
-import { computed, ref } from 'vue';
-import type { IconItem } from '../../../types/icon';
+import { computed, ref } from 'vue'
 
 // Props
 interface Props {

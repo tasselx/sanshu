@@ -71,7 +71,7 @@ let unlistenAutoExit: (() => void) | null = null
 onMounted(async () => {
   // 获取平台信息
   await getPlatformInfo()
-  
+
   // 设置自动退出监听器（仅 Windows 平台需要）
   unlistenAutoExit = await setupAutoExitListener()
 })
@@ -459,7 +459,7 @@ async function handleExitForUpdate() {
                 class="min-w-0 rounded-lg border border-surface-200 bg-surface p-3 dark:border-surface-700"
               >
                 <div class="mb-1 flex items-center gap-2 text-xs text-on-surface-secondary">
-                  <div :class="[row.icon, 'h-3.5 w-3.5 shrink-0']" />
+                  <div class="h-3.5 w-3.5 shrink-0" :class="[row.icon]" />
                   <span>{{ row.label }}</span>
                 </div>
                 <n-tag
@@ -492,7 +492,7 @@ async function handleExitForUpdate() {
             <div class="flex items-start gap-3">
               <div class="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-surface/80">
                 <n-spin v-if="isUpdating && updateStatus !== 'completed' && updateStatus !== 'error'" size="small" />
-                <div v-else :class="[updateStatusMeta.icon, 'h-4 w-4']" />
+                <div v-else class="h-4 w-4" :class="[updateStatusMeta.icon]" />
               </div>
               <div class="min-w-0 flex-1">
                 <div class="flex flex-wrap items-center gap-2">

@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { useMessage } from 'naive-ui'
 import { computed, ref } from 'vue'
 import IntroTab from '../tabs/IntroTab.vue'
+import LogsTab from '../tabs/LogsTab.vue'
 import McpToolsTab from '../tabs/McpToolsTab.vue'
 import PromptsTab from '../tabs/PromptsTab.vue'
 import SettingsTab from '../tabs/SettingsTab.vue'
@@ -22,17 +23,17 @@ interface Props {
 }
 
 interface Emits {
-  themeChange: [theme: string]
-  toggleAlwaysOnTop: []
-  toggleAudioNotification: []
-  updateAudioUrl: [url: string]
-  testAudio: []
-  stopAudio: []
-  testAudioError: [error: any]
-  updateWindowSize: [size: { width: number, height: number, fixed: boolean }]
-  configReloaded: []
+  'themeChange': [theme: string]
+  'toggleAlwaysOnTop': []
+  'toggleAudioNotification': []
+  'updateAudioUrl': [url: string]
+  'testAudio': []
+  'stopAudio': []
+  'testAudioError': [error: any]
+  'updateWindowSize': [size: { width: number, height: number, fixed: boolean }]
+  'configReloaded': []
   'update:activeTab': [tab: string]
-  mcpToolAutoOpened: [requestId: number]
+  'mcpToolAutoOpened': [requestId: number]
 }
 
 const props = defineProps<Props>()
@@ -165,6 +166,9 @@ function testPopup() {
               :auto-open-tool-request-id="props.autoOpenToolRequestId"
               @auto-open-handled="$emit('mcpToolAutoOpened', $event)"
             />
+          </n-tab-pane>
+          <n-tab-pane name="logs" tab="日志">
+            <LogsTab />
           </n-tab-pane>
           <n-tab-pane name="prompts" tab="参考提示词">
             <PromptsTab />

@@ -89,10 +89,10 @@ const deleteLoading = ref(false)
 // ============ 计算属性 ============
 const groupedMemories = computed(() => {
   const groups: Record<string, MemoryEntry[]> = {
-    '规范': [],
-    '偏好': [],
-    '模式': [],
-    '背景': [],
+    规范: [],
+    偏好: [],
+    模式: [],
+    背景: [],
   }
   for (const m of memories.value) {
     if (groups[m.category]) {
@@ -111,7 +111,8 @@ const thresholdPercent = computed({
 
 // ============ 加载函数 ============
 async function loadConfig() {
-  if (!projectPath.value) return
+  if (!projectPath.value)
+    return
   configLoading.value = true
   try {
     const res = await invoke<MemoryConfig>('get_memory_config', { projectPath: projectPath.value })
@@ -126,7 +127,8 @@ async function loadConfig() {
 }
 
 async function loadMemories() {
-  if (!projectPath.value) return
+  if (!projectPath.value)
+    return
   listLoading.value = true
   try {
     const [memoryList, memoryStats] = await Promise.all([
@@ -146,7 +148,8 @@ async function loadMemories() {
 
 // ============ 操作函数 ============
 async function saveConfig() {
-  if (!projectPath.value) return
+  if (!projectPath.value)
+    return
   configSaving.value = true
   try {
     await invoke('save_memory_config', {
@@ -164,7 +167,8 @@ async function saveConfig() {
 }
 
 async function executeDeduplicate() {
-  if (!projectPath.value) return
+  if (!projectPath.value)
+    return
   dedupLoading.value = true
   try {
     const result = await invoke<DedupResult>('deduplicate_memories', { projectPath: projectPath.value })
@@ -207,7 +211,8 @@ async function previewSimilarity() {
 }
 
 async function deleteMemory(id: string) {
-  if (!projectPath.value) return
+  if (!projectPath.value)
+    return
   deleteLoading.value = true
   try {
     await invoke('delete_memory', { projectPath: projectPath.value, memoryId: id })
@@ -234,20 +239,20 @@ function formatDate(isoString: string): string {
 
 function getCategoryIcon(category: string): string {
   const icons: Record<string, string> = {
-    '规范': 'i-carbon-rule',
-    '偏好': 'i-carbon-user-favorite',
-    '模式': 'i-carbon-flow',
-    '背景': 'i-carbon-document',
+    规范: 'i-carbon-rule',
+    偏好: 'i-carbon-user-favorite',
+    模式: 'i-carbon-flow',
+    背景: 'i-carbon-document',
   }
   return icons[category] || 'i-carbon-document'
 }
 
 function getCategoryColor(category: string): string {
   const colors: Record<string, string> = {
-    '规范': 'text-blue-500',
-    '偏好': 'text-purple-500',
-    '模式': 'text-green-500',
-    '背景': 'text-orange-500',
+    规范: 'text-blue-500',
+    偏好: 'text-purple-500',
+    模式: 'text-green-500',
+    背景: 'text-orange-500',
   }
   return colors[category] || 'text-gray-500'
 }
@@ -315,15 +320,23 @@ onMounted(async () => {
                   <div class="switch-group">
                     <div class="switch-item">
                       <div class="switch-info">
-                        <div class="switch-label">启动时自动去重</div>
-                        <div class="switch-desc">每次加载记忆时自动检测并移除重复内容</div>
+                        <div class="switch-label">
+                          启动时自动去重
+                        </div>
+                        <div class="switch-desc">
+                          每次加载记忆时自动检测并移除重复内容
+                        </div>
                       </div>
                       <n-switch v-model:value="config.dedup_on_startup" />
                     </div>
                     <div class="switch-item">
                       <div class="switch-info">
-                        <div class="switch-label">启用去重检测</div>
-                        <div class="switch-desc">添加新记忆时检测是否与现有内容重复</div>
+                        <div class="switch-label">
+                          启用去重检测
+                        </div>
+                        <div class="switch-desc">
+                          添加新记忆时检测是否与现有内容重复
+                        </div>
                       </div>
                       <n-switch v-model:value="config.enable_dedup" />
                     </div>
@@ -353,24 +366,44 @@ onMounted(async () => {
               <ConfigSection title="统计信息" :no-card="true">
                 <div class="stats-grid">
                   <div class="stat-card">
-                    <div class="stat-value">{{ stats.total }}</div>
-                    <div class="stat-label">总计</div>
+                    <div class="stat-value">
+                      {{ stats.total }}
+                    </div>
+                    <div class="stat-label">
+                      总计
+                    </div>
                   </div>
                   <div class="stat-card">
-                    <div class="stat-value text-blue-500">{{ stats.rules }}</div>
-                    <div class="stat-label">规范</div>
+                    <div class="stat-value text-blue-500">
+                      {{ stats.rules }}
+                    </div>
+                    <div class="stat-label">
+                      规范
+                    </div>
                   </div>
                   <div class="stat-card">
-                    <div class="stat-value text-purple-500">{{ stats.preferences }}</div>
-                    <div class="stat-label">偏好</div>
+                    <div class="stat-value text-purple-500">
+                      {{ stats.preferences }}
+                    </div>
+                    <div class="stat-label">
+                      偏好
+                    </div>
                   </div>
                   <div class="stat-card">
-                    <div class="stat-value text-green-500">{{ stats.patterns }}</div>
-                    <div class="stat-label">模式</div>
+                    <div class="stat-value text-green-500">
+                      {{ stats.patterns }}
+                    </div>
+                    <div class="stat-label">
+                      模式
+                    </div>
                   </div>
                   <div class="stat-card">
-                    <div class="stat-value text-orange-500">{{ stats.contexts }}</div>
-                    <div class="stat-label">背景</div>
+                    <div class="stat-value text-orange-500">
+                      {{ stats.contexts }}
+                    </div>
+                    <div class="stat-label">
+                      背景
+                    </div>
                   </div>
                 </div>
               </ConfigSection>
@@ -403,7 +436,9 @@ onMounted(async () => {
               <!-- 空状态 -->
               <div v-else-if="memories.length === 0" class="empty-list">
                 <div class="i-carbon-document text-4xl mb-2 opacity-20" />
-                <div class="text-sm opacity-60">暂无记忆条目</div>
+                <div class="text-sm opacity-60">
+                  暂无记忆条目
+                </div>
               </div>
 
               <!-- 分组列表 -->
@@ -418,7 +453,9 @@ onMounted(async () => {
                     <div class="category-header">
                       <div :class="[getCategoryIcon(category), getCategoryColor(category)]" />
                       <span>{{ category }}</span>
-                      <n-tag size="small" :bordered="false">{{ items.length }}</n-tag>
+                      <n-tag size="small" :bordered="false">
+                        {{ items.length }}
+                      </n-tag>
                     </div>
                   </template>
 
@@ -530,8 +567,12 @@ onMounted(async () => {
 
                     <!-- 匹配的内容 -->
                     <div v-if="previewResult.matched_content" class="matched-content mt-4">
-                      <div class="matched-label">最相似的记忆:</div>
-                      <div class="matched-text">{{ previewResult.matched_content }}</div>
+                      <div class="matched-label">
+                        最相似的记忆:
+                      </div>
+                      <div class="matched-text">
+                        {{ previewResult.matched_content }}
+                      </div>
                     </div>
                   </div>
                 </ConfigSection>

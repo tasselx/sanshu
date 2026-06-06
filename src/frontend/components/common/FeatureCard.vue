@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { NSkeleton, NSpace, NCard } from 'naive-ui'
+import { NCard, NSkeleton, NSpace } from 'naive-ui'
 
 export interface Feature {
   icon: string
@@ -17,20 +17,20 @@ defineProps<{
 </script>
 
 <template>
-  <n-card size="small" class="h-full transition-all duration-300 hover:shadow-md hover:-translate-y-0.5">
+  <NCard size="small" class="h-full transition-all duration-300 hover:shadow-md hover:-translate-y-0.5">
     <!-- 统一的 Header 插槽 -->
     <template #header>
       <!-- 加载状态头部 -->
-      <n-space v-if="loading" align="center">
-        <n-skeleton height="40px" width="40px" :sharp="false" />
+      <NSpace v-if="loading" align="center">
+        <NSkeleton height="40px" width="40px" :sharp="false" />
         <div>
-          <n-skeleton text width="120px" class="mb-1" />
-          <n-skeleton text width="80px" />
+          <NSkeleton text width="120px" class="mb-1" />
+          <NSkeleton text width="80px" />
         </div>
-      </n-space>
+      </NSpace>
 
       <!-- 真实内容头部 -->
-      <n-space v-else-if="feature" align="center">
+      <NSpace v-else-if="feature" align="center">
         <!-- 图标容器 -->
         <div
           class="w-10 h-10 rounded-xl flex items-center justify-center transition-colors duration-300"
@@ -52,13 +52,13 @@ defineProps<{
             {{ feature.subtitle }}
           </div>
         </div>
-      </n-space>
+      </NSpace>
     </template>
 
     <!-- 加载状态内容 -->
-    <n-space v-if="loading" vertical size="small" class="mt-2">
-      <n-skeleton text :repeat="4" />
-    </n-space>
+    <NSpace v-if="loading" vertical size="small" class="mt-2">
+      <NSkeleton text :repeat="4" />
+    </NSpace>
 
     <!-- 真实内容列表 -->
     <div v-else-if="feature" class="grid gap-2">
@@ -73,5 +73,5 @@ defineProps<{
         </span>
       </div>
     </div>
-  </n-card>
+  </NCard>
 </template>

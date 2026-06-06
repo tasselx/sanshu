@@ -170,11 +170,17 @@ defineExpose({ saveConfig })
           </div>
           <n-space size="small" vertical>
             <div class="text-xs text-on-surface-secondary">
-              <n-tag size="small" type="success" :bordered="false">Basic Search</n-tag> 1 信用点/次
-              <n-tag size="small" type="warning" :bordered="false" class="ml-2">Advanced Search</n-tag> 2 信用点/次
+              <n-tag size="small" type="success" :bordered="false">
+                Basic Search
+              </n-tag> 1 信用点/次
+              <n-tag size="small" type="warning" :bordered="false" class="ml-2">
+                Advanced Search
+              </n-tag> 2 信用点/次
             </div>
             <div class="text-xs text-on-surface-secondary">
-              <n-tag size="small" type="info" :bordered="false">Extract</n-tag> 每 5 次成功提取消耗 1 信用点
+              <n-tag size="small" type="info" :bordered="false">
+                Extract
+              </n-tag> 每 5 次成功提取消耗 1 信用点
             </div>
             <div class="text-xs opacity-50">
               免费计划：每月 1000 信用点 | 每分钟 100 次请求

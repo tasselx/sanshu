@@ -28,17 +28,17 @@ interface Props {
 }
 
 interface Emits {
-  themeChange: [theme: string]
-  toggleAlwaysOnTop: []
-  toggleAudioNotification: []
-  updateAudioUrl: [url: string]
-  testAudio: []
-  stopAudio: []
-  testAudioError: [error: any]
-  updateWindowSize: [size: { width: number, height: number, fixed: boolean }]
-  configReloaded: []
+  'themeChange': [theme: string]
+  'toggleAlwaysOnTop': []
+  'toggleAudioNotification': []
+  'updateAudioUrl': [url: string]
+  'testAudio': []
+  'stopAudio': []
+  'testAudioError': [error: any]
+  'updateWindowSize': [size: { width: number, height: number, fixed: boolean }]
+  'configReloaded': []
   'update:activeTab': [tab: string]
-  mcpToolAutoOpened: [requestId: number]
+  'mcpToolAutoOpened': [requestId: number]
 }
 
 defineProps<Props>()
