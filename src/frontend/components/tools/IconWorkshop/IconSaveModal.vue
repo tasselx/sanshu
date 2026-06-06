@@ -31,23 +31,23 @@ const saving = ref(false)
 
 // 格式选项配置
 const formatOptions = [
-  { 
-    label: 'SVG 矢量', 
-    value: 'svg', 
+  {
+    label: 'SVG 矢量',
+    value: 'svg',
     desc: '保留原始矢量数据，可无限缩放',
-    icon: 'i-carbon-vector-pen'
+    icon: 'i-carbon-vector-pen',
   },
-  { 
-    label: 'PNG 位图', 
-    value: 'png', 
+  {
+    label: 'PNG 位图',
+    value: 'png',
     desc: '标清位图，兼容性好',
-    icon: 'i-carbon-image'
+    icon: 'i-carbon-image',
   },
-  { 
-    label: '双格式', 
-    value: 'both', 
+  {
+    label: '双格式',
+    value: 'both',
     desc: '同时保存 SVG 和 PNG 版本',
-    icon: 'i-carbon-copy-file'
+    icon: 'i-carbon-copy-file',
   },
 ] as const
 
@@ -68,7 +68,8 @@ const iconCount = computed(() => props.icons.length)
 
 // 清理 SVG 内容用于预览
 function processSvg(content?: string) {
-  if (!content) return null
+  if (!content)
+    return null
   return content
     .replace(/\s*style="[^"]*"/g, '')
     .replace(/\s*width="[^"]*"/g, ' width="100%"')
@@ -92,7 +93,8 @@ async function selectDirectory() {
 
 // 执行保存
 async function handleSave() {
-  if (!savePath.value.trim()) return
+  if (!savePath.value.trim())
+    return
 
   saving.value = true
   try {
@@ -122,7 +124,6 @@ function handleCancel() {
     class="custom-modal"
   >
     <div class="w-[800px] max-w-[95vw] bg-white dark:bg-[#1a1a1a] rounded-xl overflow-hidden shadow-2xl flex flex-col md:flex-row h-[600px] max-h-[90vh]">
-      
       <!-- 左侧：配置面板 -->
       <div class="w-full md:w-[320px] bg-slate-50 dark:bg-[#1f1f23] p-6 flex flex-col border-r border-gray-100 dark:border-white/5">
         <div class="mb-6">
@@ -130,7 +131,9 @@ function handleCancel() {
             <div class="i-carbon-save text-indigo-500" />
             保存图标
           </h2>
-          <p class="text-sm text-slate-500 dark:text-slate-400 mt-1">配置导出选项和目标路径</p>
+          <p class="text-sm text-slate-500 dark:text-slate-400 mt-1">
+            配置导出选项和目标路径
+          </p>
         </div>
 
         <div class="flex-1 flex flex-col gap-6 overflow-y-auto pr-2">
@@ -163,9 +166,9 @@ function handleCancel() {
                 :key="opt.value"
                 class="relative px-4 py-3 rounded-lg border-2 cursor-pointer transition-all duration-200 group flex items-center gap-3"
                 :class="[
-                  format === opt.value 
-                    ? 'border-indigo-500 bg-indigo-50/50 dark:bg-indigo-500/10' 
-                    : 'border-transparent bg-white dark:bg-white/5 hover:border-slate-200 dark:hover:border-white/10'
+                  format === opt.value
+                    ? 'border-indigo-500 bg-indigo-50/50 dark:bg-indigo-500/10'
+                    : 'border-transparent bg-white dark:bg-white/5 hover:border-slate-200 dark:hover:border-white/10',
                 ]"
                 @click="format = opt.value as IconFormat"
               >
@@ -174,18 +177,20 @@ function handleCancel() {
                   <div class="i-carbon-checkmark-filled text-lg" />
                 </div>
 
-                <div 
+                <div
                   class="w-10 h-10 rounded-full flex items-center justify-center text-xl transition-colors"
                   :class="format === opt.value ? 'bg-indigo-100 text-indigo-600 dark:bg-indigo-500/20 dark:text-indigo-400' : 'bg-slate-100 text-slate-400 dark:bg-white/10'"
                 >
                   <div :class="opt.icon" />
                 </div>
-                
+
                 <div class="flex-1">
                   <div class="font-medium text-slate-700 dark:text-slate-200" :class="{ 'text-indigo-600 dark:text-indigo-400': format === opt.value }">
                     {{ opt.label }}
                   </div>
-                  <div class="text-xs text-slate-400 leading-tight mt-0.5">{{ opt.desc }}</div>
+                  <div class="text-xs text-slate-400 leading-tight mt-0.5">
+                    {{ opt.desc }}
+                  </div>
                 </div>
               </div>
             </div>
@@ -208,8 +213,8 @@ function handleCancel() {
             </template>
             确认保存 ({{ iconCount }})
           </n-button>
-          
-          <n-button quaternary block @click="handleCancel" class="text-slate-500 hover:text-slate-700 dark:hover:text-slate-300">
+
+          <n-button quaternary block class="text-slate-500 hover:text-slate-700 dark:hover:text-slate-300" @click="handleCancel">
             取消
           </n-button>
         </div>
@@ -225,8 +230,12 @@ function handleCancel() {
 
         <div class="p-6 pb-2 relative z-10 flex justify-between items-end border-b border-gray-100/50 dark:border-white/5">
           <div>
-            <h3 class="text-lg font-semibold text-slate-700 dark:text-slate-200">预览清单</h3>
-            <p class="text-sm text-slate-400">即将保存以下 {{ iconCount }} 个图标</p>
+            <h3 class="text-lg font-semibold text-slate-700 dark:text-slate-200">
+              预览清单
+            </h3>
+            <p class="text-sm text-slate-400">
+              即将保存以下 {{ iconCount }} 个图标
+            </p>
           </div>
           <div class="text-xs font-mono text-indigo-500 bg-indigo-50 dark:bg-indigo-500/10 px-2 py-1 rounded">
             SVG Render
@@ -242,14 +251,14 @@ function handleCancel() {
             >
               <!-- 图标 -->
               <div class="flex-1 w-full flex items-center justify-center text-slate-700 dark:text-slate-200 group-hover:text-indigo-500 transition-colors">
-                 <div
-                    v-if="icon.svgContent"
-                    class="w-8 h-8 md:w-10 md:h-10 transition-transform duration-300 group-hover:scale-110"
-                    v-html="processSvg(icon.svgContent)"
-                  />
-                  <div v-else class="i-carbon-image text-4xl opacity-20" />
+                <div
+                  v-if="icon.svgContent"
+                  class="w-8 h-8 md:w-10 md:h-10 transition-transform duration-300 group-hover:scale-110"
+                  v-html="processSvg(icon.svgContent)"
+                />
+                <div v-else class="i-carbon-image text-4xl opacity-20" />
               </div>
-              
+
               <!-- 名称 -->
               <div class="w-full text-center mt-3">
                 <div class="text-xs text-slate-400 group-hover:text-slate-600 dark:group-hover:text-slate-300 truncate transition-colors font-medium">
@@ -263,14 +272,14 @@ function handleCancel() {
               </div>
             </div>
           </div>
-          
+
           <!-- 空状态修正 -->
           <div v-if="icons.length === 0" class="h-full flex flex-col items-center justify-center text-slate-300 dark:text-slate-600">
             <div class="i-carbon-select-window text-6xl mb-4" />
             <p>未选择图标</p>
           </div>
         </div>
-        
+
         <!-- 底部渐变遮罩 -->
         <div class="absolute bottom-0 left-0 right-0 h-12 bg-gradient-to-t from-slate-100 dark:from-[#121214] to-transparent pointer-events-none z-20" />
       </div>

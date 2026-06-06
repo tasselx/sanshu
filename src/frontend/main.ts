@@ -13,9 +13,9 @@ import {
   NConfigProvider,
   NDialogProvider,
   NDivider,
-  NDropdown,
   NDrawer,
   NDrawerContent,
+  NDropdown,
   NDynamicInput,
   NEmpty,
   NForm,
@@ -50,10 +50,10 @@ import {
   NTooltip,
   NTree,
 } from 'naive-ui'
-import 'virtual:uno.css'
-import 'katex/dist/katex.min.css'
 import { createApp } from 'vue'
 import App from './App.vue'
+import 'virtual:uno.css'
+import 'katex/dist/katex.min.css'
 import './assets/styles/style.css'
 
 const naive = create({

@@ -114,9 +114,18 @@ pnpm install
 pnpm build
 cargo build --release
 
+# Windows 推荐使用构建脚本，自动输出目录、版本号、MD5 和 SHA256
+powershell -ExecutionPolicy Bypass -File scripts/build-debug-windows.ps1
+powershell -ExecutionPolicy Bypass -File scripts/build-release-windows.ps1
+
+# 也可以一次构建 Debug + Release
+powershell -ExecutionPolicy Bypass -File scripts/build-windows.ps1
+
 # 安装
 cp target/release/等一下 target/release/三术 ~/.local/bin/
 ```
+
+Windows 构建脚本会先编译前端 `dist`，再编译后端二进制；构建信息会写入 `target/build-info/windows-build-info-*.json` 和 `target/build-info/windows-build-info-*.md`。
 
 ## 更新
 

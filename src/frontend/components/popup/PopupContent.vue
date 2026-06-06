@@ -27,7 +27,8 @@ const currentThemeIsLight = computed(() => props.currentTheme === 'light')
 const markdownThemeClass = computed(() => currentThemeIsLight.value ? 'theme-light' : 'theme-dark')
 
 const renderedMarkdown = computed(() => {
-  if (!props.request?.message) return ''
+  if (!props.request?.message)
+    return ''
   return renderMarkdown(props.request.message)
 })
 
@@ -89,7 +90,8 @@ async function initializeMermaid() {
 }
 
 async function prepareRenderedMarkdown() {
-  if (showRawMarkdown.value) return
+  if (showRawMarkdown.value)
+    return
   await nextTick()
   await renderMermaidBlocks()
   enhanceMarkdownImages()
@@ -97,24 +99,29 @@ async function prepareRenderedMarkdown() {
 
 async function renderMermaidBlocks() {
   const root = markdownRoot.value
-  if (!root) return
+  if (!root)
+    return
 
   const seq = ++mermaidRenderSeq
   const wrappers = Array.from(root.querySelectorAll<HTMLElement>('.mermaid-block-wrapper'))
-  if (wrappers.length === 0) return
+  if (wrappers.length === 0)
+    return
   const mermaid = await initializeMermaid()
 
   for (const [index, wrapper] of wrappers.entries()) {
-    if (seq !== mermaidRenderSeq) return
+    if (seq !== mermaidRenderSeq)
+      return
     const renderTarget = wrapper.querySelector<HTMLElement>('.mermaid-render')
     const encodedCode = wrapper.getAttribute('data-diagram-code')
-    if (!renderTarget || !encodedCode) continue
+    if (!renderTarget || !encodedCode)
+      continue
 
     try {
       const code = safeBase64Decode(encodedCode)
-      const diagramId = `popup-mermaid-${props.request?.id || 'request'}-${index}-${seq}`.replace(/[^a-zA-Z0-9_-]/g, '-')
+      const diagramId = `popup-mermaid-${props.request?.id || 'request'}-${index}-${seq}`.replace(/[^\w-]/g, '-')
       const { svg, bindFunctions } = await mermaid.render(diagramId, code)
-      if (seq !== mermaidRenderSeq) return
+      if (seq !== mermaidRenderSeq)
+        return
       renderTarget.innerHTML = svg
       renderTarget.classList.remove('mermaid-error')
       renderTarget.setAttribute('data-zoom', '1')
@@ -132,11 +139,13 @@ async function renderMermaidBlocks() {
 
 function enhanceMarkdownImages() {
   const root = markdownRoot.value
-  if (!root) return
+  if (!root)
+    return
 
   const images = Array.from(root.querySelectorAll<HTMLImageElement>('img'))
   images.forEach((image, index) => {
-    if (image.closest('.markdown-image-wrapper')) return
+    if (image.closest('.markdown-image-wrapper'))
+      return
 
     const wrapper = document.createElement('span')
     wrapper.className = 'markdown-image-wrapper'
@@ -189,7 +198,8 @@ function getMermaidZoom(wrapper: HTMLElement) {
 function applyMermaidZoom(wrapper: HTMLElement, zoom: number) {
   const renderTarget = wrapper.querySelector<HTMLElement>('.mermaid-render')
   const scale = Math.min(3, Math.max(0.4, Number(zoom.toFixed(2))))
-  if (!renderTarget) return
+  if (!renderTarget)
+    return
 
   renderTarget.setAttribute('data-zoom', String(scale))
   renderTarget.style.transform = ''
@@ -255,7 +265,8 @@ function closeImagePreview() {
 }
 
 function adjustPreviewZoom(delta: number) {
-  if (!imagePreview.value) return
+  if (!imagePreview.value)
+    return
   imagePreview.value.zoom = Math.min(4, Math.max(0.25, Number((imagePreview.value.zoom + delta).toFixed(2))))
 }
 
@@ -266,7 +277,8 @@ function resetPreviewZoom() {
 }
 
 async function copyPreviewImage() {
-  if (!imagePreview.value) return
+  if (!imagePreview.value)
+    return
 
   try {
     const bytes = await imageUrlToPngBytes(imagePreview.value.src)
@@ -353,7 +365,8 @@ function imageToPngBytes(image: HTMLImageElement, targetWidth?: number, targetHe
 
 function showTemporaryCheck(triggerEl: HTMLElement) {
   const icon = triggerEl.querySelector('div')
-  if (!icon) return
+  if (!icon)
+    return
 
   const oldClass = icon.className
   const oldStyle = icon.getAttribute('style') || ''
@@ -425,7 +438,8 @@ async function handleMarkdownClick(e: MouseEvent) {
     e.stopPropagation()
     e.preventDefault()
     const encodedCode = copyBtn.getAttribute('data-code')
-    if (!encodedCode) return
+    if (!encodedCode)
+      return
     try {
       const code = safeBase64Decode(encodedCode)
       await navigator.clipboard.writeText(code)
@@ -455,7 +469,8 @@ async function handleMarkdownClick(e: MouseEvent) {
     e.preventDefault()
     const lang = runBtn.getAttribute('data-lang') || ''
     const encodedCode = runBtn.getAttribute('data-code')
-    if (!encodedCode) return
+    if (!encodedCode)
+      return
     const code = safeBase64Decode(encodedCode)
     await handleCodeExecution(lang, code, runBtn)
     return
@@ -508,7 +523,8 @@ async function handleMarkdownClick(e: MouseEvent) {
 // 代码执行处理
 async function handleCodeExecution(lang: string, code: string, triggerEl: HTMLElement) {
   const wrapper = triggerEl.closest('.code-block-wrapper')
-  if (!wrapper) return
+  if (!wrapper)
+    return
 
   // 检查是否已有输出面板
   let outputPanel = wrapper.querySelector('.code-execution-output') as HTMLElement | null
@@ -619,10 +635,14 @@ function renderExecutionResult(panel: HTMLElement, result: CodeExecutionResult) 
   const statusText = result.timed_out ? '超时' : (result.exit_code === 0 ? '完成' : `退出码: ${result.exit_code}`)
 
   let content = ''
-  if (result.stdout) content += result.stdout
-  if (result.stderr) content += (content ? '\n' : '') + result.stderr
-  if (result.error) content += (content ? '\n' : '') + result.error
-  if (!content) content = '（无输出）'
+  if (result.stdout)
+    content += result.stdout
+  if (result.stderr)
+    content += (content ? '\n' : '') + result.stderr
+  if (result.error)
+    content += (content ? '\n' : '') + result.error
+  if (!content)
+    content = '（无输出）'
 
   // 转义 HTML
   content = content.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -659,7 +679,8 @@ onMounted(() => {
   loadHljsTheme('auto', props.currentTheme)
   resizeObserver = new ResizeObserver(() => {
     const root = markdownRoot.value
-    if (!root) return
+    if (!root)
+      return
     root.querySelectorAll<HTMLElement>('.mermaid-block-wrapper').forEach((wrapper) => {
       applyMermaidZoom(wrapper, getMermaidZoom(wrapper))
     })

@@ -155,8 +155,8 @@ onMounted(async () => {
 
     <!-- 功能亮点标签云 -->
     <div class="py-3 border-b border-gray-100 dark:border-gray-700">
-      <n-space size="small" :wrap="true">
-        <n-tag
+      <NSpace size="small" :wrap="true">
+        <NTag
           v-for="feature in features"
           :key="feature.label"
           size="small"
@@ -166,11 +166,11 @@ onMounted(async () => {
           :class="feature.colorClass"
         >
           <template #icon>
-            <div :class="[feature.icon, 'text-xs']" />
+            <div class="text-xs" :class="[feature.icon]" />
           </template>
           {{ feature.label }}
-        </n-tag>
-      </n-space>
+        </NTag>
+      </NSpace>
     </div>
 
     <!-- 底部：GitHub区域 -->

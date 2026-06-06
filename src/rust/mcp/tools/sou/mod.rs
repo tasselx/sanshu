@@ -21,6 +21,7 @@ const BACKEND_FAST_CONTEXT: &str = "fast_context";
 const BACKEND_AUTO: &str = "auto";
 const BACKEND_BOTH: &str = "both";
 const BACKEND_DEFAULT: &str = "default";
+const FAST_CONTEXT_FALLBACK_RETRY_DELAY_MS: u64 = 700;
 
 /// sou 对外请求。旧客户端只传 project_root_path/query 时仍然可用。
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -400,6 +401,34 @@ async fn run_fast_context(
     config: &FastContextConfig,
     include_header: bool,
 ) -> Result<BackendRunResult, String> {
+    let first = run_fast_context_once(request, config, include_header, false).await;
+    match first {
+        Ok(result) => Ok(result),
+        Err(message) if should_retry_fast_context_search(&message) => {
+            log_important!(
+                warn,
+                "[sou] fast-context 触发独立兜底重试: delay_ms={}, first_error={}",
+                FAST_CONTEXT_FALLBACK_RETRY_DELAY_MS,
+                message
+            );
+            // 兜底重试只在退化场景发生，短延迟用于避免连续完整会话给远端服务造成瞬时压力。
+            tokio::time::sleep(Duration::from_millis(FAST_CONTEXT_FALLBACK_RETRY_DELAY_MS)).await;
+            run_fast_context_once(request, config, include_header, true)
+                .await
+                .map_err(|retry_error| {
+                    format!("{}；兜底重试仍失败: {}", message.trim(), retry_error.trim())
+                })
+        }
+        Err(message) => Err(message),
+    }
+}
+
+async fn run_fast_context_once(
+    request: &SouRequest,
+    config: &FastContextConfig,
+    include_header: bool,
+    fallback_attempt: bool,
+) -> Result<BackendRunResult, String> {
     let started_at = Instant::now();
     let project_root = canonical_project_root(&request.project_root_path)
         .map_err(|e| format!("项目路径无效: {}", e))?;
@@ -418,7 +447,8 @@ async fn run_fast_context(
 
     log_important!(
         info,
-        "[sou] fast-context 开始: project_root={}, query_len={}, timeout_ms={}, tree_depth={}, max_turns={}, max_results={}, max_commands={}, exclude_count={}, include_header={}",
+        "[sou] fast-context 开始: fallback_attempt={}, project_root={}, query_len={}, timeout_ms={}, tree_depth={}, max_turns={}, max_results={}, max_commands={}, exclude_count={}, include_header={}",
+        fallback_attempt,
         project_root,
         request.query.chars().count(),
         effective_timeout_ms,
@@ -467,8 +497,10 @@ async fn run_fast_context(
 
     log_important!(
         info,
-        "[sou] fast-context 原生结果: files={}, rg_patterns={}, meta={}",
+        "[sou] fast-context 原生结果: fallback_attempt={}, files={}, answer_received={}, rg_patterns={}, meta={}",
+        fallback_attempt,
         response.files.len(),
+        response.answer_received,
         response.rg_patterns.len(),
         response.meta
     );
@@ -481,10 +513,14 @@ async fn run_fast_context(
     if text.trim().is_empty() {
         return Err("fast-context 未返回可用文件范围".to_string());
     }
+    if !response.answer_received {
+        return Err("fast-context 未获得合法 answer".to_string());
+    }
 
     log_important!(
         info,
-        "[sou] fast-context 完成: elapsed_ms={}, output_len={}",
+        "[sou] fast-context 完成: fallback_attempt={}, elapsed_ms={}, output_len={}",
+        fallback_attempt,
         started_at.elapsed().as_millis(),
         text.len()
     );
@@ -495,6 +531,13 @@ async fn run_fast_context(
     })
 }
 
+fn should_retry_fast_context_search(message: &str) -> bool {
+    message.contains("未获得合法工具调用")
+        || message.contains("未获得合法 answer")
+        || message.contains("已达到最大轮次")
+        || message.contains("未返回可解析响应")
+}
+
 fn format_fast_context_text(
     project_root: &str,
     response: &fast_context::SearchResult,
@@ -502,6 +545,7 @@ fn format_fast_context_text(
 ) -> Result<String> {
     let root = PathBuf::from(project_root);
     let mut parts = Vec::new();
+    let mut code_sections = 0usize;
     if include_header {
         parts.push("The following code sections were retrieved:".to_string());
         parts.push(String::new());
@@ -567,9 +611,13 @@ fn format_fast_context_text(
             parts.push(format!("Lines: L{}-L{}", start, end));
             parts.push(snippet);
             parts.push(String::new());
+            code_sections += 1;
         }
     }
 
+    if code_sections == 0 && response.answer_received {
+        parts.push("No relevant files found.".to_string());
+    }
     if !response.rg_patterns.is_empty() {
         parts.push(format!(
             "grep keywords: {}",
@@ -589,12 +637,6 @@ fn format_fast_context_text(
         response.stats.useful_rate(),
         response.stats.invalid_rate()
     ));
-    if parts
-        .iter()
-        .all(|line| line.trim().is_empty() || line.starts_with("The following"))
-    {
-        parts.push("No relevant files found.".to_string());
-    }
     if !response.meta.is_null() {
         parts.push(format!("[fast-context config] {}", response.meta));
     }
@@ -745,3 +787,50 @@ fn default_fast_excludes() -> Vec<String> {
 }
 
 type FastContextFile = fast_context::FastContextFile;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use std::collections::HashMap;
+    use tempfile::tempdir;
+
+    #[test]
+    fn valid_empty_fast_context_answer_is_explicitly_reported() {
+        let temp = tempdir().expect("临时目录应创建成功");
+        let response = fast_context::SearchResult {
+            files: Vec::new(),
+            rg_patterns: vec!["gesture".to_string()],
+            file_cache: HashMap::new(),
+            stats: fast_context::SearchStats::default(),
+            meta: json!({"native": true}),
+            answer_received: true,
+        };
+
+        let text = format_fast_context_text(
+            temp.path().to_str().expect("临时目录路径应为 UTF-8"),
+            &response,
+            true,
+        )
+        .expect("合法空 answer 应可格式化");
+
+        assert!(text.contains("No relevant files found."));
+        assert!(text.contains("grep keywords: gesture"));
+        assert!(text.contains("[fast-context stats]"));
+        assert!(!text.contains("Path:"), "合法空 answer 不应伪造代码片段");
+    }
+
+    #[test]
+    fn degraded_fast_context_errors_trigger_one_independent_retry() {
+        assert!(should_retry_fast_context_search(
+            "fast-context 未获得合法工具调用: [TOOL_CALLS]..."
+        ));
+        assert!(should_retry_fast_context_search(
+            "fast-context 已达到最大轮次但未获得 answer"
+        ));
+        assert!(
+            !should_retry_fast_context_search("RATE_LIMITED: Windsurf 当前限流，请稍后重试"),
+            "限流类错误不应触发独立兜底重试，避免扩大远端压力"
+        );
+    }
+}

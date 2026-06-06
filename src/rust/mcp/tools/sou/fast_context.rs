@@ -105,6 +105,8 @@ pub struct SearchResult {
     pub file_cache: HashMap<String, String>,
     pub stats: SearchStats,
     pub meta: Value,
+    /// 是否已经收到合法 answer 工具调用；用于区分“确实无相关文件”和“搜索中途退化”。
+    pub answer_received: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -365,6 +367,7 @@ pub async fn search(opts: SearchOptions) -> Result<SearchResult> {
 
     let mut turn = 0usize;
     let mut empty_answer_retried = false;
+    let mut unparsed_response_retried = false;
     while turn < total_api_calls + compensated_turns {
         log::info!(
             "[fast-context] 搜索轮次开始: turn={}, messages={}, compensated_turns={}, force_answer_injected={}",
@@ -408,18 +411,27 @@ pub async fn search(opts: SearchOptions) -> Result<SearchResult> {
             if text.starts_with("[Error]") {
                 return Err(anyhow!(text));
             }
+            let turns_left = (total_api_calls + compensated_turns).saturating_sub(turn + 1);
+            if should_retry_unparsed_response(&text, unparsed_response_retried, turns_left) {
+                log::warn!(
+                    "[fast-context] 未解析到合法工具调用，触发补偿重试: turn={}, turns_left={}, contains_tool_marker={}",
+                    turn + 1,
+                    turns_left,
+                    text.contains("[TOOL_CALLS]")
+                );
+                unparsed_response_retried = true;
+                messages.push(ChatMessage::new(1, unparsed_response_retry_prompt(&text)));
+                turn += 1;
+                continue;
+            }
             log::warn!(
-                "[fast-context] 未解析到工具调用，返回 plain response: length={}",
+                "[fast-context] 未解析到合法工具调用，搜索退化失败: length={}",
                 text.len()
             );
-            let stats = executor.snapshot_stats().await;
-            return Ok(SearchResult {
-                files: Vec::new(),
-                rg_patterns: executor.collected_rg_patterns().await,
-                file_cache: executor.snapshot_read_cache().await,
-                stats: stats.clone(),
-                meta: build_meta(&repo_map, true, Some(text), &stats),
-            });
+            return Err(anyhow!(
+                "fast-context 未获得合法工具调用: {}",
+                truncate_error_text(&text, 500)
+            ));
         };
 
         match tool_call.name.as_str() {
@@ -461,6 +473,7 @@ pub async fn search(opts: SearchOptions) -> Result<SearchResult> {
                     file_cache: executor.snapshot_read_cache().await,
                     stats: stats.clone(),
                     meta: build_meta(&repo_map, true, None, &stats),
+                    answer_received: true,
                 });
             }
             "restricted_exec" => {
@@ -539,19 +552,7 @@ pub async fn search(opts: SearchOptions) -> Result<SearchResult> {
         "[fast-context] 已达到最大轮次但未获得 answer: elapsed_ms={}",
         started_at.elapsed().as_millis()
     );
-    let stats = executor.snapshot_stats().await;
-    Ok(SearchResult {
-        files: Vec::new(),
-        rg_patterns: executor.collected_rg_patterns().await,
-        file_cache: executor.snapshot_read_cache().await,
-        stats: stats.clone(),
-        meta: build_meta(
-            &repo_map,
-            true,
-            Some("Max turns reached without getting an answer".to_string()),
-            &stats,
-        ),
-    })
+    Err(anyhow!("fast-context 已达到最大轮次但未获得 answer"))
 }
 
 impl ChatMessage {
@@ -1061,6 +1062,28 @@ fn parse_plain_response(data: &[u8]) -> String {
         .filter(|s| s.len() > 10)
         .collect::<Vec<_>>()
         .join("")
+}
+
+fn should_retry_unparsed_response(text: &str, already_retried: bool, turns_left: usize) -> bool {
+    !already_retried && turns_left >= 1 && !text.trim().is_empty()
+}
+
+fn unparsed_response_retry_prompt(text: &str) -> String {
+    if text.contains("[TOOL_CALLS]") {
+        "Your previous response looked like a tool call but its JSON was incomplete or invalid. Retry now with exactly one complete tool call. If you already have enough context, call `[TOOL_CALLS]answer[ARGS]` with valid XML; otherwise call `[TOOL_CALLS]restricted_exec[ARGS]` with complete JSON only.".to_string()
+    } else {
+        "Your previous response did not use the required tool-call protocol. Retry now with exactly one valid tool call: either `[TOOL_CALLS]restricted_exec[ARGS]` for more search commands, or `[TOOL_CALLS]answer[ARGS]` with the final XML answer.".to_string()
+    }
+}
+
+fn truncate_error_text(text: &str, max_chars: usize) -> String {
+    let trimmed = text.trim();
+    if trimmed.chars().count() <= max_chars {
+        return trimmed.to_string();
+    }
+    let mut truncated = trimmed.chars().take(max_chars).collect::<String>();
+    truncated.push_str("...");
+    truncated
 }
 
 fn parse_tool_call(text: &str) -> Option<ParsedToolCall> {
@@ -3022,6 +3045,25 @@ mod tests {
         let error = parse_response(&frame).expect_err("Connect error frame 应返回错误");
         assert!(error.to_string().contains("unauthenticated"));
         assert!(error.to_string().contains("bad token"));
+    }
+
+    #[test]
+    fn malformed_tool_call_is_retryable_unparsed_response() {
+        let text = r#"thinking
+[TOOL_CALLS]restricted_exec[ARGS]{"command1":{"type":"rg","pattern":"gesture","path":"/codebase/src"}"#;
+
+        assert!(
+            parse_tool_call(text).is_none(),
+            "半截工具调用不应被解析为合法工具调用"
+        );
+        assert!(
+            should_retry_unparsed_response(text, false, 1),
+            "包含半截工具调用且仍有轮次时应触发补偿重试"
+        );
+        assert!(
+            !should_retry_unparsed_response(text, true, 1),
+            "同一类未解析响应只做一次补偿，避免无限重试"
+        );
     }
 
     #[test]

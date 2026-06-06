@@ -8,7 +8,7 @@ import { ref } from 'vue'
 export function useMcpHandler() {
   const mcpRequest = ref(null)
   const showMcpPopup = ref(false)
-  
+
   // 图标搜索模式状态
   const isIconMode = ref(false)
   const iconParams = ref<{

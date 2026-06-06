@@ -77,6 +77,8 @@ src-tauri/Cargo.lock
 # scripts
 temp/
 scripts/
+!scripts/
+!scripts/verify-log-viewer.ps1
 *.exe
 # *.md
 !ACEMCP.md
@@ -88,9 +90,12 @@ demo/
 /docs/
 !/docs/
 /docs/*
+!/docs/log-viewer-global-debug.md
 
 
 test/
 
 # AI
 .claude
+
+issue/*

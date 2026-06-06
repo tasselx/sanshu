@@ -3,14 +3,6 @@ import { useMessage } from 'naive-ui'
 import { computed, defineAsyncComponent, onMounted, ref, watch } from 'vue'
 import { useMcpToolsReactive } from '../../composables/useMcpTools'
 
-// 异步加载配置组件
-const SouConfig = defineAsyncComponent(() => import('../tools/SouConfig.vue'))
-const Context7Config = defineAsyncComponent(() => import('../tools/Context7Config.vue'))
-const IconWorkshop = defineAsyncComponent(() => import('../tools/IconWorkshop/IconWorkshop.vue'))
-const EnhanceConfig = defineAsyncComponent(() => import('../tools/EnhanceConfig.vue'))
-const MemoryConfig = defineAsyncComponent(() => import('../tools/MemoryConfig.vue'))
-const TavilyConfig = defineAsyncComponent(() => import('../tools/TavilyConfig.vue'))
-
 const props = withDefaults(defineProps<{
   projectRootPath?: string | null
   autoOpenToolId?: string | null
@@ -19,10 +11,16 @@ const props = withDefaults(defineProps<{
   autoOpenToolId: null,
   autoOpenToolRequestId: 0,
 })
-
 const emit = defineEmits<{
   autoOpenHandled: [requestId: number]
 }>()
+// 异步加载配置组件
+const SouConfig = defineAsyncComponent(() => import('../tools/SouConfig.vue'))
+const Context7Config = defineAsyncComponent(() => import('../tools/Context7Config.vue'))
+const IconWorkshop = defineAsyncComponent(() => import('../tools/IconWorkshop/IconWorkshop.vue'))
+const EnhanceConfig = defineAsyncComponent(() => import('../tools/EnhanceConfig.vue'))
+const MemoryConfig = defineAsyncComponent(() => import('../tools/MemoryConfig.vue'))
+const TavilyConfig = defineAsyncComponent(() => import('../tools/TavilyConfig.vue'))
 
 // 全局 MCP 工具状态
 const {
@@ -240,7 +238,7 @@ onMounted(async () => {
       class="config-modal"
       transform-origin="center"
     >
-      <div class="min-h-[400px]">
+      <div class="config-modal-body min-h-[400px]">
         <SouConfig v-if="currentToolId === 'sou'" :active="showToolConfigModal" />
         <Context7Config v-else-if="currentToolId === 'context7'" :active="showToolConfigModal" />
         <EnhanceConfig
@@ -267,6 +265,19 @@ onMounted(async () => {
 </template>
 
 <style scoped>
+/* 中文说明：配置弹窗统一约束高度，避免某个工具配置页内容过长时撑高整个窗口。 */
+:global(.config-modal .n-card__content) {
+  max-height: calc(100vh - 140px);
+  overflow: hidden;
+}
+
+.config-modal-body {
+  max-height: calc(100vh - 210px);
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding-right: 2px;
+}
+
 /* ========== 工具卡片样式 ========== */
 .tool-card {
   position: relative;

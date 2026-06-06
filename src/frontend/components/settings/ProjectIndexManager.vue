@@ -422,22 +422,22 @@ function getDirectoryExists(projectRoot: string): boolean {
       <!-- 统计信息 -->
       <div class="stats-bar">
         <div class="stat-chip">
-          <div class="i-carbon-folder text-primary-500" />
+          <div class="i-carbon-folder" />
           <span>{{ stats.total }} 个项目</span>
         </div>
-        <div v-if="stats.indexing > 0" class="stat-chip text-blue-500">
+        <div v-if="stats.indexing > 0" class="stat-chip is-indexing">
           <div class="i-carbon-in-progress animate-spin" />
           <span>{{ stats.indexing }} 索引中</span>
         </div>
-        <div v-if="stats.stale > 0" class="stat-chip text-amber-500">
+        <div v-if="stats.stale > 0" class="stat-chip is-stale">
           <div class="i-carbon-warning-alt" />
           <span>{{ stats.stale }} 待重建</span>
         </div>
-        <div v-if="stats.synced > 0" class="stat-chip text-green-500">
+        <div v-if="stats.synced > 0" class="stat-chip is-synced">
           <div class="i-carbon-checkmark-filled" />
           <span>{{ stats.synced }} 已完成</span>
         </div>
-        <div v-if="stats.failed > 0" class="stat-chip text-red-500">
+        <div v-if="stats.failed > 0" class="stat-chip is-failed">
           <div class="i-carbon-warning-filled" />
           <span>{{ stats.failed }} 失败</span>
         </div>
@@ -558,11 +558,11 @@ function getDirectoryExists(projectRoot: string): boolean {
   space-y: 12px;
 }
 
-/* 统计信息栏 */
+/* 统计信息栏 - 莫兰迪胶囊标签 */
 .stats-bar {
   display: flex;
   flex-wrap: wrap;
-  gap: 12px;
+  gap: 8px;
   margin-bottom: 12px;
 }
 
@@ -570,16 +570,69 @@ function getDirectoryExists(projectRoot: string): boolean {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 12px;
-  opacity: 0.8;
+  padding: 4px 12px;
+  border-radius: 20px;
+  font-size: 11px;
+  font-weight: 500;
+  border: 1px solid var(--color-border, rgba(128, 128, 128, 0.15));
+  background: var(--color-container, rgba(255, 255, 255, 0.4));
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  color: var(--color-on-surface-secondary, #6b7280);
 }
 
-/* 筛选栏 */
+:root.dark .stat-chip {
+  background: rgba(255, 255, 255, 0.03);
+  color: #9ca3af;
+}
+
+.stat-chip:hover {
+  transform: translateY(-1px);
+  border-color: rgba(128, 128, 128, 0.3);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+}
+
+.stat-chip .i-carbon-folder {
+  color: rgb(20, 184, 166);
+}
+
+.stat-chip.is-indexing {
+  color: rgb(59, 130, 246);
+  border-color: rgba(59, 130, 246, 0.25);
+  background: rgba(59, 130, 246, 0.06);
+}
+
+.stat-chip.is-stale {
+  color: rgb(245, 158, 11);
+  border-color: rgba(245, 158, 11, 0.25);
+  background: rgba(245, 158, 11, 0.06);
+}
+
+.stat-chip.is-synced {
+  color: rgb(34, 197, 94);
+  border-color: rgba(34, 197, 94, 0.25);
+  background: rgba(34, 197, 94, 0.06);
+}
+
+.stat-chip.is-failed {
+  color: rgb(239, 68, 68);
+  border-color: rgba(239, 68, 68, 0.25);
+  background: rgba(239, 68, 68, 0.06);
+}
+
+/* 筛选栏 - 扁平带衬底 */
 .filter-bar {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
   align-items: center;
+  background: var(--color-container, rgba(255, 255, 255, 0.2));
+  padding: 6px 8px;
+  border-radius: 8px;
+  border: 1px dashed var(--color-border, rgba(128, 128, 128, 0.12));
+}
+
+:root.dark .filter-bar {
+  background: rgba(255, 255, 255, 0.01);
 }
 
 .search-input {
@@ -589,11 +642,11 @@ function getDirectoryExists(projectRoot: string): boolean {
 }
 
 .filter-select {
-  width: 100px;
+  width: 105px;
 }
 
 .sort-select {
-  width: 90px;
+  width: 95px;
 }
 
 /* 卡片网格布局 */

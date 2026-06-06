@@ -2,7 +2,6 @@ import type { ProjectIndexStatus, ProjectsIndexStatus, ProjectWithNestedStatus }
 import { invoke } from '@tauri-apps/api/core'
 import { computed, onUnmounted, ref } from 'vue'
 
-
 /**
  * 规范化项目路径，去除 Windows 扩展路径前缀并统一使用正斜杠
  * 确保前后端路径格式一致，避免 HashMap 查找失败
@@ -269,7 +268,7 @@ export function useAcemcpSync() {
   // 检测 ACE 配置是否完整（base_url 和 token 均已配置）
   async function checkAcemcpConfigured(): Promise<boolean> {
     try {
-      const config = await invoke<{ base_url?: string; token?: string }>('get_acemcp_config')
+      const config = await invoke<{ base_url?: string, token?: string }>('get_acemcp_config')
       return !!(config.base_url && config.token)
     }
     catch (err) {

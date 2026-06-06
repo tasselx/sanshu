@@ -489,15 +489,15 @@ async function setupAutoExitListener(): Promise<() => void> {
   const unlisten = await listen('update_auto_exit', (event) => {
     const seconds = event.payload as number
     console.log(`🔄 收到自动退出事件，应用将在 ${seconds} 秒后自动退出...`)
-    
+
     // 设置倒计时
     autoExitCountdown.value = seconds
-    
+
     // 开始倒计时
     const timer = setInterval(() => {
       autoExitCountdown.value--
       console.log(`⏱️ 倒计时: ${autoExitCountdown.value}s`)
-      
+
       if (autoExitCountdown.value <= 0) {
         clearInterval(timer)
         console.log('🔚 倒计时结束，调用 exitForUpdate...')
@@ -507,7 +507,7 @@ async function setupAutoExitListener(): Promise<() => void> {
       }
     }, 1000)
   })
-  
+
   return unlisten
 }
 

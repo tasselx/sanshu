@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
 import { NGrid, NGridItem } from 'naive-ui'
+import { onMounted, ref } from 'vue'
 import FeatureCard, { type Feature } from '../common/FeatureCard.vue'
 import ProjectInfoCard from '../common/ProjectInfoCard.vue'
 
@@ -10,7 +10,7 @@ const features = ref<Feature[]>([])
 onMounted(async () => {
   // 模拟加载延迟，展示骨架屏体验
   await new Promise(resolve => setTimeout(resolve, 600))
-  
+
   features.value = [
     {
       icon: 'i-carbon-chat text-xl text-blue-600 dark:text-blue-400',
@@ -137,7 +137,7 @@ onMounted(async () => {
     </div>
 
     <!-- 功能卡片区域 -->
-    <n-grid
+    <NGrid
       :cols="4"
       :x-gap="16"
       :y-gap="16"
@@ -146,21 +146,21 @@ onMounted(async () => {
     >
       <!-- 骨架屏占位 (加载时显示) -->
       <template v-if="loading">
-        <n-grid-item v-for="n in 8" :key="'skeleton-' + n" span="4 s:2 m:2 l:1">
+        <NGridItem v-for="n in 8" :key="`skeleton-${n}`" span="4 s:2 m:2 l:1">
           <FeatureCard :loading="true" />
-        </n-grid-item>
+        </NGridItem>
       </template>
 
       <!-- 真实数据 (加载后显示) -->
       <template v-else>
-        <n-grid-item
+        <NGridItem
           v-for="(feature, index) in features"
-          :key="'feature-' + index"
+          :key="`feature-${index}`"
           span="4 s:2 m:2 l:1"
         >
           <FeatureCard :feature="feature" />
-        </n-grid-item>
+        </NGridItem>
       </template>
-    </n-grid>
+    </NGrid>
   </div>
 </template>

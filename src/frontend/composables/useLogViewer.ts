@@ -19,4 +19,3 @@ export function useLogViewer() {
   }
   return instance
 }
-

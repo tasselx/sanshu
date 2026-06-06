@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import type { NestedProjectInfo, ProjectIndexStatus, ProjectWithNestedStatus } from '../../types/tauri'
 /**
  * ZhiIndexPanel - zhi 弹窗索引状态折叠面板
  *
@@ -11,7 +12,6 @@
  */
 import { invoke } from '@tauri-apps/api/core'
 import { computed, h, onMounted, ref, watch } from 'vue'
-import type { NestedProjectInfo, ProjectIndexStatus, ProjectWithNestedStatus } from '../../types/tauri'
 
 // ==================== Props & Emits ====================
 
@@ -608,23 +608,39 @@ onMounted(() => {
           <div class="stats-grid">
             <!-- 总文件数 -->
             <div class="stat-card">
-              <div class="stat-value">{{ totalFiles }}</div>
-              <div class="stat-label">总文件</div>
+              <div class="stat-value">
+                {{ totalFiles }}
+              </div>
+              <div class="stat-label">
+                总文件
+              </div>
             </div>
             <!-- 已索引 -->
             <div class="stat-card stat-card--success">
-              <div class="stat-value">{{ indexedFiles }}</div>
-              <div class="stat-label">已索引</div>
+              <div class="stat-value">
+                {{ indexedFiles }}
+              </div>
+              <div class="stat-label">
+                已索引
+              </div>
             </div>
             <!-- 待处理 -->
             <div class="stat-card stat-card--info">
-              <div class="stat-value">{{ pendingFiles }}</div>
-              <div class="stat-label">待处理</div>
+              <div class="stat-value">
+                {{ pendingFiles }}
+              </div>
+              <div class="stat-label">
+                待处理
+              </div>
             </div>
             <!-- 失败 -->
             <div class="stat-card stat-card--error">
-              <div class="stat-value">{{ failedFiles }}</div>
-              <div class="stat-label">失败</div>
+              <div class="stat-value">
+                {{ failedFiles }}
+              </div>
+              <div class="stat-label">
+                失败
+              </div>
             </div>
           </div>
 
