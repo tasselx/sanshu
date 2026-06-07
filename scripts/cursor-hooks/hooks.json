@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "hooks": {
+    "preToolUse": [
+      {
+        "command": "rtk hook cursor",
+        "matcher": "Shell"
+      }
+    ],
+    "postToolUse": [
+      {
+        "command": "hooks/track-zhi.sh"
+      },
+      {
+        "command": "hooks/truncate-mcp-output.sh",
+        "matcher": "MCP: "
+      }
+    ],
+    "stop": [
+      {
+        "command": "hooks/check-zhi-on-stop.sh",
+        "loop_limit": 2
+      }
+    ]
+  }
+}
