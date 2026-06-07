@@ -1,7 +1,10 @@
 use anyhow::Result;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+use once_cell::sync::Lazy;
 use rmcp::model::{
     CallToolResult, Content, ErrorData as McpError, NumberOrString, ProgressNotificationParam,
     ProgressToken,
@@ -18,12 +21,29 @@ use crate::{log_debug, log_important};
 /// 心跳进度通知周期：10 秒。
 ///
 /// 中文说明：Cursor 等 MCP 客户端的工具调用超时多在 ~30 秒，zhi 等用户决策往往要数分钟。
-/// 配合方案A 把 POPUP_POLL_WINDOW 拉长到 600s 后，单次 zhi 调用会真正长时间阻塞、
+/// 配合方案A 把 POPUP_POLL_WINDOW 拉长到 900s 后，单次 zhi 调用会真正长时间阻塞、
 /// 完全依赖这里的 progress 心跳在 30s 超时前反复重置客户端计时器。
 /// 取 10s（而非旧值 15s）是为了留足安全余量：30s 内能稳定发出约 3 次心跳，
 /// 即使偶有一次丢包/抖动也不会逼近超时；从根上避免
 /// 「长等待被客户端超时丢弃 → AI 误判失败 → 新开 request」。
 const PROGRESS_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(10);
+
+/// brief 过长告警阈值（字符数）。
+///
+/// 中文说明（2026-06-07 调优）：每次 zhi 调用模型都会重发整段上下文，brief 本身越大、
+/// 单次往返固定开销越高。超过此阈值仅打 warn 日志做诊断提示，**不截断**——
+/// 截断会破坏用户在弹窗里看到的内容（UX），且无法减少模型侧已生成的 token。
+/// 真正省 token 要靠"少调 zhi / 合并 zhi"（见 强制交互规则 一·补充）。
+const BRIEF_LEN_WARN_THRESHOLD: usize = 4000;
+
+/// 每 workspace 的 zhi 调用节流统计：workspace → (累计调用次数, 上次调用时刻)。
+///
+/// 中文说明（2026-06-07 新增·节流监控）：用于直接观测"频繁新建弹窗 / 保活空转"——
+/// 这是长会话 token 的大头。改了「强制交互·一·补充」节流规则后，对照本统计输出的
+/// 「第 N 次调用 / 距上次 Xs」即可验证弹窗是否真的变少、间隔是否拉长。
+/// 注：计数是 MCP server 进程生命周期内累计（不按对话重置），关键看「距上次间隔」。
+static ZHI_CALL_CADENCE: Lazy<Mutex<HashMap<String, (u64, Instant)>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
 
 /// 代码审阅记录工具
 ///
@@ -74,6 +94,38 @@ impl InteractionTool {
             request.choices.len(),
             request.workspace.as_str()
         );
+
+        // 中文说明（2026-06-07 调优）：brief 过长时打 warn 诊断，提示上游"精简 brief / 合并 zhi"；
+        // 仅告警不截断，避免破坏弹窗展示内容。
+        if request.brief.len() > BRIEF_LEN_WARN_THRESHOLD {
+            log_important!(
+                warn,
+                "[zhi] brief 偏长: request_id={}, brief_len={}（阈值={}）——每次 zhi 都会重发整段上下文，建议精简 brief 或合并多次 zhi 以省 token",
+                request_id,
+                request.brief.len(),
+                BRIEF_LEN_WARN_THRESHOLD
+            );
+        }
+
+        // 中文说明（2026-06-07 新增·节流监控）：按 workspace 记录 zhi 调用序号与距上次间隔，
+        // 直接暴露"频繁新建弹窗/保活空转"。间隔越短越像无谓往返；改节流规则后应看到调用变疏。
+        {
+            let now = Instant::now();
+            if let Ok(mut map) = ZHI_CALL_CADENCE.lock() {
+                let entry = map.entry(request.workspace.clone()).or_insert((0, now));
+                entry.0 = entry.0.saturating_add(1);
+                let gap_secs = now.duration_since(entry.1).as_secs();
+                entry.1 = now;
+                let nth = entry.0;
+                log_important!(
+                    info,
+                    "[zhi] 节流监控: workspace={:?}, 第 {} 次 zhi 调用, 距上次={}s（间隔越短=越像保活/汇报空转，每次都重发整段上下文烧 token）",
+                    request.workspace.as_str(),
+                    nth,
+                    gap_secs
+                );
+            }
+        }
 
         // 中文说明：MCP 对外字段采用中性命名，内部仍映射到既有弹窗协议以保持 UI 链路稳定。
         let choices = normalize_zhi_choices(request.choices);
@@ -165,7 +217,7 @@ impl InteractionTool {
             })
         });
 
-        // 中文说明：poll_or_start_popup 是同步阻塞调用（spawn/重连 GUI 子进程并轮询至多 POPUP_POLL_WINDOW≈600s），
+        // 中文说明：poll_or_start_popup 是同步阻塞调用（spawn/重连 GUI 子进程并轮询至多 POPUP_POLL_WINDOW≈900s），
         // 放入阻塞线程池，避免阻塞 tokio 运行时，也保证上面的心跳任务能并行推进。
         // abort_flag 在心跳检测到连接断开时置 false，使轮询提前退出。
         let popup_outcome =

@@ -110,16 +110,22 @@ pub fn create_tauri_popup(request: &PopupRequest) -> Result<String> {
 /// 大量 zhi 往返（实测等 4.5 分钟 → 10 次调用），每次重连 AI 还会重发整段 brief/choices，
 /// 上下文按 N 倍膨胀、烧光 Cursor 迭代预算、触发后台新 request，最终把强约束规则挤出上下文、
 /// 回退到原生 ask。现改为依赖 PROGRESS_HEARTBEAT_INTERVAL 的 progress 心跳在 30s 超时前
-/// 反复重置客户端计时器，从而把窗口拉长到 600s（心跳每 10s 一次，实测可稳定支撑）。
-/// 让「等 10 分钟」只需约 1 次重连。超过 600s 仍未响应才返回 Pending 让 AI 重连。
+/// 反复重置客户端计时器，从而把窗口拉长到 900s（心跳每 10s 一次，实测可稳定支撑）。
+/// 让「等 15 分钟」只需约 1 次重连。超过 900s 仍未响应才返回 Pending 让 AI 重连。
 /// 配合 MAX_POPUP_RECONNECTS 上限，超过指定次数后自动挂起、不再消耗 token。
 /// 另有 abort_flag 机制：心跳失败时立即通知轮询退出，避免客户端已断开后仍空等。
-pub const POPUP_POLL_WINDOW: Duration = Duration::from_secs(600);
+///
+/// 中文说明（2026-06-07 调优）：经日志验证 Cursor 会下发 client_progress_token、心跳确实有效，
+/// 故把窗口从 600s 上调到 900s，进一步减少 Pending→重连（每次重连都重发整段上下文、烧 token）。
+pub const POPUP_POLL_WINDOW: Duration = Duration::from_secs(900);
 
 /// 最大重连次数上限：超过此次数后不再返回 Pending 让 AI 重连，
 /// 改为返回 Suspended 告知 AI 挂起等待、不再消耗 token。
-/// 10 次 × 600s = 100 分钟持续等待后自动挂起。
-pub const MAX_POPUP_RECONNECTS: u32 = 10;
+/// 5 次 × 900s = 75 分钟持续等待后自动挂起。
+///
+/// 中文说明（2026-06-07 调优）：从 10 下调到 5，更早封顶"用户长时间离开"时的 token 消耗；
+/// 75 分钟仍覆盖绝大多数"暂时离开"场景，弹窗不关、用户回来仍可操作。
+pub const MAX_POPUP_RECONNECTS: u32 = 5;
 /// 轮询 GUI 进程是否结束的间隔。
 const POPUP_POLL_INTERVAL: Duration = Duration::from_millis(200);
 
