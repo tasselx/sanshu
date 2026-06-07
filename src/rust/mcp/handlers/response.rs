@@ -5,6 +5,17 @@ use crate::log_debug;
 use crate::mcp::types::{McpResponse, McpResponseContent};
 use crate::mcp::utils::is_zhi_custom_choice;
 
+/// 将字节数格式化为人类可读的大小字符串（B / KB / MB）
+fn format_byte_size(bytes: u64) -> String {
+    if bytes < 1024 {
+        format!("{} B", bytes)
+    } else if bytes < 1024 * 1024 {
+        format!("{:.1} KB", bytes as f64 / 1024.0)
+    } else {
+        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+    }
+}
+
 /// 解析 MCP 响应内容
 ///
 /// 支持新的结构化格式和旧格式的兼容性，并生成适当的 Content 对象
@@ -23,8 +34,9 @@ pub fn parse_mcp_response(response: &str) -> Result<Vec<Content>, McpError> {
     // 首先尝试解析为新的结构化格式
     if let Ok(structured_response) = serde_json::from_str::<McpResponse>(response) {
         log_debug!(
-            "[parse_mcp_response] 结构化响应: selected_options={}, images={}, request_id={:?}, source={:?}",
+            "[parse_mcp_response] 结构化响应: selected_options={}, attachments={}, images(legacy)={}, request_id={:?}, source={:?}",
             structured_response.selected_options.len(),
+            structured_response.attachments.len(),
             structured_response.images.len(),
             structured_response.metadata.request_id.as_deref(),
             structured_response.metadata.source.as_deref()
@@ -207,59 +219,72 @@ fn parse_structured_response(response: McpResponse) -> Result<Vec<Content>, McpE
         }
     }
 
-    // 3. 处理图片附件
-    let mut image_info_parts = Vec::new();
-    for (index, image) in response.images.iter().enumerate() {
-        // 添加图片到结果中（图片在前）
-        result.push(Content::image(image.data.clone(), image.media_type.clone()));
+    // 3. 处理附件
+    //    新版：附件以「本地绝对路径」形式传递，AI 用文件读取工具按需查看，彻底避免超长 base64 内联。
+    //    旧版：保留 base64 内联图片的兼容处理（历史响应仍可解析）。
+    let mut attachment_text_parts: Vec<String> = Vec::new();
 
-        // 生成图片信息
-        let base64_len = image.data.len();
-        let preview = if base64_len > 50 {
-            format!("{}...", &image.data[..50])
-        } else {
-            image.data.clone()
-        };
+    if !response.attachments.is_empty() {
+        let mut lines = Vec::new();
+        for (index, att) in response.attachments.iter().enumerate() {
+            let kind = att.kind.as_deref().unwrap_or("file");
+            let label = if kind == "image" { "图片" } else { "文件" };
+            let size_str = att
+                .size
+                .map(format_byte_size)
+                .unwrap_or_else(|| "未知大小".to_string());
+            lines.push(format!(
+                "{}. [{}] {}（{}）\n   路径: {}",
+                index + 1,
+                label,
+                att.filename,
+                size_str,
+                att.path
+            ));
+        }
+        attachment_text_parts.push(format!(
+            "用户附带了 {} 个本地文件（已保存到附件工作目录）。请使用你的文件读取工具按需查看以下绝对路径，不要凭空猜测内容：\n{}",
+            response.attachments.len(),
+            lines.join("\n")
+        ));
+    } else if !response.images.is_empty() {
+        // 旧格式兼容：base64 内联图片（图片在前，文本在后）
+        for (index, image) in response.images.iter().enumerate() {
+            result.push(Content::image(image.data.clone(), image.media_type.clone()));
 
-        // 计算图片大小
-        let estimated_size = (base64_len * 3) / 4;
-        let size_str = if estimated_size < 1024 {
-            format!("{} B", estimated_size)
-        } else if estimated_size < 1024 * 1024 {
-            format!("{:.1} KB", estimated_size as f64 / 1024.0)
-        } else {
-            format!("{:.1} MB", estimated_size as f64 / (1024.0 * 1024.0))
-        };
+            let base64_len = image.data.len();
+            let preview = if base64_len > 50 {
+                format!("{}...", &image.data[..50])
+            } else {
+                image.data.clone()
+            };
+            let estimated_size = (base64_len * 3) / 4;
+            let size_str = format_byte_size(estimated_size as u64);
+            let filename_info = image
+                .filename
+                .as_ref()
+                .map(|f| format!("\n文件名: {}", f))
+                .unwrap_or_default();
 
-        let filename_info = image
-            .filename
-            .as_ref()
-            .map(|f| format!("\n文件名: {}", f))
-            .unwrap_or_default();
-
-        let image_info = format!(
-            "=== 图片 {} ==={}\n类型: {}\n大小: {}\nBase64 预览: {}\n完整 Base64 长度: {} 字符",
-            index + 1,
-            filename_info,
-            image.media_type,
-            size_str,
-            preview,
-            base64_len
-        );
-        image_info_parts.push(image_info);
+            attachment_text_parts.push(format!(
+                "=== 图片 {} ==={}\n类型: {}\n大小: {}\nBase64 预览: {}\n完整 Base64 长度: {} 字符",
+                index + 1,
+                filename_info,
+                image.media_type,
+                size_str,
+                preview,
+                base64_len
+            ));
+        }
+        attachment_text_parts.push(format!(
+            "💡 注意：用户提供了 {} 张图片（旧格式 Base64 内联）。如果 AI 助手无法显示图片，图片数据已包含在上述 Base64 信息中。",
+            response.images.len()
+        ));
     }
 
     // 4. 合并所有文本内容
     let mut all_text_parts = text_parts;
-    all_text_parts.extend(image_info_parts);
-
-    // 5. 添加兼容性说明
-    if !response.images.is_empty() {
-        all_text_parts.push(format!(
-            "💡 注意：用户提供了 {} 张图片。如果 AI 助手无法显示图片，图片数据已包含在上述 Base64 信息中。",
-            response.images.len()
-        ));
-    }
+    all_text_parts.extend(attachment_text_parts);
 
     // 6. 将文本内容添加到结果中（图片后面）
     if !all_text_parts.is_empty() {

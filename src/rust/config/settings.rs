@@ -179,6 +179,11 @@ pub struct McpConfig {
     // Tavily AI 搜索配置
     /// Tavily API 密钥（必填，免费计划每月 1000 信用点）
     pub tavily_api_key: Option<String>,
+
+    // 附件工作目录配置
+    /// 弹窗中粘贴/拖入的附件保存目录（绝对路径）。
+    /// 为空时使用默认全局目录：<config_dir>/sanshu/workspace
+    pub attachment_workspace_dir: Option<String>,
 }
 
 // 自定义prompt结构
@@ -396,6 +401,8 @@ pub fn default_mcp_config() -> McpConfig {
         icon_cache_expiry_minutes: None, // 默认 30 分钟
         // Tavily AI 搜索配置
         tavily_api_key: None, // 用户需配置 API Key
+        // 附件工作目录：默认 None，运行时回退到 <config_dir>/sanshu/workspace
+        attachment_workspace_dir: None,
     }
 }
 

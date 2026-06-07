@@ -13,6 +13,13 @@ pub async fn setup_application(app_handle: &AppHandle) -> Result<(), String> {
         log_important!(warn, "加载配置失败: {}", e);
     }
 
+    // 中文说明：启动时自动清理附件工作目录中「超过 7 天」的旧文件（best-effort，失败不影响启动）
+    match crate::attachments::cleanup_expired() {
+        Ok(n) if n > 0 => log_important!(info, "已自动清理 {} 个过期附件（>7天）", n),
+        Ok(_) => {}
+        Err(e) => log_important!(warn, "自动清理过期附件失败: {}", e),
+    }
+
     // 初始化音频资源管理器
     if let Err(e) = initialize_audio_asset_manager(app_handle) {
         log_important!(warn, "初始化音频资源管理器失败: {}", e);

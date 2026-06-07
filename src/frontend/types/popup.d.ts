@@ -72,10 +72,26 @@ export interface ShortcutKey {
 export interface McpResponse {
   user_input: string | null
   selected_options: string[]
-  images: ImageAttachment[]
+  attachments: Attachment[]
   metadata: ResponseMetadata
 }
 
+// 提交响应中的附件（仅本地路径与元信息，不内联文件内容）
+export interface Attachment {
+  path: string
+  filename: string
+  kind: string // 'image' | 'file'
+  ext: string
+  media_type: string | null
+  size: number
+}
+
+// 弹窗内部使用的附件项：在 Attachment 基础上附带本地预览地址
+export interface AttachmentItem extends Attachment {
+  previewUrl?: string // data URL，仅图片用于本地预览，不会发送给 AI
+}
+
+// 旧版 base64 图片附件（保留以兼容历史数据）
 export interface ImageAttachment {
   data: string
   media_type: string

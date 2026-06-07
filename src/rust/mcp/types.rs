@@ -150,8 +150,34 @@ pub struct PopupRequest {
 pub struct McpResponse {
     pub user_input: Option<String>,
     pub selected_options: Vec<String>,
+    /// 新版附件：以本地绝对路径形式传递（图片/任意文件）
+    #[serde(default)]
+    pub attachments: Vec<Attachment>,
+    /// 旧版图片附件（base64 内联）。保留以兼容历史响应；新版前端不再发送。
+    #[serde(default)]
     pub images: Vec<ImageAttachment>,
     pub metadata: ResponseMetadata,
+}
+
+/// 新版附件：仅承载本地路径与元信息，不再内联文件内容。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Attachment {
+    /// 绝对路径（保存在附件工作目录中）
+    pub path: String,
+    /// 文件名（含后缀）
+    pub filename: String,
+    /// 类型："image" | "file"
+    #[serde(default)]
+    pub kind: Option<String>,
+    /// 后缀（小写，不含点）
+    #[serde(default)]
+    pub ext: Option<String>,
+    /// MIME 类型（可选）
+    #[serde(default)]
+    pub media_type: Option<String>,
+    /// 文件大小（字节，可选）
+    #[serde(default)]
+    pub size: Option<u64>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

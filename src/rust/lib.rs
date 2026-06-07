@@ -1,4 +1,5 @@
 pub mod app;
+pub mod attachments;
 pub mod config;
 pub mod constants;
 pub mod mcp;

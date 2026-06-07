@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { CustomPrompt, McpRequest } from '../../types/popup'
+import type { AttachmentItem, CustomPrompt, McpRequest } from '../../types/popup'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
@@ -24,10 +24,8 @@ interface Emits {
     rawUserInput: string
     conditionalContext: string
     selectedOptions: string[]
-    draggedImages: string[]
+    attachments: AttachmentItem[]
   }]
-  imageAdd: [image: string]
-  imageRemove: [index: number]
   enhance: []
   openMcpToolsTab: []
 }
@@ -43,7 +41,10 @@ const emit = defineEmits<Emits>()
 // 响应式数据
 const userInput = ref('')
 const selectedOptions = ref<string[]>([])
-const uploadedImages = ref<string[]>([])
+// 附件列表（图片/任意文件，均已落盘到工作目录，仅持有本地路径）
+const attachments = ref<AttachmentItem[]>([])
+// 拖拽悬停状态（用于显示拖入提示）
+const isDragHovering = ref(false)
 const textareaRef = ref<any | null>(null)
 
 // 自定义prompt相关状态
@@ -149,12 +150,12 @@ const hasOptions = computed(() => (props.request?.predefined_options?.length ?? 
 const canSubmit = computed(() => {
   const hasOptionsSelected = selectedOptions.value.length > 0
   const hasInputText = userInput.value.trim().length > 0
-  const hasImages = uploadedImages.value.length > 0
+  const hasAttachments = attachments.value.length > 0
 
   if (hasOptions.value) {
-    return hasOptionsSelected || hasInputText || hasImages
+    return hasOptionsSelected || hasInputText || hasAttachments
   }
-  return hasInputText || hasImages
+  return hasInputText || hasAttachments
 })
 const canEnhance = computed(() => userInput.value.trim().length > 0)
 
@@ -162,7 +163,7 @@ const canEnhance = computed(() => userInput.value.trim().length > 0)
 const statusText = computed(() => {
   // 检查是否有任何输入内容
   const hasInput = selectedOptions.value.length > 0
-    || uploadedImages.value.length > 0
+    || attachments.value.length > 0
     || userInput.value.trim().length > 0
 
   // 如果有任何输入内容，返回空字符串让 PopupActions 显示快捷键
@@ -251,7 +252,7 @@ function emitUpdate() {
     rawUserInput: userInput.value,
     conditionalContext: conditionalContent,
     selectedOptions: selectedOptions.value,
-    draggedImages: uploadedImages.value,
+    attachments: attachments.value,
   })
 }
 
@@ -280,8 +281,7 @@ function handleOptionToggle(option: string) {
   emitUpdate()
 }
 
-// 移除了所有拖拽和上传组件相关的代码
-
+// 处理粘贴：图片走「落盘 -> 取本地路径」流程，避免内联超长 base64
 function handleImagePaste(event: ClipboardEvent) {
   const items = event.clipboardData?.items
   let hasImage = false
@@ -292,7 +292,7 @@ function handleImagePaste(event: ClipboardEvent) {
         hasImage = true
         const file = item.getAsFile()
         if (file) {
-          handleImageFiles([file])
+          addPastedImage(file)
         }
       }
     }
@@ -315,43 +315,58 @@ function handleEnhanceClick() {
   }
 }
 
-async function handleImageFiles(files: FileList | File[]): Promise<void> {
-  console.log('=== 处理图片文件 ===')
-  console.log('文件数量:', files.length)
+// 粘贴图片：先转 base64，调用后端落盘到工作目录，拿到本地绝对路径
+async function addPastedImage(file: File): Promise<void> {
+  try {
+    const dataUrl = await fileToBase64(file)
+    const base64 = dataUrl.includes(',') ? dataUrl.split(',')[1] : dataUrl
 
-  for (const file of files) {
-    console.log('处理文件:', file.name, '类型:', file.type, '大小:', file.size)
+    const info = await invoke<AttachmentItem>('save_pasted_attachment', {
+      dataBase64: base64,
+      filename: file.name || null,
+    })
 
-    if (file.type.startsWith('image/')) {
-      try {
-        console.log('开始转换为 Base64...')
-        const base64 = await fileToBase64(file)
-        console.log('Base64转换成功，长度:', base64.length)
-
-        // 检查是否已存在相同图片，避免重复添加
-        if (!uploadedImages.value.includes(base64)) {
-          uploadedImages.value.push(base64)
-          console.log('图片已添加到数组，当前数量:', uploadedImages.value.length)
-          message.success(`图片 ${file.name} 已添加`)
-          emitUpdate()
-        }
-        else {
-          console.log('图片已存在，跳过:', file.name)
-          message.warning(`图片 ${file.name} 已存在`)
-        }
-      }
-      catch (error) {
-        console.error('图片处理失败:', error)
-        message.error(`图片 ${file.name} 处理失败`)
-        throw error
-      }
-    }
-    else {
-      console.log('跳过非图片文件:', file.type)
-    }
+    // 复用已有的 data URL 作为本地预览，避免再次读盘
+    attachments.value.push({ ...info, previewUrl: dataUrl })
+    message.success(`图片已添加：${info.filename}`)
+    emitUpdate()
   }
+  catch (error) {
+    console.error('粘贴图片保存失败:', error)
+    message.error(`图片保存失败：${String(error)}`)
+  }
+}
 
-  console.log('=== 图片文件处理完成 ===')
+// 拖入文件：Tauri 拖拽事件提供真实磁盘路径，后端复制到工作目录
+async function addDroppedPaths(paths: string[]): Promise<void> {
+  try {
+    const infos = await invoke<AttachmentItem[]>('save_dropped_attachments', { paths })
+    if (!infos || infos.length === 0) {
+      message.warning('未能添加拖入的文件')
+      return
+    }
+
+    for (const info of infos) {
+      const item: AttachmentItem = { ...info }
+      // 图片读取一份 data URL 用于本地预览（非图片不预览）
+      if (item.kind === 'image') {
+        try {
+          item.previewUrl = await invoke<string>('read_attachment_preview', { path: item.path })
+        }
+        catch (e) {
+          console.warn('读取图片预览失败:', e)
+        }
+      }
+      attachments.value.push(item)
+    }
+
+    message.success(`已添加 ${infos.length} 个文件`)
+    emitUpdate()
+  }
+  catch (error) {
+    console.error('拖入文件保存失败:', error)
+    message.error(`文件保存失败：${String(error)}`)
+  }
 }
 
 function fileToBase64(file: File): Promise<string> {
@@ -363,13 +378,40 @@ function fileToBase64(file: File): Promise<string> {
   })
 }
 
-function removeImage(index: number) {
-  uploadedImages.value.splice(index, 1)
-  emit('imageRemove', index)
+// 移除单个附件（仅从列表移除，工作目录文件保留，可在设置中清理）
+function removeAttachment(index: number) {
+  attachments.value.splice(index, 1)
   emitUpdate()
 }
 
-// 移除自定义图片预览功能，改用 Naive UI 的内置预览
+// 格式化文件大小用于展示
+function formatSize(bytes: number): string {
+  if (bytes < 1024)
+    return `${bytes} B`
+  if (bytes < 1024 * 1024)
+    return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+// 根据后缀返回文件类型图标
+function getFileIcon(ext: string): string {
+  const e = (ext || '').toLowerCase()
+  if (/(zip|rar|7z|tar|gz)/.test(e))
+    return 'i-carbon-document-zip'
+  if (/(pdf)/.test(e))
+    return 'i-carbon-document-pdf'
+  if (/(doc|docx)/.test(e))
+    return 'i-carbon-document'
+  if (/(xls|xlsx|csv)/.test(e))
+    return 'i-carbon-document-tasks'
+  if (/(mp4|mov|avi|mkv|webm)/.test(e))
+    return 'i-carbon-video'
+  if (/(mp3|wav|flac|aac|ogg)/.test(e))
+    return 'i-carbon-music'
+  if (/(js|ts|tsx|jsx|json|rs|py|go|java|c|cpp|h|vue|html|css|md|sh)/.test(e))
+    return 'i-carbon-code'
+  return 'i-carbon-document-blank'
+}
 
 // 加载自定义prompt配置
 async function loadCustomPrompts() {
@@ -613,6 +655,34 @@ watch(userInput, () => {
 // 事件监听器引用
 let unlistenCustomPromptUpdate: (() => void) | null = null
 let unlistenWindowMove: (() => void) | null = null
+let unlistenDragDrop: (() => void) | null = null
+
+// 设置文件拖拽监听（Tauri webview 拖拽事件可拿到真实磁盘路径）
+async function setupDragDropListener() {
+  try {
+    const webview = getCurrentWebviewWindow()
+    unlistenDragDrop = await webview.onDragDropEvent((event) => {
+      const payload = event.payload as any
+      if (payload?.type === 'drop') {
+        isDragHovering.value = false
+        const paths: string[] = Array.isArray(payload.paths) ? payload.paths : []
+        if (paths.length > 0)
+          addDroppedPaths(paths)
+      }
+      else if (payload?.type === 'over' || payload?.type === 'enter') {
+        isDragHovering.value = true
+      }
+      else {
+        // leave / cancel
+        isDragHovering.value = false
+      }
+    })
+    console.log('文件拖拽监听器已设置')
+  }
+  catch (error) {
+    console.error('设置文件拖拽监听器失败:', error)
+  }
+}
 
 // 修复输入法候选框位置的函数
 function fixIMEPosition() {
@@ -665,6 +735,8 @@ onMounted(async () => {
   })
   // 设置窗口移动监听器
   setupWindowMoveListener()
+  // 设置文件拖拽监听器
+  setupDragDropListener()
 })
 
 onUnmounted(() => {
@@ -676,6 +748,10 @@ onUnmounted(() => {
   if (unlistenWindowMove) {
     unlistenWindowMove()
   }
+  // 清理文件拖拽监听器
+  if (unlistenDragDrop) {
+    unlistenDragDrop()
+  }
 
   // 停止拖拽功能
   stop()
@@ -685,20 +761,20 @@ onUnmounted(() => {
 function reset() {
   userInput.value = ''
   selectedOptions.value = []
-  uploadedImages.value = []
+  attachments.value = []
   emitUpdate()
 }
 
 // 更新数据（用于外部同步）
-function updateData(data: { userInput?: string, selectedOptions?: string[], draggedImages?: string[] }) {
+function updateData(data: { userInput?: string, selectedOptions?: string[], attachments?: AttachmentItem[] }) {
   if (data.userInput !== undefined) {
     userInput.value = data.userInput
   }
   if (data.selectedOptions !== undefined) {
     selectedOptions.value = data.selectedOptions
   }
-  if (data.draggedImages !== undefined) {
-    uploadedImages.value = data.draggedImages
+  if (data.attachments !== undefined) {
+    attachments.value = data.attachments
   }
 
   emitUpdate()
@@ -756,28 +832,43 @@ defineExpose({
       </n-space>
     </div>
 
-    <!-- 图片预览区域 -->
-    <div v-if="!loading && uploadedImages.length > 0" class="space-y-3">
+    <!-- 附件预览区域（图片缩略图 + 任意文件卡片） -->
+    <div v-if="!loading && attachments.length > 0" class="space-y-3">
       <h4 class="text-sm font-medium text-white">
-        已添加的图片 ({{ uploadedImages.length }})
+        已添加的附件 ({{ attachments.length }})
       </h4>
 
-      <!-- 使用 Naive UI 的图片组件，支持预览和放大 -->
       <n-image-group>
         <div class="flex flex-wrap gap-3">
           <div
-            v-for="(image, index) in uploadedImages"
-            :key="`image-${index}`"
+            v-for="(att, index) in attachments"
+            :key="`att-${index}`"
             class="relative"
           >
-            <!-- 使用 n-image 组件，启用预览功能 -->
+            <!-- 图片：缩略图预览（点击放大） -->
             <n-image
-              :src="image"
+              v-if="att.kind === 'image' && att.previewUrl"
+              :src="att.previewUrl"
               width="100"
               height="100"
               object-fit="cover"
               class="rounded-lg border-2 border-gray-300 hover:border-primary-400 transition-all duration-200 cursor-pointer"
             />
+
+            <!-- 其他文件：图标 + 文件名 + 后缀/大小 -->
+            <div
+              v-else
+              :title="att.filename"
+              class="w-[100px] h-[100px] rounded-lg border-2 border-gray-600 bg-container-secondary flex flex-col items-center justify-center gap-1 px-2 text-center"
+            >
+              <div :class="getFileIcon(att.ext)" class="w-7 h-7 text-primary-400" />
+              <div class="text-[11px] text-on-surface truncate w-full leading-tight">
+                {{ att.filename }}
+              </div>
+              <div class="text-[10px] text-on-surface-secondary uppercase">
+                {{ att.ext || 'file' }} · {{ formatSize(att.size) }}
+              </div>
+            </div>
 
             <!-- 删除按钮 -->
             <n-button
@@ -785,7 +876,7 @@ defineExpose({
               size="tiny"
               type="error"
               circle
-              @click="removeImage(index)"
+              @click="removeAttachment(index)"
             >
               <template #icon>
                 <div class="i-carbon-close w-3 h-3" />
@@ -946,10 +1037,14 @@ defineExpose({
           </div>
         </div>
 
-        <!-- 图片提示区域 -->
-        <div v-if="uploadedImages.length === 0" class="text-center">
-          <div class="text-xs text-on-surface-secondary">
-            💡 提示：可以在输入框中粘贴图片 ({{ pasteShortcut }})
+        <!-- 附件提示区域 -->
+        <div v-if="attachments.length === 0" class="text-center">
+          <div
+            class="text-xs transition-colors" :class="[
+              isDragHovering ? 'text-primary-400 font-medium' : 'text-on-surface-secondary',
+            ]"
+          >
+            {{ isDragHovering ? '📎 松开即可添加文件' : `💡 提示：可粘贴图片 (${pasteShortcut})，或将任意文件拖入窗口` }}
           </div>
         </div>
 

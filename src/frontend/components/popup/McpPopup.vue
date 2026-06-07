@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { McpRequest } from '../../types/popup'
+import type { AttachmentItem, McpRequest } from '../../types/popup'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { useDialog, useMessage } from 'naive-ui'
@@ -60,7 +60,7 @@ interface PopupInputUpdatePayload {
   rawUserInput: string
   conditionalContext: string
   selectedOptions: string[]
-  draggedImages: string[]
+  attachments: AttachmentItem[]
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -110,7 +110,7 @@ const selectedOptions = ref<string[]>([])
 const userInput = ref('')
 const rawUserInput = ref('')
 const conditionalContext = ref('')
-const draggedImages = ref<string[]>([])
+const attachments = ref<AttachmentItem[]>([])
 const inputRef = ref()
 
 // 继续回复配置
@@ -146,9 +146,9 @@ const isVisible = computed(() => !!props.request)
 const hasOptions = computed(() => (props.request?.predefined_options?.length ?? 0) > 0)
 const canSubmit = computed(() => {
   if (hasOptions.value) {
-    return selectedOptions.value.length > 0 || userInput.value.trim().length > 0 || draggedImages.value.length > 0
+    return selectedOptions.value.length > 0 || userInput.value.trim().length > 0 || attachments.value.length > 0
   }
-  return userInput.value.trim().length > 0 || draggedImages.value.length > 0
+  return userInput.value.trim().length > 0 || attachments.value.length > 0
 })
 // 中文注释：本地增强模式始终可用，不再依赖外部 API 配置
 const localEnhanceEnabled = true
@@ -326,7 +326,7 @@ function resetForm() {
   userInput.value = ''
   rawUserInput.value = ''
   conditionalContext.value = ''
-  draggedImages.value = []
+  attachments.value = []
   submitting.value = false
 }
 
@@ -340,8 +340,8 @@ function buildUserReplySummary() {
   if (selectedOptions.value.length > 0) {
     parts.push(`选项: ${selectedOptions.value.join(', ')}`)
   }
-  if (draggedImages.value.length > 0) {
-    parts.push(`图片数量: ${draggedImages.value.length}`)
+  if (attachments.value.length > 0) {
+    parts.push(`附件数量: ${attachments.value.length}`)
   }
   if (parts.length === 0) {
     parts.push('用户输入: 用户确认继续')
@@ -380,14 +380,17 @@ async function handleSubmit() {
   submitting.value = true
 
   try {
-    // 使用新的结构化数据格式
+    // 使用新的结构化数据格式：附件以本地路径形式传递（不再内联 base64）
     const response = {
       user_input: userInput.value.trim() || null,
       selected_options: selectedOptions.value,
-      images: draggedImages.value.map(imageData => ({
-        data: imageData.split(',')[1], // 移除 data:image/png;base64, 前缀
-        media_type: 'image/png',
-        filename: null,
+      attachments: attachments.value.map(att => ({
+        path: att.path,
+        filename: att.filename,
+        kind: att.kind,
+        ext: att.ext,
+        media_type: att.media_type ?? null,
+        size: att.size,
       })),
       metadata: {
         timestamp: new Date().toISOString(),
@@ -397,7 +400,7 @@ async function handleSubmit() {
     }
 
     // 如果没有任何有效内容，设置默认用户输入
-    if (!response.user_input && response.selected_options.length === 0 && response.images.length === 0) {
+    if (!response.user_input && response.selected_options.length === 0 && response.attachments.length === 0) {
       response.user_input = '用户确认继续'
     }
 
@@ -433,17 +436,7 @@ function handleInputUpdate(data: PopupInputUpdatePayload) {
   rawUserInput.value = data.rawUserInput
   conditionalContext.value = data.conditionalContext
   selectedOptions.value = data.selectedOptions
-  draggedImages.value = data.draggedImages
-}
-
-// 处理图片添加 - 移除重复逻辑，避免双重添加
-function handleImageAdd(_image: string) {
-  // 这个函数现在只是为了保持接口兼容性，实际添加在PopupInput中完成
-}
-
-// 处理图片移除
-function handleImageRemove(index: number) {
-  draggedImages.value.splice(index, 1)
+  attachments.value = data.attachments
 }
 
 // 处理继续按钮点击
@@ -458,7 +451,7 @@ async function handleContinue() {
     const response = {
       user_input: continuePrompt.value,
       selected_options: [],
-      images: [],
+      attachments: [],
       metadata: {
         timestamp: new Date().toISOString(),
         request_id: props.request?.id || null,
@@ -513,7 +506,7 @@ async function handleEnhance() {
     const response = {
       user_input: buildLocalEnhancePrompt(rawInput),
       selected_options: [],
-      images: [],
+      attachments: [],
       metadata: {
         timestamp: new Date().toISOString(),
         request_id: props.request?.id || null,
@@ -811,7 +804,7 @@ function handleOpenIndexStatus() {
         <PopupInput
           ref="inputRef" :request="request" :loading="loading" :submitting="submitting"
           :enhance-enabled="localEnhanceEnabled"
-          @update="handleInputUpdate" @image-add="handleImageAdd" @image-remove="handleImageRemove"
+          @update="handleInputUpdate"
           @enhance="handleEnhance"
           @open-mcp-tools-tab="handleOpenMcpToolsTab"
         />

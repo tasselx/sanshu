@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { useMessage } from 'naive-ui'
 import { onMounted, onUnmounted, ref } from 'vue'
+import AttachmentSettings from '../settings/AttachmentSettings.vue'
 import AudioSettings from '../settings/AudioSettings.vue'
 import CustomPromptSettings from '../settings/CustomPromptSettings.vue'
 import FontSettings from '../settings/FontSettings.vue'
@@ -290,6 +291,30 @@ function handleWindowSizeUpdate(size: { width: number, height: number, fixed: bo
         </template>
         <div class="setting-content">
           <CustomPromptSettings />
+        </div>
+      </n-collapse-item>
+
+      <!-- 附件工作目录 -->
+      <n-collapse-item name="attachment">
+        <template #header>
+          <div class="flex items-center justify-between w-full">
+            <div class="flex items-center">
+              <div class="w-10 h-10 rounded-lg bg-pink-100 dark:bg-pink-900 flex items-center justify-center mr-4">
+                <div class="i-carbon-folder-details text-lg text-pink-600 dark:text-pink-400" />
+              </div>
+              <div>
+                <div class="text-lg font-medium tracking-tight mb-1">
+                  附件工作目录
+                </div>
+                <div class="text-sm opacity-60 font-normal">
+                  管理粘贴/拖入的图片与文件，查看和清理
+                </div>
+              </div>
+            </div>
+          </div>
+        </template>
+        <div class="setting-content">
+          <AttachmentSettings />
         </div>
       </n-collapse-item>
 
