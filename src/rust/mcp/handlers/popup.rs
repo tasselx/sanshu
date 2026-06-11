@@ -129,6 +129,15 @@ pub const MAX_POPUP_RECONNECTS: u32 = 5;
 /// 轮询 GUI 进程是否结束的间隔。
 const POPUP_POLL_INTERVAL: Duration = Duration::from_millis(200);
 
+/// 用户回复超长告警阈值（字节）。
+///
+/// 中文说明（2026-06-11 P1）：实证曾有用户在弹窗粘贴 10.1MB 文本（整份 spindump），
+/// 原样回传模型 ≈ 百万级 token（单条 3700 万 token 会话的底层推手之一）。
+/// 超过阈值时：server 打 warn 日志，zhi 返回额外附「超长提示」内容块引导 AI 不复述全文。
+/// 仅告警与提示、**不截断**——截断用户输入有损语义，客户端侧另有 truncate-mcp-output
+/// hook（50K 字符）可兜底。阈值与该 hook 对齐。
+pub const RESPONSE_LEN_WARN_THRESHOLD: usize = 50_000;
+
 /// 一个「在飞」的弹窗：GUI 子进程已启动、尚未拿到用户响应。
 ///
 /// 中文说明：stdout/stderr 各用一个后台线程持续读取到 EOF，避免响应（可能含 base64 图片，
@@ -408,13 +417,25 @@ fn do_poll_loop(key: &str, pending: PendingPopup, wait: Duration, abort_flag: Op
     }
 }
 
-/// 注册表关联键：用 workspace 绝对路径；缺失时回退到 request_id。
+/// 注册表关联键：workspace 绝对路径 + 弹窗内容指纹；workspace 缺失时回退到 request_id。
+///
+/// 中文说明（2026-06-11 修复·跨会话串弹窗）：旧版仅用 workspace 作键——同一 workspace
+/// 开两个会话时，B 会话的 zhi 会「重连」到 A 会话仍在等待的弹窗，用户回答的是 A 的问题、
+/// 答案却被 B 拿走（Done 错配），与同日 stop-hook 跨窗口误拦问题同构。现把 brief 内容
+/// 指纹并入键：同一问题的保活重连（参数不变）仍精确复用弹窗；不同问题（哪怕同 workspace）
+/// 各开各的弹窗，互不窜扰。指纹仅在本进程内存注册表中使用，无需跨进程稳定。
+/// 边界：同一会话重开时若改写 brief（如附注「上次弹窗超时」），指纹变化会使旧弹窗不被
+/// 复用而残留——由 reap + 孤儿回复持久化兜底，用户提交的内容不会丢。
 fn popup_key(request: &PopupRequest) -> String {
-    request
+    use std::hash::{Hash, Hasher};
+    let base = request
         .project_root_path
         .clone()
         .filter(|p| !p.trim().is_empty())
-        .unwrap_or_else(|| request.id.clone())
+        .unwrap_or_else(|| request.id.clone());
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    request.message.hash(&mut hasher);
+    format!("{}#{:016x}", base, hasher.finish())
 }
 
 /// 回收已遗弃的弹窗条目：GUI 进程已退出（stdout 已读到 EOF）但始终没人重连收集。
@@ -441,20 +462,127 @@ fn reap_abandoned_popups(map: &mut HashMap<String, PendingPopup>, skip: &str) {
                 started,
                 reconnects,
             } = p;
-            let _ = child.wait();
-            let _ = stdout_reader.join();
+            let status = child.wait();
+            let stdout = stdout_reader.join().ok().and_then(|r| r.ok()).unwrap_or_default();
             let _ = stderr_reader.join();
             let _ = fs::remove_file(&temp_file);
+
+            // 中文说明（2026-06-11 修复·黑洞回复）：旧版在这里直接丢弃 stdout——
+            // 挂起/断流后用户才在弹窗里提交的回答会静默消失（UI 还显示提交成功）。
+            // 现把有效回复持久化到 ~/.sanshu/orphan_replies/，下次同 workspace 的 zhi
+            // 完成时会附带提示，AI/用户可按路径取回。
+            let exited_ok = status.map(|s| s.success()).unwrap_or(false);
+            let response_text = String::from_utf8_lossy(&stdout);
+            let response_text = response_text.trim();
+            if exited_ok && !response_text.is_empty() {
+                save_orphan_reply(&k, &request_id, response_text);
+            }
+
             log_important!(
                 info,
-                "[popup] 已回收遗弃弹窗: key={}, request_id={}, 存活={}s, 重连次数={}（对话很可能已被新开 request 打断，旧弹窗无人重连）",
+                "[popup] 已回收遗弃弹窗: key={}, request_id={}, 存活={}s, 重连次数={}, 有回复待送达={}（对话很可能已被新开 request 打断，旧弹窗无人重连）",
                 k,
                 request_id,
                 started.elapsed().as_secs(),
-                reconnects
+                reconnects,
+                exited_ok && !response_text.is_empty()
             );
         }
     }
+}
+
+/// 孤儿回复持久化目录：~/.sanshu/orphan_replies/
+fn orphan_replies_dir() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".sanshu")
+        .join("orphan_replies")
+}
+
+/// 持久化「无人轮询时用户才提交」的弹窗回复，避免静默丢失。
+fn save_orphan_reply(key: &str, request_id: &str, response: &str) {
+    let dir = orphan_replies_dir();
+    if fs::create_dir_all(&dir).is_err() {
+        log_important!(warn, "[popup] 孤儿回复目录创建失败: key={}", key);
+        return;
+    }
+    let file = dir.join(format!("{}.json", request_id));
+    let payload = serde_json::json!({
+        "key": key,
+        "request_id": request_id,
+        "saved_at": chrono::Utc::now().to_rfc3339(),
+        "response": response,
+    });
+    let write_result = serde_json::to_string_pretty(&payload).map(|s| fs::write(&file, s));
+    match write_result {
+        Ok(Ok(())) => log_important!(
+            warn,
+            "[popup] 用户回复无人接收，已持久化为孤儿回复: file={}, key={}, response_len={}",
+            file.display(),
+            key,
+            response.len()
+        ),
+        _ => log_important!(warn, "[popup] 孤儿回复持久化失败: key={}", key),
+    }
+}
+
+/// 取走 workspace 下「未送达孤儿回复」的一次性提示文本。
+///
+/// 中文说明（2026-06-11 新增）：在下一次同 workspace 的 zhi 正常完成时调用；
+/// 命中的文件改名为 `.seen.json` 防止重复提示，文件本体保留供 AI/用户按路径读取。
+pub fn take_orphan_reply_notice(workspace: &str) -> Option<String> {
+    if workspace.trim().is_empty() {
+        return None;
+    }
+    let dir = orphan_replies_dir();
+    let read_dir = fs::read_dir(&dir).ok()?;
+
+    let mut hits: Vec<PathBuf> = Vec::new();
+    for entry in read_dir.flatten() {
+        let path = entry.path();
+        let name = match path.file_name().and_then(|n| n.to_str()) {
+            Some(n) => n.to_string(),
+            None => continue,
+        };
+        if !name.ends_with(".json") || name.ends_with(".seen.json") {
+            continue;
+        }
+        // key 形如 "<workspace>#<指纹>"，按前缀匹配归属
+        let belongs = fs::read_to_string(&path)
+            .ok()
+            .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok())
+            .and_then(|v| {
+                v.get("key")
+                    .and_then(|k| k.as_str())
+                    .map(|k| k.starts_with(workspace))
+            })
+            .unwrap_or(false);
+        if belongs {
+            hits.push(path);
+        }
+    }
+    if hits.is_empty() {
+        return None;
+    }
+
+    let mut listed: Vec<String> = Vec::new();
+    for path in &hits {
+        let seen = path.with_extension("seen.json");
+        let final_path = if fs::rename(path, &seen).is_ok() { seen } else { path.clone() };
+        listed.push(final_path.display().to_string());
+    }
+    log_important!(
+        info,
+        "[popup] 发现 {} 条未送达的孤儿回复，已随本次 zhi 返回提示: workspace={}",
+        listed.len(),
+        workspace
+    );
+    Some(format!(
+        "ℹ️ 另有 {} 条历史弹窗回复未送达（用户在 AI 停止轮询后才提交，与本次提问无关）。\
+         如可能与当前任务相关，可读取以下文件查看：\n{}",
+        listed.len(),
+        listed.join("\n")
+    ))
 }
 
 /// 启动一个 GUI 弹窗子进程，并起后台线程持续读取 stdout/stderr。
@@ -546,6 +674,16 @@ fn collect_response(
             stdout.len(),
             elapsed_ms
         );
+        // 中文说明（2026-06-11 P1）：巨型回复告警——见 RESPONSE_LEN_WARN_THRESHOLD 注释
+        if response.len() > RESPONSE_LEN_WARN_THRESHOLD {
+            log_important!(
+                warn,
+                "[popup] 用户回复超长: request_id={}, len={}（阈值={}）——将原样回传模型，token 消耗巨大，疑似大段粘贴",
+                request_id,
+                response.len(),
+                RESPONSE_LEN_WARN_THRESHOLD
+            );
+        }
         if response.is_empty() {
             Ok("用户取消了操作".to_string())
         } else {

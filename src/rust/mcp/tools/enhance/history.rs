@@ -304,9 +304,15 @@ impl ChatHistoryManager {
         // 使用 safe_truncate 确保在 UTF-8 字符边界安全截断，避免多字节字符被截断导致 panic
         let ai_summary = safe_truncate(ai_response, 500);
 
+        // 中文说明（2026-06-11 P1，与 zhi_history MAX_FIELD_CHARS 同源）：user_input 此前
+        // 不截断全量落盘——弹窗回复（source=popup）里的大段粘贴（实测曾达 10MB）会让
+        // 历史文件膨胀，且 enhance 会把历史作为上下文送 API。历史定位是摘要回看，
+        // 与 ai 摘要同样截断即可（4000 字符，保留换行）。
+        let user_input_saved = safe_truncate(user_input, 4000);
+
         let entry = ChatEntry {
             id: id.clone(),
-            user_input: user_input.to_string(),
+            user_input: user_input_saved,
             ai_response_summary: ai_summary,
             timestamp: Utc::now(),
             source: source.to_string(),

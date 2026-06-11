@@ -63,7 +63,17 @@ impl IconTool {
     ///
     /// 调用 GUI 进程，让用户在可视化界面中选择和保存图标
     pub async fn tu(request: TuRequest) -> Result<CallToolResult, McpError> {
-        match create_icon_popup(&request) {
+        // 中文说明（2026-06-11 P1）：create_icon_popup 是同步阻塞调用——cmd.output() 会一直
+        // 等到用户关闭图标弹窗（可能数分钟）。此前直接在 async 上下文里调用会占死一个
+        // tokio worker 线程，与 zhi 弹窗的处理方式（spawn_blocking）不一致，故同样放入
+        // 阻塞线程池执行。
+        let popup_outcome =
+            tokio::task::spawn_blocking(move || create_icon_popup(&request)).await;
+        let popup_result = match popup_outcome {
+            Ok(result) => result,
+            Err(join_err) => Err(anyhow::anyhow!("图标弹窗任务异常: {}", join_err)),
+        };
+        match popup_result {
             Ok(response) => {
                 if response.cancelled {
                     Ok(CallToolResult::success(vec![rmcp::model::Content::text(

@@ -12,7 +12,10 @@ use rmcp::model::{
 use rmcp::service::Peer;
 use rmcp::RoleServer;
 
-use crate::mcp::handlers::{parse_mcp_response, poll_or_start_popup, PopupPoll, POPUP_POLL_WINDOW};
+use crate::mcp::handlers::{
+    parse_mcp_response, poll_or_start_popup, take_orphan_reply_notice, PopupPoll,
+    POPUP_POLL_WINDOW, RESPONSE_LEN_WARN_THRESHOLD,
+};
 use crate::mcp::utils::safe_truncate_clean;
 use crate::mcp::utils::{generate_request_id, normalize_zhi_choices};
 use crate::mcp::{PopupRequest, ZhiRequest};
@@ -130,6 +133,10 @@ impl InteractionTool {
         // 中文说明：MCP 对外字段采用中性命名，内部仍映射到既有弹窗协议以保持 UI 链路稳定。
         let choices = normalize_zhi_choices(request.choices);
 
+        // 中文说明（2026-06-11）：workspace 随后会移交给 popup_request，先留一份用于
+        // Done 时检索本 workspace 的「孤儿回复」（无人轮询时用户才提交的历史回答）。
+        let workspace_for_notice = request.workspace.clone();
+
         let popup_request = PopupRequest {
             id: request_id.clone(),
             message: request.brief,
@@ -246,7 +253,20 @@ impl InteractionTool {
                     response.len()
                 );
                 // 解析响应内容，支持文本和图片
-                let content = parse_mcp_response(&response)?;
+                let mut content = parse_mcp_response(&response)?;
+                // 中文说明（2026-06-11 黑洞回复修复）：若本 workspace 存在「AI 停止轮询后
+                // 用户才提交」的孤儿回复，附带一次性提示（含文件路径），由 AI 决定是否取回。
+                if let Some(notice) = take_orphan_reply_notice(&workspace_for_notice) {
+                    content.push(Content::text(notice));
+                }
+                // 中文说明（2026-06-11 P1）：巨型回复提示——引导 AI 只引用关键片段、
+                // 不复述全文，避免大段粘贴内容在后续对话中再翻倍消耗 token。
+                if response.len() > RESPONSE_LEN_WARN_THRESHOLD {
+                    content.push(Content::text(format!(
+                        "⚠️ 本次用户回复约 {} 字符（疑似大段粘贴内容）。后续对话请只引用与任务相关的关键片段，不要复述全文，以节省 token。",
+                        response.len()
+                    )));
+                }
                 Ok(CallToolResult::success(content))
             }
             Ok(PopupPoll::Pending) => {

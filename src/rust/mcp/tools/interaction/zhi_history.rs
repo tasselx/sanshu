@@ -53,6 +53,30 @@ impl ZhiHistoryManager {
     /// 最大历史条数默认值
     const DEFAULT_MAX_ENTRIES: usize = 20;
 
+    /// 单字段（prompt / user_reply）最大保存字符数。
+    ///
+    /// 中文说明（2026-06-11 实证修复）：曾出现单条 user_reply 达 10.1MB（用户在弹窗里
+    /// 粘贴整份 spindump 报告），导致单个历史文件膨胀到 9.8MB——而 add_entry 每次都要
+    /// 整文件 load+重写，enhance 的历史摘要也会加载它。本模块定位是「仅保存最小必要信息」
+    /// （见文件头注释），完整回复本就已实时返回给模型，历史无需复制全文，故写入前截断。
+    const MAX_FIELD_CHARS: usize = 4000;
+
+    /// 保留换行的安全截断：超长时取前 max_chars 个字符并附截断标记。
+    ///
+    /// 中文说明：不复用 utils::safe_truncate_clean——它会把换行压成空格，
+    /// 历史里的 markdown 结构（标题/列表）需要保留以便回看。
+    fn truncate_field(text: &str, max_chars: usize) -> String {
+        let total = text.chars().count();
+        if total <= max_chars {
+            return text.to_string();
+        }
+        let truncated: String = text.chars().take(max_chars).collect();
+        format!(
+            "{}\n…[已截断：原文 {} 字符，仅保留前 {} 字符]",
+            truncated, total, max_chars
+        )
+    }
+
     /// 创建 zhi 历史管理器
     pub fn new(project_path: &str) -> Result<Self> {
         let project_hash = Self::hash_path(project_path);
@@ -148,11 +172,12 @@ impl ZhiHistoryManager {
             fastrand::u32(..)
         );
 
+        // 中文说明：写入前截断超长字段，防止单条巨型粘贴撑爆历史文件（实证见 MAX_FIELD_CHARS 注释）
         let entry = ZhiHistoryEntry {
             id: id.clone(),
             request_id: request_id.to_string(),
-            prompt: prompt.to_string(),
-            user_reply: user_reply.to_string(),
+            prompt: Self::truncate_field(prompt, Self::MAX_FIELD_CHARS),
+            user_reply: Self::truncate_field(user_reply, Self::MAX_FIELD_CHARS),
             timestamp: Utc::now(),
             source: source.to_string(),
         };

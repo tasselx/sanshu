@@ -182,6 +182,10 @@
 - **交互式决策**：通过 MCP 弹窗主动询问用户意图，避免 AI 自作主张
 - **多模态输入**：支持文本、图片、预定义选项等多种交互方式
 - **状态可视化**：实时展示后端任务状态（如索引进度），让协作更加透明
+- **多会话隔离**（2026-06）：弹窗按「workspace + 内容指纹」键控，同一项目开多个会话不再互相串台抢答
+- **孤儿回复找回**（2026-06）：AI 停止轮询后用户才提交的回复会持久化到 `~/.sanshu/orphan_replies/`，下次 zhi 调用自动附带提示，不再静默丢失
+- **防 token 膨胀**（2026-06）：交互历史按字段截断落盘（4000 字符）；用户回复超 50K 字符时附「只引用关键片段」提示，避免大段粘贴在后续对话中反复计费
+- **Cursor Hooks 配套**：`scripts/cursor-hooks/` 提供按会话隔离的 stop/postToolUse hook（防 AI 提前收尾、防跨窗口误拦），安装方式见该目录 README
 
 <div align="center">
   <img src="screenshots/popup.png" alt="Zhi Popup Interaction" width="700" />
