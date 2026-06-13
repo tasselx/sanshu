@@ -307,6 +307,33 @@ export const MCP_TOOLS_CONFIG: ToolPromptConfig[] = [
       darkIconBg: 'dark:bg-orange-900',
     },
   },
+
+  // exa - 神经语义搜索与网页正文获取
+  {
+    id: 'exa',
+    name: 'Exa AI 搜索',
+    description: 'Exa 神经语义搜索与网页正文获取：发现网页、论文、GitHub 仓库',
+    prompt: {
+      base: '',
+      whenToUse: [
+        '需要语义化发现网页、论文、GitHub 仓库等内容时',
+        '需要按 URL 获取网页正文时',
+      ],
+      howToUse: [
+        '搜索：传入 query，默认返回结果正文（max_characters 控制截断长度）',
+        '提取：action="contents" + urls 参数，按 URL 获取网页正文',
+        '可用 category（github/news/research paper 等）与 search_type 精准定向',
+        '与 tavily 结合使用：实时资讯用 tavily，语义发现/正文提取用 exa，关键信息交叉验证',
+      ],
+    },
+    ui: {
+      enabled: false, // 默认不启用：需要注册 Exa 账号获取 API Key（新账号赠送 $10 额度）
+      canDisable: true,
+      icon: 'i-carbon-search text-lg text-blue-600 dark:text-blue-400',
+      iconBg: 'bg-blue-100',
+      darkIconBg: 'dark:bg-blue-900',
+    },
+  },
 ]
 
 // ----------------------------------------------------------------------------

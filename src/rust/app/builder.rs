@@ -120,6 +120,10 @@ pub fn build_tauri_app() -> Builder<tauri::Wry> {
             crate::mcp::tools::tavily::commands::get_tavily_config,
             crate::mcp::tools::tavily::commands::save_tavily_config,
             crate::mcp::tools::tavily::commands::test_tavily_connection,
+            // exa 命令
+            crate::mcp::tools::exa::commands::get_exa_config,
+            crate::mcp::tools::exa::commands::save_exa_config,
+            crate::mcp::tools::exa::commands::test_exa_connection,
             // 自定义prompt命令
             get_custom_prompt_config,
             add_custom_prompt,

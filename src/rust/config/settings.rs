@@ -180,6 +180,10 @@ pub struct McpConfig {
     /// Tavily API 密钥（必填，免费计划每月 1000 信用点）
     pub tavily_api_key: Option<String>,
 
+    // Exa AI 搜索配置
+    /// Exa API 密钥（必填，新注册账号赠送 $10 额度）
+    pub exa_api_key: Option<String>,
+
     // 附件工作目录配置
     /// 弹窗中粘贴/拖入的附件保存目录（绝对路径）。
     /// 为空时使用默认全局目录：<config_dir>/sanshu/workspace
@@ -401,6 +405,8 @@ pub fn default_mcp_config() -> McpConfig {
         icon_cache_expiry_minutes: None, // 默认 30 分钟
         // Tavily AI 搜索配置
         tavily_api_key: None, // 用户需配置 API Key
+        // Exa AI 搜索配置
+        exa_api_key: None, // 用户需配置 API Key
         // 附件工作目录：默认 None，运行时回退到 <config_dir>/sanshu/workspace
         attachment_workspace_dir: None,
     }
@@ -508,6 +514,7 @@ pub fn default_mcp_tools() -> HashMap<String, bool> {
     tools.insert(mcp::TOOL_UIUX.to_string(), true); // UI/UX 工具默认启用（内置技能）
     tools.insert(mcp::TOOL_ENHANCE.to_string(), false); // 提示词增强工具默认关闭（依赖 acemcp 配置）
     tools.insert(mcp::TOOL_TAVILY.to_string(), true); // Tavily AI 搜索工具默认启用（免费额度，需配置 API Key）
+    tools.insert(mcp::TOOL_EXA.to_string(), true); // Exa AI 搜索工具默认启用（需配置 API Key，新账号赠送 $10 额度）
     tools.insert(mcp::TOOL_DEEPWIKI.to_string(), true); // DeepWiki 仓库文档工具默认启用（免费无需认证）
     tools
 }
@@ -848,6 +855,21 @@ pub fn default_custom_prompts() -> Vec<CustomPrompt> {
             template_false: Some("".to_string()),
             current_state: true, // 默认开启（与 TOOL_TAVILY 默认状态保持一致）
             linked_mcp_tool: Some("tavily".to_string()), // 关联到 tavily MCP 工具
+        },
+        CustomPrompt {
+            id: "default_16".to_string(),
+            name: "是否启用 Exa 语义搜索".to_string(),
+            content: "".to_string(),
+            description: Some("提醒 AI 语义发现网页/论文/仓库或按 URL 提取正文时使用 exa".to_string()),
+            sort_order: 16,
+            created_at: chrono::Utc::now().to_rfc3339(),
+            updated_at: chrono::Utc::now().to_rfc3339(),
+            r#type: "conditional".to_string(),
+            condition_text: Some("是否启用 Exa 语义搜索".to_string()),
+            template_true: Some("✔️请记住，需要网络搜索时将 tavily 与 exa 结合使用：实时资讯用 tavily，语义发现网页、论文、GitHub 仓库或按 URL 提取正文用 exa，关键信息交叉验证".to_string()),
+            template_false: Some("".to_string()),
+            current_state: true, // 默认开启（与 TOOL_EXA 默认状态保持一致）
+            linked_mcp_tool: Some("exa".to_string()), // 关联到 exa MCP 工具
         },
     ]
 }

@@ -259,11 +259,12 @@ impl InteractionTool {
                 if let Some(notice) = take_orphan_reply_notice(&workspace_for_notice) {
                     content.push(Content::text(notice));
                 }
-                // 中文说明（2026-06-11 P1）：巨型回复提示——引导 AI 只引用关键片段、
-                // 不复述全文，避免大段粘贴内容在后续对话中再翻倍消耗 token。
+                // 中文说明（2026-06-11 P1，2026-06-13 调整措辞）：巨型回复提示。
+                // 超长用户输入现已在 parse_mcp_response 内自动落盘（仅回传预览+文件路径），
+                // 这里保留兜底提示，引导 AI 只引用关键片段、不复述全文。
                 if response.len() > RESPONSE_LEN_WARN_THRESHOLD {
                     content.push(Content::text(format!(
-                        "⚠️ 本次用户回复约 {} 字符（疑似大段粘贴内容）。后续对话请只引用与任务相关的关键片段，不要复述全文，以节省 token。",
+                        "⚠️ 本次用户回复约 {} 字符（疑似大段粘贴内容，超长部分已落盘为文件）。后续对话请只引用与任务相关的关键片段，不要复述全文，以节省 token。",
                         response.len()
                     )));
                 }

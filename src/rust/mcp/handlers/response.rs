@@ -2,6 +2,8 @@ use anyhow::Result;
 use rmcp::model::{Content, ErrorData as McpError};
 
 use crate::log_debug;
+use crate::log_important;
+use crate::mcp::handlers::popup::RESPONSE_LEN_WARN_THRESHOLD;
 use crate::mcp::types::{McpResponse, McpResponseContent};
 use crate::mcp::utils::is_zhi_custom_choice;
 
@@ -14,6 +16,58 @@ fn format_byte_size(bytes: u64) -> String {
     } else {
         format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
     }
+}
+
+/// 超长输入落盘后回传给模型的预览字符数。
+const OVERFLOW_PREVIEW_CHARS: usize = 2000;
+
+/// 超长用户输入落盘目录：~/.sanshu/overflow_replies/
+fn overflow_replies_dir() -> std::path::PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join(".sanshu")
+        .join("overflow_replies")
+}
+
+/// 超长用户输入自动落盘，回传「预览 + 文件路径」替代全文。
+///
+/// 中文说明（2026-06-13 实证修复）：用户曾在 zhi 弹窗粘贴 35.5 万字符文本，原样回传模型
+/// 导致单次上下文超限、触发 Cursor 历史压缩并多计一条 request（之前仅 WARN 不处理）。
+/// 改为超过 RESPONSE_LEN_WARN_THRESHOLD 时写入 ~/.sanshu/overflow_replies/，
+/// 模型按需用文件读取工具分段查看。落盘失败时退回原样回传，保证内容不丢。
+fn spill_long_user_input(text: &str) -> String {
+    if text.len() <= RESPONSE_LEN_WARN_THRESHOLD {
+        return text.to_string();
+    }
+    let dir = overflow_replies_dir();
+    if std::fs::create_dir_all(&dir).is_err() {
+        log_important!(warn, "[parse_mcp_response] 超长输入落盘目录创建失败，退回原样回传");
+        return text.to_string();
+    }
+    let file = dir.join(format!(
+        "reply_{}.txt",
+        chrono::Utc::now().timestamp_millis()
+    ));
+    if std::fs::write(&file, text).is_err() {
+        log_important!(warn, "[parse_mcp_response] 超长输入落盘写入失败，退回原样回传");
+        return text.to_string();
+    }
+    let preview: String = text.chars().take(OVERFLOW_PREVIEW_CHARS).collect();
+    log_important!(
+        info,
+        "[parse_mcp_response] 用户超长输入已落盘: file={}, len={}",
+        file.display(),
+        text.len()
+    );
+    format!(
+        "⚠️ 用户本次输入超长（共 {} 字符），完整内容已保存到文件：{}\n\
+         请按需用文件读取工具分段查看该文件，不要一次性读入全文。\n\n\
+         === 内容预览（前 {} 字符）===\n{}",
+        text.chars().count(),
+        file.display(),
+        OVERFLOW_PREVIEW_CHARS,
+        preview
+    )
 }
 
 /// 解析 MCP 响应内容
@@ -170,7 +224,8 @@ pub fn parse_mcp_response(response: &str) -> Result<Vec<Content>, McpError> {
                         .to_string(),
                 )]);
             }
-            Ok(vec![Content::text(response.to_string())])
+            // 中文说明：纯文本回退分支同样可能携带大段粘贴，超长时一并落盘
+            Ok(vec![Content::text(spill_long_user_input(response))])
         }
     }
 }
@@ -208,13 +263,14 @@ fn parse_structured_response(response: McpResponse) -> Result<Vec<Content>, McpE
         ));
     }
 
-    // 2. 处理用户输入文本
+    // 2. 处理用户输入文本（超长时自动落盘，只回传预览+文件路径，见 spill_long_user_input）
     if let Some(user_input) = response.user_input {
         if !user_input.trim().is_empty() {
+            let input_text = spill_long_user_input(user_input.trim());
             if custom_selected {
-                text_parts.push(format!("用户最终要求: {}", user_input.trim()));
+                text_parts.push(format!("用户最终要求: {}", input_text));
             } else {
-                text_parts.push(user_input.trim().to_string());
+                text_parts.push(input_text);
             }
         }
     }

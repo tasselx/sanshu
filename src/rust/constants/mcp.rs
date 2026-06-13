@@ -21,6 +21,9 @@ pub const TOOL_ENHANCE: &str = "enhance";
 /// Tavily AI 搜索工具标识符
 pub const TOOL_TAVILY: &str = "tavily";
 
+/// Exa AI 搜索工具标识符
+pub const TOOL_EXA: &str = "exa";
+
 /// DeepWiki 仓库文档工具标识符
 pub const TOOL_DEEPWIKI: &str = "deepwiki";
 
@@ -33,6 +36,7 @@ pub const DEFAULT_ENABLED_TOOLS: &[&str] = &[
     TOOL_UIUX,
     TOOL_ENHANCE,
     TOOL_TAVILY,
+    TOOL_EXA,
     TOOL_DEEPWIKI,
 ];
 
@@ -91,6 +95,7 @@ impl Default for McpConfig {
                 McpToolConfig::new(TOOL_UIUX, true, true),     // UI/UX 工具可禁用，默认启用
                 McpToolConfig::new(TOOL_ENHANCE, false, true), // 提示词增强工具可禁用，默认关闭（依赖 acemcp 配置）
                 McpToolConfig::new(TOOL_TAVILY, true, true), // Tavily AI 搜索工具可禁用，默认启用（免费额度）
+                McpToolConfig::new(TOOL_EXA, true, true), // Exa AI 搜索工具可禁用，默认启用（需配置 API Key）
                 McpToolConfig::new(TOOL_DEEPWIKI, true, true), // DeepWiki 仓库文档工具可禁用，默认启用（免费无需认证）
             ],
             continue_reply_enabled: DEFAULT_CONTINUE_REPLY_ENABLED,
@@ -155,6 +160,6 @@ pub fn get_default_mcp_config() -> McpConfig {
 pub fn is_valid_tool_id(tool_id: &str) -> bool {
     matches!(
         tool_id,
-        TOOL_ZHI | TOOL_JI | TOOL_SOU | TOOL_CONTEXT7 | TOOL_UIUX | TOOL_ENHANCE | TOOL_TAVILY | TOOL_DEEPWIKI
+        TOOL_ZHI | TOOL_JI | TOOL_SOU | TOOL_CONTEXT7 | TOOL_UIUX | TOOL_ENHANCE | TOOL_TAVILY | TOOL_EXA | TOOL_DEEPWIKI
     )
 }

@@ -2,16 +2,44 @@
 # MCP 工具输出截断 hook（postToolUse）
 # 当 MCP 工具返回超过 500 行的输出时，截断并加上提示。
 # 减少对话历史膨胀，为单次 request 腾出更多 token 空间。
+#
+# 【2026-06-13 修复】原 hooks.json 用 matcher "MCP: " 过滤，但 Glass 模式下工具名是
+# CallMcpTool、Claude 兼容层是 mcp__server__tool，全都匹配不上 → 本 hook 从未生效过
+# （实证：02:18 一段 355K 字符弹窗粘贴原样进入上下文，触发压缩多计一条 request）。
+# 改为不设 matcher，由脚本内部归一化工具名后判断是否 MCP 工具（与 track-zhi.sh 同法）。
 
 MAX_LINES=500
 LOG_FILE="/tmp/sanshu-truncate-debug.log"
 
 input=$(cat)
 
-# 尝试从输入 JSON 中提取工具输出
-output=$(echo "$input" | jq -r '.output // empty' 2>/dev/null)
+# 识别是否为 MCP 工具调用（兼容三种形态：MCP:xxx / CallMcpTool / mcp__server__tool）
+tool_name=$(echo "$input" | jq -r '
+  .tool_name //
+  .toolName //
+  .input.toolName //
+  .mcp_tool_name //
+  "unknown"
+' 2>/dev/null)
+server=$(echo "$input" | jq -r '.input.server // .server // .mcp_server // empty' 2>/dev/null)
 
-# 如果 .output 为空，尝试其他可能的字段名
+is_mcp=false
+case "$tool_name" in
+  MCP:*|CallMcpTool|mcp__*) is_mcp=true ;;
+esac
+[ -n "$server" ] && is_mcp=true
+
+if [ "$is_mcp" = "false" ]; then
+  echo '{}'
+  exit 0
+fi
+
+# 尝试从输入 JSON 中提取工具输出
+# 【2026-06-13 修复】实测 Cursor postToolUse payload 的字段名是 tool_output（此前缺失，
+# 导致即使 matcher 命中也取不到输出、从不截断），放在首位；其余字段保留兼容。
+output=$(echo "$input" | jq -r '.tool_output // .output // empty' 2>/dev/null)
+
+# 如果仍为空，尝试其他可能的字段名
 if [ -z "$output" ]; then
   output=$(echo "$input" | jq -r '.result // .toolOutput // .mcp_tool_output // empty' 2>/dev/null)
 fi
@@ -20,6 +48,14 @@ fi
 if [ -z "$output" ] || [ "$output" = "null" ]; then
   echo '{}'
   exit 0
+fi
+
+# 【v1.1 修复（2026-06-13）】tool_output 是 MCP 结果包装 JSON
+# {"content":[{"type":"text","text":"..."}]}，应对模型可见的文本内容做行数/字符判断与截断，
+# 而不是对包装层 JSON 动刀（截断包装层会产生残缺 JSON）。解包失败则按原始输出处理。
+inner=$(echo "$output" | jq -r '[.content[]? | select(.type == "text") | .text] | join("\n")' 2>/dev/null)
+if [ -n "$inner" ] && [ "$inner" != "null" ]; then
+  output="$inner"
 fi
 
 # 计算行数
@@ -32,8 +68,7 @@ char_count=${#output}
 {
   echo "--- $(date '+%Y-%m-%d %H:%M:%S') ---"
   echo "lines=$line_count chars=$char_count"
-  tool_type=$(echo "$input" | jq -r '.toolType // .tool // "unknown"' 2>/dev/null)
-  echo "tool=$tool_type"
+  echo "tool=$tool_name server=$server"
 } >> "$LOG_FILE" 2>/dev/null
 
 # 限制日志大小

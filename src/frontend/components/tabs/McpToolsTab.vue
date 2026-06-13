@@ -21,6 +21,7 @@ const IconWorkshop = defineAsyncComponent(() => import('../tools/IconWorkshop/Ic
 const EnhanceConfig = defineAsyncComponent(() => import('../tools/EnhanceConfig.vue'))
 const MemoryConfig = defineAsyncComponent(() => import('../tools/MemoryConfig.vue'))
 const TavilyConfig = defineAsyncComponent(() => import('../tools/TavilyConfig.vue'))
+const ExaConfig = defineAsyncComponent(() => import('../tools/ExaConfig.vue'))
 
 // 全局 MCP 工具状态
 const {
@@ -247,6 +248,7 @@ onMounted(async () => {
           :project-root-path="props.projectRootPath"
         />
         <TavilyConfig v-else-if="currentToolId === 'tavily'" :active="showToolConfigModal" />
+        <ExaConfig v-else-if="currentToolId === 'exa'" :active="showToolConfigModal" />
         <IconWorkshop v-else-if="currentToolId === 'icon'" :active="showToolConfigModal" />
         <MemoryConfig
           v-else-if="currentToolId === 'ji'"

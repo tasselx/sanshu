@@ -160,6 +160,24 @@ pub async fn get_mcp_tools_config(
         has_config: true, // Tavily 需要配置 API Key
     });
 
+    // Exa AI 搜索工具 - 需要配置 API Key
+    tools.push(MCPToolConfig {
+        id: mcp::TOOL_EXA.to_string(),
+        name: "Exa AI 搜索".to_string(),
+        description: "Exa 神经语义搜索与网页正文获取，新注册账号赠送 $10 额度".to_string(),
+        enabled: config
+            .mcp_config
+            .tools
+            .get(mcp::TOOL_EXA)
+            .copied()
+            .unwrap_or(true),
+        can_disable: true,
+        icon: "i-carbon-search text-lg text-blue-600 dark:text-blue-400".to_string(),
+        icon_bg: "bg-blue-100 dark:bg-blue-900".to_string(),
+        dark_icon_bg: "dark:bg-blue-800".to_string(),
+        has_config: true, // Exa 需要配置 API Key
+    });
+
     // DeepWiki 仓库文档工具 - 免费无需认证
     tools.push(MCPToolConfig {
         id: mcp::TOOL_DEEPWIKI.to_string(),

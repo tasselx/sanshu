@@ -212,7 +212,7 @@ function getConditionalIcon(prompt: CustomPrompt): string {
     return 'i-carbon-checkmark-outline'
   if (/ui|ux|美化|设计|页面/.test(text))
     return 'i-carbon-color-palette'
-  if (/tavily|ai.?搜索|实时搜索/.test(text))
+  if (/tavily|exa|ai.?搜索|实时搜索/.test(text))
     return 'i-carbon-search-locate'
   if (/记忆|memory|ji/.test(text))
     return 'i-carbon-data-base'

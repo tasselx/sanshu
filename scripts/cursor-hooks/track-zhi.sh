@@ -85,8 +85,18 @@ if [ "$is_sanshu" = "true" ]; then
   keepalive=false
   if [ "$rec" = "zhi" ]; then
     # 字段名兼容顺序与 truncate-mcp-output.sh 保持一致
-    output=$(echo "$input" | jq -r '.output // .result // .toolOutput // .mcp_tool_output // empty' 2>/dev/null)
+    # 【2026-06-13 修复】实测 payload 字段名是 tool_output（此前缺失导致 v7 回复语义
+    # 一直提取失败、状态文件 reply 恒为空，stop 端实际退化为 v6 行为），补在首位。
+    output=$(echo "$input" | jq -r '.tool_output // .output // .result // .toolOutput // .mcp_tool_output // empty' 2>/dev/null)
     if [ -n "$output" ] && [ "$output" != "null" ]; then
+      # 【v7.1 修复（2026-06-13 实锤）】tool_output 是 MCP 结果包装 JSON
+      # {"content":[{"type":"text","text":"..."}]}，直接 grep '^{' 取到的是包装层
+      # （无 selected_options/user_input）→ 摘要变成「 | null」→ stop 端误判
+      # 「新指令未处理完」而 followup 续跑，凭空多一条 request。先解包取出文本内容。
+      inner=$(echo "$output" | jq -r '[.content[]? | select(.type == "text") | .text] | join("\n")' 2>/dev/null)
+      if [ -n "$inner" ] && [ "$inner" != "null" ]; then
+        output="$inner"
+      fi
       # 保活信号：弹窗仍开着、用户尚未回复（zhi 返回的固定话术）
       case "$output" in
         *用户仍在思考中*|*请再次调用*|*弹窗仍开着*|*等待已达上限*|*暂未给出回应*) keepalive=true ;;
@@ -98,7 +108,12 @@ if [ "$is_sanshu" = "true" ]; then
       if [ -n "$first_json" ]; then
         sel=$(echo "$first_json" | jq -r '(.selected_options // []) | join(" ")' 2>/dev/null)
         ui=$(echo "$first_json" | jq -r '(.user_input // "") | split("\n")[0]' 2>/dev/null)
-        reply_snippet=$(printf '%s | %s' "$sel" "$ui" | head -c 300)
+        # 【v7.1】两项都没提取到有效内容时保持摘要为空（jq 对空数组取 [0] 会输出
+        # 字面 "null"），让 stop 端按 v6 行为放行，而不是拿「 | null」误判拦截。
+        case "$ui" in null) ui="" ;; esac
+        if [ -n "$sel" ] || [ -n "$ui" ]; then
+          reply_snippet=$(printf '%s | %s' "$sel" "$ui" | head -c 300)
+        fi
       fi
     fi
   fi

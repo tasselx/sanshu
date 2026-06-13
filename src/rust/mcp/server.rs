@@ -10,14 +10,15 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 use super::tools::{
-    Context7Tool, DeepwikiTool, EnhanceTool, IconTool, InteractionTool, MemoryTool, SkillsTool,
-    SouTool, TavilyTool, UiuxTool,
+    Context7Tool, DeepwikiTool, EnhanceTool, ExaTool, IconTool, InteractionTool, MemoryTool,
+    SkillsTool, SouTool, TavilyTool, UiuxTool,
 };
 use super::types::{JiyiRequest, SkillRunRequest, TuRequest, ZhiRequest};
 use crate::config::load_standalone_config;
 use crate::mcp::tools::context7::types::Context7Request;
 use crate::mcp::tools::enhance::mcp::EnhanceMcpRequest;
 use crate::mcp::tools::deepwiki::types::DeepwikiRequest;
+use crate::mcp::tools::exa::types::ExaRequest;
 use crate::mcp::tools::tavily::types::TavilyRequest;
 use crate::mcp::utils::generate_request_id;
 use crate::mcp::utils::safe_truncate_clean;
@@ -339,6 +340,11 @@ impl ServerHandler for ZhiServer {
             tools.push(TavilyTool::get_tool_definition());
         }
 
+        // Exa AI 搜索工具 - 仅在启用时添加
+        if self.is_tool_enabled("exa") {
+            tools.push(ExaTool::get_tool_definition());
+        }
+
         // DeepWiki 仓库文档工具 - 仅在启用时添加
         if self.is_tool_enabled("deepwiki") {
             tools.push(DeepwikiTool::get_tool_definition());
@@ -626,6 +632,31 @@ impl ServerHandler for ZhiServer {
                             log_important!(
                                 warn,
                                 "[MCP] 参数解析失败: call_id={}, tool=tavily, error={}",
+                                call_id,
+                                e
+                            );
+                            Err(McpError::invalid_params(
+                                format!("参数解析失败: {}", e),
+                                None,
+                            ))
+                        }
+                    }
+                }
+            }
+            "exa" => {
+                if !self.is_tool_enabled("exa") {
+                    log_important!(warn, "[MCP] 工具已禁用: call_id={}, tool=exa", call_id);
+                    Err(McpError::internal_error(
+                        "Exa AI 搜索工具已被禁用".to_string(),
+                        None,
+                    ))
+                } else {
+                    match serde_json::from_value::<ExaRequest>(arguments_value) {
+                        Ok(exa_request) => ExaTool::execute(exa_request).await,
+                        Err(e) => {
+                            log_important!(
+                                warn,
+                                "[MCP] 参数解析失败: call_id={}, tool=exa, error={}",
                                 call_id,
                                 e
                             );
