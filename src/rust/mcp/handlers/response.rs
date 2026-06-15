@@ -3,7 +3,6 @@ use rmcp::model::{Content, ErrorData as McpError};
 
 use crate::log_debug;
 use crate::log_important;
-use crate::mcp::handlers::popup::RESPONSE_LEN_WARN_THRESHOLD;
 use crate::mcp::types::{McpResponse, McpResponseContent};
 use crate::mcp::utils::is_zhi_custom_choice;
 
@@ -18,8 +17,17 @@ fn format_byte_size(bytes: u64) -> String {
     }
 }
 
+/// 用户输入超过该「字符数」即落盘，只回传预览+路径。
+///
+/// 中文说明（2026-06-14）：阈值由原先复用的 RESPONSE_LEN_WARN_THRESHOLD（50000 字节）
+/// 改为按「字符数 2000」判定——① 更早拦截，避免大段粘贴撑爆单次上下文触发 Cursor 历史压缩/多计 request；
+/// ② 中文 1 字≈3 字节，按字节算反直觉，改按字符更贴合实际输入长度。
+const OVERFLOW_SPILL_THRESHOLD_CHARS: usize = 2000;
+
 /// 超长输入落盘后回传给模型的预览字符数。
-const OVERFLOW_PREVIEW_CHARS: usize = 2000;
+/// 中文说明：必须明显小于 OVERFLOW_SPILL_THRESHOLD_CHARS，否则刚过阈值的文本会被「几乎全文内联」，
+/// 落盘就失去意义。这里收敛到 500，确保落盘真正减负。
+const OVERFLOW_PREVIEW_CHARS: usize = 500;
 
 /// 超长用户输入落盘目录：~/.sanshu/overflow_replies/
 fn overflow_replies_dir() -> std::path::PathBuf {
@@ -33,10 +41,11 @@ fn overflow_replies_dir() -> std::path::PathBuf {
 ///
 /// 中文说明（2026-06-13 实证修复）：用户曾在 zhi 弹窗粘贴 35.5 万字符文本，原样回传模型
 /// 导致单次上下文超限、触发 Cursor 历史压缩并多计一条 request（之前仅 WARN 不处理）。
-/// 改为超过 RESPONSE_LEN_WARN_THRESHOLD 时写入 ~/.sanshu/overflow_replies/，
+/// 改为超过 OVERFLOW_SPILL_THRESHOLD_CHARS（字符数）时写入 ~/.sanshu/overflow_replies/，
 /// 模型按需用文件读取工具分段查看。落盘失败时退回原样回传，保证内容不丢。
 fn spill_long_user_input(text: &str) -> String {
-    if text.len() <= RESPONSE_LEN_WARN_THRESHOLD {
+    let char_count = text.chars().count();
+    if char_count <= OVERFLOW_SPILL_THRESHOLD_CHARS {
         return text.to_string();
     }
     let dir = overflow_replies_dir();
@@ -63,7 +72,7 @@ fn spill_long_user_input(text: &str) -> String {
         "⚠️ 用户本次输入超长（共 {} 字符），完整内容已保存到文件：{}\n\
          请按需用文件读取工具分段查看该文件，不要一次性读入全文。\n\n\
          === 内容预览（前 {} 字符）===\n{}",
-        text.chars().count(),
+        char_count,
         file.display(),
         OVERFLOW_PREVIEW_CHARS,
         preview

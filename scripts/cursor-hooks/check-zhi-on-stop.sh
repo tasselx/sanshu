@@ -37,7 +37,11 @@
 # 背景（2026-06-11 23:44 实锤）：turn 在 zhi 返回新指令后因网络 TLS 断连中止，v6 放行后
 # 用户被迫手动打「继续」。v7 的 followup 续跑与手动「继续」同价（都是一条新 request），
 # 但免人工干预。代价：若用户回复不含完成类字样且确实想结束，会多一轮收尾确认弹窗
-# （loop_limit=2 封顶）。手动点停止按钮的场景不受影响（Cursor 不为手动中止跑 stop hook）。
+# （loop_limit=2 封顶）。
+#
+# 【v8 手动中止放行】2026-06-13 实锤推翻早先假设：Cursor **会**为手动中止跑 stop hook。
+# 用户手动点停止后，旧逻辑会因状态文件 tool!=zhi 而 block_sanshu 注入续跑，凭空多一条
+# request。故本轮 turn 末尾为「User aborted request」时一律放行（见下方 v8 判定块）。
 
 STATE_FILE_PREFIX="/tmp/sanshu-zhi-hook-state"
 DEBUG_LOG="/tmp/sanshu-stop-debug.log"
@@ -92,6 +96,24 @@ case "$out_tok" in ''|*[!0-9]*) out_tok=0 ;; esac
 total_tok=$((in_tok + out_tok))
 
 now=$(date +%s)
+
+# ---------- 【v8】用户主动中止（手动点停止）→ 直接放行，不注入续跑 ----------
+# 背景（2026-06-13 实锤，Luma 会话 7c04f28f）：用户手动点停止后，Cursor 仍会跑 stop hook。
+# 旧逻辑读到状态文件 tool=ji（非 zhi）→ block_sanshu 注入 followup，把被用户中止的 turn 又
+# 拉起来，凭空多产生一条计费 request（即 6/13 那条 32.7 万）。本文件头早先「Cursor 不为手动
+# 中止跑 stop hook」的假设不成立，故在此显式拦下：本轮 turn 末尾若是「User aborted request」
+# （用户主动中止），无条件放行。仅针对手动中止；网络类中止（TLS 断连 / Provider Error）不在
+# 此列，仍走下方 v6/v7 的自动续跑逻辑——故匹配串特意收紧为精确的 "User aborted request"。
+if command -v jq >/dev/null 2>&1 && [ -n "$tp" ] && [ -f "$tp" ]; then
+  last_end=$(jq -s -r '
+    [ .[] | select(.type == "turn_ended") ] | last
+    | ((.status // "") + "|" + (.error // ""))
+  ' "$tp" 2>/dev/null)
+  if printf '%s' "$last_end" | grep -qiE 'User aborted request'; then
+    log "user-aborted turn -> allow (v8) conv=${conv:-global} last_end=$(printf '%s' "$last_end" | head -c 80)"
+    allow
+  fi
+fi
 
 # ---------- 主判定：状态文件（track-zhi.sh 产物，最可靠）----------
 if command -v jq >/dev/null 2>&1 && [ -f "$STATE_FILE" ]; then
