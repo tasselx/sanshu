@@ -9,7 +9,9 @@ use rmcp::model::{
 use rmcp::service::Peer;
 use rmcp::RoleServer;
 
-use crate::mcp::handlers::{parse_mcp_response, poll_or_start_popup, PopupPoll, POPUP_POLL_WINDOW};
+use crate::mcp::handlers::{
+    parse_mcp_response_with_structured, poll_or_start_popup, PopupPoll, POPUP_POLL_WINDOW,
+};
 use crate::mcp::utils::safe_truncate_clean;
 use crate::mcp::utils::{generate_request_id, normalize_zhi_choices};
 use crate::mcp::{PopupRequest, ZhiRequest};
@@ -193,9 +195,14 @@ impl InteractionTool {
                     request_id,
                     response.len()
                 );
-                // 解析响应内容，支持文本和图片
-                let content = parse_mcp_response(&response)?;
-                Ok(CallToolResult::success(content))
+                // 解析响应内容，支持文本、图片与 structured_content，避免记忆上下文混入 user_input。
+                let parsed = parse_mcp_response_with_structured(&response)?;
+                Ok(CallToolResult {
+                    content: parsed.content,
+                    is_error: Some(false),
+                    structured_content: parsed.structured_content,
+                    meta: None,
+                })
             }
             Ok(PopupPoll::Pending) => {
                 // 中文说明：本次等待窗口（≈600s）已到但用户还没操作——依赖心跳保活远超 5 分钟，

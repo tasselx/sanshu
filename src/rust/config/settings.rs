@@ -199,6 +199,8 @@ pub struct CustomPrompt {
     pub template_false: Option<String>, // 开关为false时的模板
     #[serde(default = "default_prompt_state")]
     pub current_state: bool, // 当前开关状态（原default_state）
+    #[serde(default = "default_context_scope")]
+    pub context_scope: String, // 条件上下文作用域：turn(本轮)、memory(长期记忆)、rule(项目规则)
     /// 关联的 MCP 工具 ID（仅对 conditional 类型有效）
     /// 当此字段有值时，该 prompt 的可用性取决于对应 MCP 工具的启用状态
     #[serde(default)]
@@ -629,6 +631,7 @@ pub fn default_custom_prompts() -> Vec<CustomPrompt> {
             template_true: None,
             template_false: None,
             current_state: false,
+            context_scope: "turn".to_string(),
             linked_mcp_tool: None,
         },
         CustomPrompt {
@@ -644,6 +647,7 @@ pub fn default_custom_prompts() -> Vec<CustomPrompt> {
             template_true: None,
             template_false: None,
             current_state: false,
+            context_scope: "turn".to_string(),
             linked_mcp_tool: None,
         },
         CustomPrompt {
@@ -659,6 +663,7 @@ pub fn default_custom_prompts() -> Vec<CustomPrompt> {
             template_true: None,
             template_false: None,
             current_state: false,
+            context_scope: "turn".to_string(),
             linked_mcp_tool: None,
         },
         CustomPrompt {
@@ -674,6 +679,7 @@ pub fn default_custom_prompts() -> Vec<CustomPrompt> {
             template_true: None,
             template_false: None,
             current_state: false,
+            context_scope: "turn".to_string(),
             linked_mcp_tool: None,
         },
         CustomPrompt {
@@ -689,6 +695,7 @@ pub fn default_custom_prompts() -> Vec<CustomPrompt> {
             template_true: None,
             template_false: None,
             current_state: false,
+            context_scope: "turn".to_string(),
             linked_mcp_tool: None,
         },
         CustomPrompt {
@@ -704,6 +711,7 @@ pub fn default_custom_prompts() -> Vec<CustomPrompt> {
             template_true: None,
             template_false: None,
             current_state: false,
+            context_scope: "turn".to_string(),
             linked_mcp_tool: None,
         },
         CustomPrompt {
@@ -719,6 +727,7 @@ pub fn default_custom_prompts() -> Vec<CustomPrompt> {
             template_true: Some("✔️请记住，帮我生成总结性Markdown文档".to_string()),
             template_false: Some("❌请记住，不要生成总结性Markdown文档".to_string()),
             current_state: false,
+            context_scope: "turn".to_string(),
             linked_mcp_tool: None,
         },
         CustomPrompt {
@@ -734,6 +743,7 @@ pub fn default_custom_prompts() -> Vec<CustomPrompt> {
             template_true: Some("✔️请记住，帮我生成测试脚本".to_string()),
             template_false: Some("❌请记住，不要生成测试脚本".to_string()),
             current_state: false,
+            context_scope: "turn".to_string(),
             linked_mcp_tool: None,
         },
         CustomPrompt {
@@ -749,6 +759,7 @@ pub fn default_custom_prompts() -> Vec<CustomPrompt> {
             template_true: Some("✔️请记住，帮我编译".to_string()),
             template_false: Some("❌请记住，不要编译，用户自己编译".to_string()),
             current_state: false,
+            context_scope: "turn".to_string(),
             linked_mcp_tool: None,
         },
         CustomPrompt {
@@ -764,6 +775,7 @@ pub fn default_custom_prompts() -> Vec<CustomPrompt> {
             template_true: Some("✔️请记住，帮我运行".to_string()),
             template_false: Some("❌请记住，不要运行，用户自己运行".to_string()),
             current_state: false,
+            context_scope: "turn".to_string(),
             linked_mcp_tool: None,
         },
         // MCP 功能性工具联动 prompt
@@ -780,6 +792,7 @@ pub fn default_custom_prompts() -> Vec<CustomPrompt> {
             template_true: Some("✔️请记住，使用 sou 进行代码语义搜索，根据结果到指定位置查看更多上下文".to_string()),
             template_false: Some("".to_string()),
             current_state: false, // 默认关闭（与 TOOL_SOU 默认状态保持一致）
+            context_scope: "turn".to_string(),
             linked_mcp_tool: Some("sou".to_string()), // 关联到 sou MCP 工具
         },
         CustomPrompt {
@@ -795,6 +808,7 @@ pub fn default_custom_prompts() -> Vec<CustomPrompt> {
             template_true: Some("✔️请记住，使用 context7 查询框架/库的最新官方文档和 API 用法".to_string()),
             template_false: Some("".to_string()),
             current_state: true, // 默认开启（与 TOOL_CONTEXT7 默认状态保持一致）
+            context_scope: "turn".to_string(),
             linked_mcp_tool: Some("context7".to_string()), // 关联到 context7 MCP 工具
         },
         CustomPrompt {
@@ -810,6 +824,7 @@ pub fn default_custom_prompts() -> Vec<CustomPrompt> {
             template_true: Some("✔️请记住，所有关键提问、方案确认和完成确认都必须通过 zhi 展示".to_string()),
             template_false: Some("".to_string()),
             current_state: true, // zhi 是核心工具，默认提醒开启
+            context_scope: "turn".to_string(),
             linked_mcp_tool: Some("zhi".to_string()),
         },
         CustomPrompt {
@@ -825,6 +840,7 @@ pub fn default_custom_prompts() -> Vec<CustomPrompt> {
             template_true: Some("✔️请记住，涉及页面美化、UI 描述、设计系统或 UI 审查时，优先使用单一 uiux 工具，并参考它返回的 prompt、uiux_hits 与 project_context".to_string()),
             template_false: Some("".to_string()),
             current_state: true, // uiux 是当前主链路，默认提醒开启
+            context_scope: "turn".to_string(),
             linked_mcp_tool: Some("uiux".to_string()),
         },
         CustomPrompt {
@@ -840,6 +856,7 @@ pub fn default_custom_prompts() -> Vec<CustomPrompt> {
             template_true: Some("✔️请记住，需要实时搜索信息时使用 tavily 工具进行 AI 搜索，获取最新准确数据".to_string()),
             template_false: Some("".to_string()),
             current_state: true, // 默认开启（与 TOOL_TAVILY 默认状态保持一致）
+            context_scope: "turn".to_string(),
             linked_mcp_tool: Some("tavily".to_string()), // 关联到 tavily MCP 工具
         },
     ]
@@ -847,6 +864,10 @@ pub fn default_custom_prompts() -> Vec<CustomPrompt> {
 
 pub fn default_custom_prompt_enabled() -> bool {
     true
+}
+
+fn default_context_scope() -> String {
+    "turn".to_string()
 }
 
 pub fn default_custom_prompt_max_prompts() -> u32 {
