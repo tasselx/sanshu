@@ -7,6 +7,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { useMessage } from 'naive-ui'
 import { computed, onMounted, ref, watch } from 'vue'
 import ConfigSection from '../common/ConfigSection.vue'
+import MemoryCleanupPanel from './MemoryCleanupPanel.vue'
 
 // Props
 const props = defineProps<{
@@ -28,6 +29,7 @@ interface MemoryConfig {
   similarity_threshold: number
   dedup_on_startup: boolean
   enable_dedup: boolean
+  upsert_threshold: number
 }
 
 interface MemoryStats {
@@ -63,6 +65,7 @@ const config = ref<MemoryConfig>({
   similarity_threshold: 0.70,
   dedup_on_startup: true,
   enable_dedup: true,
+  upsert_threshold: 0.55,
 })
 const configLoading = ref(false)
 const configSaving = ref(false)
@@ -109,6 +112,13 @@ const thresholdPercent = computed({
   },
 })
 
+const upsertPercent = computed({
+  get: () => Math.round(config.value.upsert_threshold * 100),
+  set: (val: number) => {
+    config.value.upsert_threshold = val / 100
+  },
+})
+
 // ============ 加载函数 ============
 async function loadConfig() {
   if (!projectPath.value)
@@ -150,6 +160,10 @@ async function loadMemories() {
 async function saveConfig() {
   if (!projectPath.value)
     return
+  if (config.value.upsert_threshold >= config.value.similarity_threshold) {
+    message.error('同类更新阈值必须小于相似度阈值')
+    return
+  }
   configSaving.value = true
   try {
     await invoke('save_memory_config', {
@@ -226,6 +240,10 @@ async function deleteMemory(id: string) {
   finally {
     deleteLoading.value = false
   }
+}
+
+async function handleCleanupChanged() {
+  await Promise.all([loadConfig(), loadMemories()])
 }
 
 function formatDate(isoString: string): string {
@@ -312,6 +330,28 @@ onMounted(async () => {
                       </div>
                       <div class="text-xs text-gray-500 mt-2">
                         超过此相似度的内容将被视为重复。建议值：70%
+                      </div>
+                    </div>
+                  </n-form-item>
+
+                  <!-- 同类 upsert 阈值滑块 -->
+                  <n-form-item label="同类更新阈值">
+                    <div class="w-full">
+                      <div class="flex items-center gap-4">
+                        <n-slider
+                          v-model:value="upsertPercent"
+                          :min="40"
+                          :max="90"
+                          :step="5"
+                          :marks="{ 40: '40%', 55: '55%', 90: '90%' }"
+                          class="flex-1"
+                        />
+                        <n-tag type="warning" :bordered="false">
+                          {{ upsertPercent }}%
+                        </n-tag>
+                      </div>
+                      <div class="text-xs text-gray-500 mt-2">
+                        同分类记忆相似度达到此值（但未达去重阈值）时，就地更新旧记忆而非新增，抑制近义改写堆积。应低于相似度阈值。建议值：55%
                       </div>
                     </div>
                   </n-form-item>
@@ -421,6 +461,19 @@ onMounted(async () => {
                 </ConfigSection>
               </n-collapse-transition>
             </n-space>
+          </n-scrollbar>
+        </n-tab-pane>
+
+        <!-- 历史清理 Tab -->
+        <n-tab-pane name="cleanup" tab="历史清理">
+          <n-scrollbar class="tab-scrollbar">
+            <div class="tab-content">
+              <MemoryCleanupPanel
+                :project-path="projectPath"
+                :upsert-threshold="config.upsert_threshold"
+                @changed="handleCleanupChanged"
+              />
+            </div>
           </n-scrollbar>
         </n-tab-pane>
 

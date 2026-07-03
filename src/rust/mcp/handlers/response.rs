@@ -1,9 +1,10 @@
 use anyhow::Result;
 use rmcp::model::{Content, ErrorData as McpError};
+use serde_json::Value;
 
 use crate::log_debug;
 use crate::log_important;
-use crate::mcp::types::{McpResponse, McpResponseContent};
+use crate::mcp::types::{McpResponse, McpResponseContent, ResponseContextBlock};
 use crate::mcp::utils::is_zhi_custom_choice;
 
 /// 将字节数格式化为人类可读的大小字符串（B / KB / MB）
@@ -79,19 +80,32 @@ fn spill_long_user_input(text: &str) -> String {
     )
 }
 
+pub struct ParsedMcpResponse {
+    pub content: Vec<Content>,
+    pub structured_content: Option<Value>,
+}
+
 /// 解析 MCP 响应内容
 ///
 /// 支持新的结构化格式和旧格式的兼容性，并生成适当的 Content 对象
 pub fn parse_mcp_response(response: &str) -> Result<Vec<Content>, McpError> {
+    Ok(parse_mcp_response_with_structured(response)?.content)
+}
+
+/// 解析 MCP 响应内容，并在新结构化响应中保留 structured_content。
+pub fn parse_mcp_response_with_structured(response: &str) -> Result<ParsedMcpResponse, McpError> {
     if response.trim() == "CANCELLED" || response.trim() == "用户取消了操作" {
         log_debug!("[parse_mcp_response] 收到取消信号");
         // 中文说明：把「取消/弹窗关闭」改写为「继续等待」语义，避免 AI 把它当成对话结束信号
         // 而提前收尾（从而导致 IDE/客户端把下一条消息计为新一轮对话次数）。
-        return Ok(vec![Content::text(
-            "用户暂未给出回应（可能误关闭弹窗或临时离开），未表达任何结束意图。\
-             请再次调用 `zhi` 工具等待用户明确回复，禁止在未获得用户完成指令前主动结束本轮对话。"
-                .to_string(),
-        )]);
+        return Ok(ParsedMcpResponse {
+            content: vec![Content::text(
+                "用户暂未给出回应（可能误关闭弹窗或临时离开），未表达任何结束意图。\
+                 请再次调用 `zhi` 工具等待用户明确回复，禁止在未获得用户完成指令前主动结束本轮对话。"
+                    .to_string(),
+            )],
+            structured_content: None,
+        });
     }
 
     // 首先尝试解析为新的结构化格式
@@ -216,7 +230,10 @@ pub fn parse_mcp_response(response: &str) -> Result<Vec<Content>, McpError> {
                 image_count,
                 result.len()
             );
-            Ok(result)
+            Ok(ParsedMcpResponse {
+                content: result,
+                structured_content: None,
+            })
         }
         Err(_) => {
             // 如果不是JSON格式，作为纯文本处理
@@ -227,20 +244,26 @@ pub fn parse_mcp_response(response: &str) -> Result<Vec<Content>, McpError> {
             // 中文说明：纯文本回退分支也要兜底空/纯空白响应，否则 AI 收到空文本会按
             // 「无内容」直接收尾，从而导致下一条消息被客户端计为新一轮 request。
             if response.trim().is_empty() {
-                return Ok(vec![Content::text(
-                    "用户本次未在弹窗中提供任何内容（响应为空），未表达完成或结束意图。\
-                     请再次调用 `zhi` 工具等待用户回复，禁止主动结束本轮对话。"
-                        .to_string(),
-                )]);
+                return Ok(ParsedMcpResponse {
+                    content: vec![Content::text(
+                        "用户本次未在弹窗中提供任何内容（响应为空），未表达完成或结束意图。\
+                         请再次调用 `zhi` 工具等待用户回复，禁止主动结束本轮对话。"
+                            .to_string(),
+                    )],
+                    structured_content: None,
+                });
             }
             // 中文说明：纯文本回退分支同样可能携带大段粘贴，超长时一并落盘
-            Ok(vec![Content::text(spill_long_user_input(response))])
+            Ok(ParsedMcpResponse {
+                content: vec![Content::text(spill_long_user_input(response))],
+                structured_content: None,
+            })
         }
     }
 }
 
 /// 解析新的结构化响应格式
-fn parse_structured_response(response: McpResponse) -> Result<Vec<Content>, McpError> {
+fn parse_structured_response(response: McpResponse) -> Result<ParsedMcpResponse, McpError> {
     let mut result = Vec::new();
     let mut text_parts = Vec::new();
 
@@ -273,7 +296,7 @@ fn parse_structured_response(response: McpResponse) -> Result<Vec<Content>, McpE
     }
 
     // 2. 处理用户输入文本（超长时自动落盘，只回传预览+文件路径，见 spill_long_user_input）
-    if let Some(user_input) = response.user_input {
+    if let Some(user_input) = response.user_input.as_ref() {
         if !user_input.trim().is_empty() {
             let input_text = spill_long_user_input(user_input.trim());
             if custom_selected {
@@ -284,7 +307,22 @@ fn parse_structured_response(response: McpResponse) -> Result<Vec<Content>, McpE
         }
     }
 
-    // 3. 处理附件
+    // 3. 处理条件上下文块。文本回退明确区分临时上下文与可写记忆，避免误触发 ji。
+    let (transient_blocks, memory_blocks) = split_context_blocks(&response.context_blocks);
+    if !transient_blocks.is_empty() {
+        text_parts.push(format_context_block_section(
+            "本轮临时上下文（禁止写入 ji）",
+            &transient_blocks,
+        ));
+    }
+    if !memory_blocks.is_empty() {
+        text_parts.push(format_context_block_section(
+            "可写记忆候选（仅这些内容允许按 category 调用 ji）",
+            &memory_blocks,
+        ));
+    }
+
+    // 4. 处理附件
     //    新版：附件以「本地绝对路径」形式传递，AI 用文件读取工具按需查看，彻底避免超长 base64 内联。
     //    旧版：保留 base64 内联图片的兼容处理（历史响应仍可解析）。
     let mut attachment_text_parts: Vec<String> = Vec::new();
@@ -347,17 +385,17 @@ fn parse_structured_response(response: McpResponse) -> Result<Vec<Content>, McpE
         ));
     }
 
-    // 4. 合并所有文本内容
+    // 5. 合并所有文本内容
     let mut all_text_parts = text_parts;
     all_text_parts.extend(attachment_text_parts);
 
-    // 6. 将文本内容添加到结果中（图片后面）
+    // 7. 将文本内容添加到结果中（图片后面）
     if !all_text_parts.is_empty() {
         let combined_text = all_text_parts.join("\n\n");
         result.push(Content::text(combined_text));
     }
 
-    // 7. 如果没有任何内容，添加默认响应
+    // 8. 如果没有任何内容，添加默认响应
     if result.is_empty() {
         // 中文说明：与旧格式分支保持一致——空响应改写为「继续等待」语义，避免 AI 提前结束对话。
         result.push(Content::text(
@@ -368,7 +406,96 @@ fn parse_structured_response(response: McpResponse) -> Result<Vec<Content>, McpE
         ));
     }
 
-    Ok(result)
+    let structured_content = build_structured_content(&response);
+
+    Ok(ParsedMcpResponse {
+        content: result,
+        structured_content: Some(structured_content),
+    })
+}
+
+fn split_context_blocks(
+    blocks: &[ResponseContextBlock],
+) -> (Vec<&ResponseContextBlock>, Vec<&ResponseContextBlock>) {
+    let mut transient_blocks = Vec::new();
+    let mut memory_blocks = Vec::new();
+
+    for block in blocks {
+        if block.content.trim().is_empty() {
+            continue;
+        }
+        if block.normalized_memory_policy() == "save" {
+            memory_blocks.push(block);
+        } else {
+            transient_blocks.push(block);
+        }
+    }
+
+    (transient_blocks, memory_blocks)
+}
+
+fn format_context_block_section(title: &str, blocks: &[&ResponseContextBlock]) -> String {
+    let mut lines = Vec::with_capacity(blocks.len() + 1);
+    lines.push(format!("{}:", title));
+    for block in blocks {
+        let category = block
+            .normalized_memory_category()
+            .map(|category| format!(" category={}", category))
+            .unwrap_or_default();
+        lines.push(format!(
+            "- [{}{}] {}",
+            &block.scope,
+            category,
+            block.content.trim()
+        ));
+    }
+    lines.join("\n")
+}
+
+fn build_structured_content(response: &McpResponse) -> Value {
+    let memory_actions: Vec<Value> = response
+        .context_blocks
+        .iter()
+        .filter(|block| block.normalized_memory_policy() == "save")
+        .map(|block| {
+            serde_json::json!({
+                "action": "记忆",
+                "category": block.normalized_memory_category().unwrap_or("context"),
+                "content": block.content.trim(),
+                "source": {
+                    "kind": &block.kind,
+                    "id": &block.source_id,
+                    "name": &block.source_name,
+                    "scope": &block.scope
+                }
+            })
+        })
+        .collect();
+
+    let transient_context: Vec<Value> = response
+        .context_blocks
+        .iter()
+        .filter(|block| block.normalized_memory_policy() != "save")
+        .map(|block| {
+            serde_json::json!({
+                "kind": &block.kind,
+                "scope": &block.scope,
+                "content": block.content.trim(),
+                "source_id": &block.source_id,
+                "source_name": &block.source_name
+            })
+        })
+        .collect();
+
+    serde_json::json!({
+        "user_input": &response.user_input,
+        "selected_options": &response.selected_options,
+        "context_blocks": &response.context_blocks,
+        "memory_intent": &response.memory_intent,
+        "memory_actions": memory_actions,
+        "transient_context": transient_context,
+        "metadata": &response.metadata
+    })
 }
 
 #[cfg(test)]
