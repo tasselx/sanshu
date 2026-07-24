@@ -139,10 +139,11 @@ pub struct McpConfig {
     pub acemcp_proxy_username: Option<String>, // 代理用户名（可选）
     pub acemcp_proxy_password: Option<String>, // 代理密码（可选）
     // Sou 多后端配置
-    pub sou_default_backend: Option<String>, // "auto" | "ace" | "fast_context" | "both"
+    pub sou_default_backend: Option<String>, // "auto" | "ace" | "fast_context" | "local" | "both"
     pub sou_auto_order: Option<Vec<String>>, // auto 模式下的后端优先级
     pub sou_include_backend_headers: Option<bool>, // 是否在结果中标注后端来源
     pub sou_include_failed_backend_errors: Option<bool>, // 部分成功时是否附加失败后端诊断
+    pub sou_local_enabled: Option<bool>,     // 是否启用 SQLite FTS5 / rg 本地兜底
     // Fast Context 配置
     pub fast_context_command: Option<String>, // 兼容旧配置：Rust 原生 fast-context 已不再使用
     pub fast_context_script_path: Option<String>, // 兼容旧配置：Rust 原生 fast-context 已不再使用
@@ -367,9 +368,14 @@ pub fn default_mcp_config() -> McpConfig {
         acemcp_proxy_password: None,
         // Sou 多后端默认配置
         sou_default_backend: Some("auto".to_string()),
-        sou_auto_order: Some(vec!["ace".to_string(), "fast_context".to_string()]),
+        sou_auto_order: Some(vec![
+            "ace".to_string(),
+            "fast_context".to_string(),
+            "local".to_string(),
+        ]),
         sou_include_backend_headers: Some(true),
         sou_include_failed_backend_errors: Some(true),
+        sou_local_enabled: Some(true),
         // Fast Context 默认配置：协议与本地命令执行已迁移为 Rust 原生实现
         fast_context_command: Some("node".to_string()),
         fast_context_script_path: None,

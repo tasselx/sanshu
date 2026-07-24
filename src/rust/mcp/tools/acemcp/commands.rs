@@ -127,6 +127,8 @@ pub struct SaveAcemcpConfigArgs {
         alias = "sou_include_failed_backend_errors"
     )]
     pub sou_include_failed_backend_errors: Option<bool>,
+    #[serde(alias = "souLocalEnabled", alias = "sou_local_enabled")]
+    pub sou_local_enabled: Option<bool>,
     #[serde(alias = "uiuxKnowledgeBackend", alias = "uiux_knowledge_backend")]
     pub uiux_knowledge_backend: Option<String>,
     #[serde(alias = "fastContextCommand", alias = "fast_context_command")]
@@ -308,6 +310,9 @@ pub async fn save_acemcp_config(
         }
         if let Some(v) = args.sou_include_failed_backend_errors {
             config.mcp_config.sou_include_failed_backend_errors = Some(v);
+        }
+        if let Some(v) = args.sou_local_enabled {
+            config.mcp_config.sou_local_enabled = Some(v);
         }
         if let Some(v) = args.uiux_knowledge_backend.as_deref() {
             let normalized = v.trim().to_ascii_lowercase().replace('-', "_");
@@ -1099,6 +1104,7 @@ pub struct AcemcpConfigResponse {
     pub sou_auto_order: Vec<String>,
     pub sou_include_backend_headers: bool,
     pub sou_include_failed_backend_errors: bool,
+    pub sou_local_enabled: bool,
     pub uiux_knowledge_backend: String,
     pub fast_context_command: String,
     pub fast_context_script_path: Option<String>,
@@ -1239,11 +1245,13 @@ pub async fn get_acemcp_config(state: State<'_, AppState>) -> Result<AcemcpConfi
             .sou_default_backend
             .clone()
             .unwrap_or_else(|| "auto".to_string()),
-        sou_auto_order: config
-            .mcp_config
-            .sou_auto_order
-            .clone()
-            .unwrap_or_else(|| vec!["ace".to_string(), "fast_context".to_string()]),
+        sou_auto_order: config.mcp_config.sou_auto_order.clone().unwrap_or_else(|| {
+            vec![
+                "ace".to_string(),
+                "fast_context".to_string(),
+                "local".to_string(),
+            ]
+        }),
         sou_include_backend_headers: config
             .mcp_config
             .sou_include_backend_headers
@@ -1252,6 +1260,7 @@ pub async fn get_acemcp_config(state: State<'_, AppState>) -> Result<AcemcpConfi
             .mcp_config
             .sou_include_failed_backend_errors
             .unwrap_or(true),
+        sou_local_enabled: config.mcp_config.sou_local_enabled.unwrap_or(true),
         uiux_knowledge_backend: config
             .mcp_config
             .uiux_knowledge_backend
@@ -1305,6 +1314,16 @@ pub struct DebugSearchResult {
     pub project_path: String,
     /// 查询语句
     pub query: String,
+    /// 实际完成检索的后端
+    pub actual_backend: Option<String>,
+    /// 是否由首选后端降级而来
+    pub degraded: bool,
+    /// Local 后端实际使用的引擎
+    pub engine: Option<String>,
+    /// Local 索引状态
+    pub index_state: Option<String>,
+    /// 触发降级的原因
+    pub fallback_reason: Option<String>,
 }
 
 /// 纯 Rust 的调试命令：直接执行 acemcp 搜索，返回结果及耗时统计
@@ -1352,11 +1371,34 @@ pub async fn debug_acemcp_search(
     match search_result {
         Ok(result) => {
             let mut result_text = String::new();
-            let mut result_count: Option<usize> = None;
+            let metadata = result.structured_content.as_ref();
+            let result_count = metadata
+                .and_then(|value| value.get("hit_count"))
+                .and_then(serde_json::Value::as_u64)
+                .map(|value| value as usize);
+            let actual_backend = metadata
+                .and_then(|value| value.get("actual_backend"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string);
+            let degraded = metadata
+                .and_then(|value| value.get("degraded"))
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+            let engine = metadata
+                .and_then(|value| value.get("engine"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string);
+            let index_state = metadata
+                .and_then(|value| value.get("index_state"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string);
+            let fallback_reason = metadata
+                .and_then(|value| value.get("fallback_reason"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string);
 
             if let Ok(val) = serde_json::to_value(&result) {
                 if let Some(arr) = val.get("content").and_then(|v| v.as_array()) {
-                    result_count = Some(arr.len());
                     for item in arr {
                         if item.get("type").and_then(|t| t.as_str()) == Some("text") {
                             if let Some(txt) = item.get("text").and_then(|t| t.as_str()) {
@@ -1367,16 +1409,23 @@ pub async fn debug_acemcp_search(
                 }
             }
 
+            let is_error = result.is_error.unwrap_or(false);
+
             Ok(DebugSearchResult {
-                success: true,
-                result: Some(result_text),
-                error: None,
+                success: !is_error,
+                result: (!is_error).then_some(result_text.clone()),
+                error: is_error.then_some(result_text),
                 request_time: request_time_str,
                 response_time: response_time_str,
                 total_duration_ms,
                 result_count,
                 project_path: project_root_path,
                 query,
+                actual_backend,
+                degraded,
+                engine,
+                index_state,
+                fallback_reason,
             })
         }
         Err(e) => {
@@ -1393,9 +1442,50 @@ pub async fn debug_acemcp_search(
                 result_count: None,
                 project_path: project_root_path,
                 query,
+                actual_backend: None,
+                degraded: false,
+                engine: None,
+                index_state: None,
+                fallback_reason: None,
             })
         }
     }
+}
+
+#[tauri::command]
+pub fn get_sou_local_index_status(
+    project_root_path: String,
+) -> Result<crate::mcp::tools::sou::local::LocalIndexStatus, String> {
+    crate::mcp::tools::sou::local::status(&project_root_path).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn rebuild_sou_local_index(
+    project_root_path: String,
+    state: State<'_, AppState>,
+) -> Result<crate::mcp::tools::sou::local::LocalIndexStatus, String> {
+    let excludes = {
+        let config = state
+            .config
+            .lock()
+            .map_err(|error| format!("获取配置失败: {}", error))?;
+        config
+            .mcp_config
+            .fast_context_exclude_paths
+            .clone()
+            .unwrap_or_else(|| {
+                vec![
+                    "node_modules".to_string(),
+                    ".git".to_string(),
+                    "dist".to_string(),
+                    "build".to_string(),
+                    "target".to_string(),
+                ]
+            })
+    };
+    crate::mcp::tools::sou::local::rebuild(&project_root_path, excludes)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 /// 执行acemcp工具

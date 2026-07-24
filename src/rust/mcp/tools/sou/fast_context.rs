@@ -332,7 +332,10 @@ pub async fn search(opts: SearchOptions) -> Result<SearchResult> {
 
     log::info!("[fast-context] 开始获取 Devin / Windsurf JWT");
     let jwt = fetch_jwt(&client, &api_key).await?;
-    log::info!("[fast-context] Devin / Windsurf JWT 获取成功: length={}", jwt.len());
+    log::info!(
+        "[fast-context] Devin / Windsurf JWT 获取成功: length={}",
+        jwt.len()
+    );
     log::info!("[fast-context] 开始检查 Fast Context 限流状态");
     if !check_rate_limit(&client, &api_key, &jwt).await? {
         log::warn!("[fast-context] Fast Context 限流检查未通过");
@@ -448,7 +451,7 @@ pub async fn search(opts: SearchOptions) -> Result<SearchResult> {
             );
             return Err(anyhow!(
                 "fast-context 未获得合法工具调用: {}",
-                truncate_error_text(&text, 500)
+                unparsed_response_diagnostic(&text)
             ));
         };
 
@@ -602,8 +605,7 @@ pub fn detect_api_key(configured: Option<&str>) -> Result<ApiKeyDetection> {
             });
         }
     }
-    extract_local_api_key()?
-        .ok_or_else(|| anyhow!("Devin / Windsurf 本地登录库中没有 apiKey"))
+    extract_local_api_key()?.ok_or_else(|| anyhow!("Devin / Windsurf 本地登录库中没有 apiKey"))
 }
 
 pub fn mask_api_key(api_key: &str) -> String {
@@ -684,10 +686,7 @@ fn local_state_db_candidates() -> Result<Vec<(ApiKeySource, PathBuf)>> {
         let home = dirs::home_dir().ok_or_else(|| anyhow!("无法定位用户主目录"))?;
         let app_support = home.join("Library").join("Application Support");
         return Ok(vec![
-            (
-                ApiKeySource::DevinDb,
-                state_db_path(&app_support, "Devin"),
-            ),
+            (ApiKeySource::DevinDb, state_db_path(&app_support, "Devin")),
             (
                 ApiKeySource::WindsurfDb,
                 state_db_path(&app_support, "Windsurf"),
@@ -698,10 +697,7 @@ fn local_state_db_candidates() -> Result<Vec<(ApiKeySource, PathBuf)>> {
         let appdata = env::var("APPDATA").context("无法读取 APPDATA 环境变量")?;
         let appdata = PathBuf::from(appdata);
         return Ok(vec![
-            (
-                ApiKeySource::DevinDb,
-                state_db_path(&appdata, "devin"),
-            ),
+            (ApiKeySource::DevinDb, state_db_path(&appdata, "devin")),
             (
                 ApiKeySource::WindsurfDb,
                 state_db_path(&appdata, "Windsurf"),
@@ -718,10 +714,7 @@ fn local_state_db_candidates() -> Result<Vec<(ApiKeySource, PathBuf)>> {
         })
         .context("无法定位 Linux 配置目录")?;
     Ok(vec![
-        (
-            ApiKeySource::DevinDb,
-            state_db_path(&config_root, "devin"),
-        ),
+        (ApiKeySource::DevinDb, state_db_path(&config_root, "devin")),
         (
             ApiKeySource::WindsurfDb,
             state_db_path(&config_root, "Windsurf"),
@@ -1083,7 +1076,8 @@ fn build_chat_message(message: &ChatMessage) -> ProtobufEncoder {
 }
 
 fn parse_response(data: &[u8]) -> Result<Option<ParsedToolCall>> {
-    let mut all_text = String::new();
+    let mut raw_text = String::new();
+    let mut extracted_text = String::new();
     for frame in connect_frame_decode(data) {
         let text_candidate = String::from_utf8_lossy(&frame);
         if text_candidate.starts_with('{') {
@@ -1099,20 +1093,19 @@ fn parse_response(data: &[u8]) -> Result<Option<ParsedToolCall>> {
             }
         }
 
-        let raw_text = text_candidate.replace('\u{fffd}', "");
-        if raw_text.contains("[TOOL_CALLS]") {
-            all_text = raw_text;
-            break;
-        }
+        // 流式响应可能把工具名与 JSON 拆到多个 Connect 帧，必须完整收集后再解析。
+        raw_text.push_str(&text_candidate.replace('\u{fffd}', ""));
 
         for s in extract_strings(&frame) {
-            if s.len() > 10 {
-                all_text.push_str(&s);
+            if !s.is_empty() {
+                extracted_text.push_str(&s);
             }
         }
     }
 
-    Ok(parse_tool_call(&all_text))
+    Ok(parse_tool_call(&extracted_text)
+        .or_else(|| parse_tool_call(&raw_text))
+        .map(normalize_top_level_tool_call))
 }
 
 fn parse_plain_response(data: &[u8]) -> String {
@@ -1136,14 +1129,26 @@ fn unparsed_response_retry_prompt(text: &str) -> String {
     }
 }
 
-fn truncate_error_text(text: &str, max_chars: usize) -> String {
-    let trimmed = text.trim();
-    if trimmed.chars().count() <= max_chars {
-        return trimmed.to_string();
-    }
-    let mut truncated = trimmed.chars().take(max_chars).collect::<String>();
-    truncated.push_str("...");
-    truncated
+fn unparsed_response_diagnostic(text: &str) -> String {
+    let marker = "[TOOL_CALLS]";
+    let args_marker = "[ARGS]";
+    let tool_name = text.find(marker).and_then(|marker_start| {
+        let rest = &text[marker_start + marker.len()..];
+        rest.find(args_marker)
+            .map(|end| rest[..end].trim())
+            .filter(|value| !value.is_empty())
+    });
+    let json_complete = text
+        .find(args_marker)
+        .and_then(|start| find_json_object_end(text[start + args_marker.len()..].trim()))
+        .is_some();
+    format!(
+        "marker={}, tool={}, chars={}, json_complete={}",
+        text.contains(marker),
+        tool_name.unwrap_or("unknown"),
+        text.chars().count(),
+        json_complete
+    )
 }
 
 fn parse_tool_call(text: &str) -> Option<ParsedToolCall> {
@@ -1166,6 +1171,22 @@ fn parse_tool_call(text: &str) -> Option<ParsedToolCall> {
         name: name.to_string(),
         args,
     })
+}
+
+fn normalize_top_level_tool_call(mut call: ParsedToolCall) -> ParsedToolCall {
+    if !matches!(
+        call.name.as_str(),
+        "rg" | "readfile" | "tree" | "ls" | "glob"
+    ) {
+        return call;
+    }
+
+    if let Some(command) = call.args.as_object_mut() {
+        command.insert("type".to_string(), Value::String(call.name.clone()));
+    }
+    call.args = serde_json::json!({ "command1": call.args });
+    call.name = "restricted_exec".to_string();
+    call
 }
 
 fn find_json_object_end(raw: &str) -> Option<usize> {
@@ -1511,8 +1532,7 @@ fn sorted_entries(
     };
     entries.retain(|entry| {
         let name = entry.file_name().to_string_lossy().to_string();
-        !matches_exclude(&name, exclude_paths)
-            && !is_ignored_path(ignore_matcher, &entry.path())
+        !matches_exclude(&name, exclude_paths) && !is_ignored_path(ignore_matcher, &entry.path())
     });
     entries.sort_by_key(|entry| entry.file_name().to_string_lossy().to_ascii_lowercase());
     entries
@@ -1713,6 +1733,23 @@ fn normalize_command_shape(value: &Value) -> Option<(Value, bool)> {
         command.insert("type".to_string(), Value::String("readfile".to_string()));
         command.insert("file".to_string(), Value::String(file.to_string()));
         copy_optional_keys(obj, &mut command, &["start_line", "end_line"]);
+        return Some((Value::Object(command), true));
+    }
+
+    // 兼容已在运行日志中出现的扁平参数：{"file":"/codebase/a.rs"}。
+    if let Some(file) = obj.get("file").and_then(Value::as_str) {
+        let mut command = obj.clone();
+        command.insert("type".to_string(), Value::String("readfile".to_string()));
+        command.insert("file".to_string(), Value::String(file.to_string()));
+        return Some((Value::Object(command), true));
+    }
+
+    // 兼容已在运行日志中出现的扁平参数：{"rg":"pattern","path":"/codebase"}。
+    if let Some(pattern) = obj.get("rg").and_then(Value::as_str) {
+        let mut command = obj.clone();
+        command.remove("rg");
+        command.insert("type".to_string(), Value::String("rg".to_string()));
+        command.insert("pattern".to_string(), Value::String(pattern.to_string()));
         return Some((Value::Object(command), true));
     }
 
@@ -2637,7 +2674,10 @@ impl ToolExecutor {
             return self.path_missing_message("readfile", file, "Error: file not found");
         }
         if is_ignored_path(&self.ignore_matcher, &path) {
-            log::warn!("[fast-context] readfile 已拒绝 ignore 文件: {}", path.display());
+            log::warn!(
+                "[fast-context] readfile 已拒绝 ignore 文件: {}",
+                path.display()
+            );
             return format!("Error: file is ignored: {file}");
         }
         let key = normalize_path(&path);
@@ -3095,8 +3135,8 @@ fn path_matches_filters(
 
     if is_ignored_path(ignore_matcher, path)
         || exclude
-        .iter()
-        .any(|pattern| glob_match(pattern, &rel_slash) || glob_match(pattern, &file_name))
+            .iter()
+            .any(|pattern| glob_match(pattern, &rel_slash) || glob_match(pattern, &file_name))
     {
         return false;
     }
@@ -3268,6 +3308,41 @@ mod tests {
     }
 
     #[test]
+    fn parse_response_joins_tool_call_split_across_connect_frames() {
+        let first = connect_frame_encode(
+            br#"[TOOL_CALLS]restricted_exec[ARGS]{"command1":{"type":"rg","pattern":"Sou"#,
+            false,
+        )
+        .expect("首帧应可编码");
+        let second = connect_frame_encode(br#"Tool","path":"/codebase/src"}}"#, false)
+            .expect("尾帧应可编码");
+        let mut response = first;
+        response.extend(second);
+
+        let parsed = parse_response(&response)
+            .expect("跨帧响应应可读取")
+            .expect("跨帧工具调用应可解析");
+        assert_eq!(parsed.name, "restricted_exec");
+        assert_eq!(parsed.args["command1"]["pattern"], "SouTool");
+    }
+
+    #[test]
+    fn parse_response_wraps_top_level_readfile_as_restricted_exec() {
+        let frame = connect_frame_encode(
+            br#"[TOOL_CALLS]readfile[ARGS]{"file":"/codebase/src/lib.rs","start_line":2}"#,
+            false,
+        )
+        .expect("readfile 帧应可编码");
+
+        let parsed = parse_response(&frame)
+            .expect("readfile 响应应可读取")
+            .expect("顶层 readfile 应可规范化");
+        assert_eq!(parsed.name, "restricted_exec");
+        assert_eq!(parsed.args["command1"]["type"], "readfile");
+        assert_eq!(parsed.args["command1"]["file"], "/codebase/src/lib.rs");
+    }
+
+    #[test]
     fn malformed_tool_call_is_retryable_unparsed_response() {
         let text = r#"thinking
 [TOOL_CALLS]restricted_exec[ARGS]{"command1":{"type":"rg","pattern":"gesture","path":"/codebase/src"}"#;
@@ -3287,6 +3362,16 @@ mod tests {
     }
 
     #[test]
+    fn unparsed_response_diagnostic_does_not_echo_arguments() {
+        let text = r#"[TOOL_CALLS]restricted_exec[ARGS]{"token":"TOP_SECRET""#;
+        let diagnostic = unparsed_response_diagnostic(text);
+
+        assert!(diagnostic.contains("tool=restricted_exec"));
+        assert!(diagnostic.contains("json_complete=false"));
+        assert!(!diagnostic.contains("TOP_SECRET"));
+    }
+
+    #[test]
     fn parse_answer_keeps_safe_paths_and_rejects_escape() {
         let temp = tempdir().expect("临时目录应创建成功");
         let src_dir = temp.path().join("src");
@@ -3301,8 +3386,8 @@ mod tests {
 </ANSWER>
 "#;
 
-        let files = parse_answer(xml, temp.path(), &Gitignore::empty())
-            .expect("ANSWER XML 应可解析");
+        let files =
+            parse_answer(xml, temp.path(), &Gitignore::empty()).expect("ANSWER XML 应可解析");
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].path.as_deref(), Some("src/lib.rs"));
         assert_eq!(files[0].ranges, vec![[1, 10]]);
@@ -3401,6 +3486,16 @@ mod tests {
         );
     }
 
+    #[test]
+    fn count_valid_commands_accepts_observed_flattened_shapes() {
+        let args = json!({
+            "command1": {"file": "/codebase/src/lib.rs", "start_line": 1},
+            "command2": {"rg": "SouTool", "path": "/codebase/src"}
+        });
+
+        assert_eq!(count_valid_commands(&args), 2);
+    }
+
     #[tokio::test]
     async fn tool_executor_repairs_readfile_shorthand_and_tracks_stats() {
         let temp = tempdir().expect("临时目录应创建成功");
@@ -3410,11 +3505,7 @@ mod tests {
             .unwrap_or_else(|_| temp.path().to_path_buf());
         fs::write(temp_root.join("lib.rs"), "fn alpha() {}\n").expect("测试文件应写入成功");
 
-        let executor = Arc::new(ToolExecutor::new(
-            temp_root,
-            vec![],
-            Gitignore::empty(),
-        ));
+        let executor = Arc::new(ToolExecutor::new(temp_root, vec![], Gitignore::empty()));
         let args = json!({
             "command1": {"readfile": "/codebase/lib.rs"}
         });
@@ -3434,11 +3525,7 @@ mod tests {
             .path()
             .canonicalize()
             .unwrap_or_else(|_| temp.path().to_path_buf());
-        let executor = Arc::new(ToolExecutor::new(
-            temp_root,
-            vec![],
-            Gitignore::empty(),
-        ));
+        let executor = Arc::new(ToolExecutor::new(temp_root, vec![], Gitignore::empty()));
         let args = json!({
             "command1": {"type": "rg", "pattern": "", "path": "/codebase"}
         });
@@ -3466,11 +3553,7 @@ mod tests {
         fs::create_dir_all(&src).expect("src 目录应创建成功");
         fs::write(src.join("payment.rs"), "fn payment_status() {}\n").expect("测试文件应写入成功");
 
-        let executor = Arc::new(ToolExecutor::new(
-            temp_root,
-            vec![],
-            Gitignore::empty(),
-        ));
+        let executor = Arc::new(ToolExecutor::new(temp_root, vec![], Gitignore::empty()));
         let args = json!({
             "command1": {"type": "rg", "pattern": "payment_status", "path": "/codebase/src/missing-module"}
         });
@@ -3493,11 +3576,7 @@ mod tests {
         fs::write(temp_root.join("payment.rs"), "fn payment_status() {}\n")
             .expect("测试文件应写入成功");
 
-        let executor = Arc::new(ToolExecutor::new(
-            temp_root,
-            vec![],
-            Gitignore::empty(),
-        ));
+        let executor = Arc::new(ToolExecutor::new(temp_root, vec![], Gitignore::empty()));
         let args = json!({
             "command1": {"type": "readfile", "file": "/codebase/missing/payment.rs"}
         });

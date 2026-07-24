@@ -89,6 +89,7 @@ demo/
 !/docs/
 /docs/*
 !/docs/log-viewer-global-debug.md
+!/docs/sou-local-fallback.md
 
 
 test/

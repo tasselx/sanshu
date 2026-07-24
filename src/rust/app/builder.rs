@@ -86,6 +86,8 @@ pub fn build_tauri_app() -> Builder<tauri::Wry> {
             crate::mcp::tools::acemcp::commands::stop_acemcp_log_stream,
             crate::mcp::tools::acemcp::commands::clear_acemcp_cache,
             crate::mcp::tools::acemcp::commands::debug_acemcp_search,
+            crate::mcp::tools::acemcp::commands::get_sou_local_index_status,
+            crate::mcp::tools::acemcp::commands::rebuild_sou_local_index,
             crate::mcp::tools::acemcp::commands::execute_acemcp_tool,
             crate::mcp::tools::acemcp::commands::get_acemcp_index_status,
             crate::mcp::tools::acemcp::commands::get_all_acemcp_index_status,
