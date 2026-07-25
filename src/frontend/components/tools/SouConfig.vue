@@ -49,10 +49,11 @@ const config = ref({
   sou_auto_order: ['ace', 'fast_context'] as string[],
   sou_include_backend_headers: true,
   sou_include_failed_backend_errors: true,
+  uiux_knowledge_backend: 'auto' as 'auto' | 'fast_context' | 'local',
   // fast-context 配置
   fast_context_api_key: '',
   fast_context_tree_depth: 3,
-  fast_context_max_turns: 3,
+  fast_context_max_turns: 4,
   fast_context_max_results: 10,
   fast_context_max_commands: 8,
   fast_context_timeout_ms: 30000,
@@ -312,6 +313,11 @@ const autoOrderOptions = [
 ]
 
 const backendConfigOptions = backendOptions.filter(item => item.value !== 'default')
+const uiuxKnowledgeBackendOptions = [
+  { label: '自动（跟随 sou 与 API Key 状态）', value: 'auto' },
+  { label: '优先 Fast Context', value: 'fast_context' },
+  { label: '仅本地 Markdown（A/B 基线）', value: 'local' },
+]
 
 const selectedExtensionSet = computed(() => new Set(config.value.text_extensions || []))
 const selectedPresetCount = computed(() =>
@@ -483,17 +489,18 @@ async function loadAcemcpConfig() {
       sou_auto_order: res.sou_auto_order || ['ace', 'fast_context'],
       sou_include_backend_headers: res.sou_include_backend_headers ?? true,
       sou_include_failed_backend_errors: res.sou_include_failed_backend_errors ?? true,
+      uiux_knowledge_backend: res.uiux_knowledge_backend || 'auto',
       // fast-context 配置
       fast_context_api_key: res.fast_context_api_key || '',
       fast_context_tree_depth: res.fast_context_tree_depth || 3,
-      fast_context_max_turns: res.fast_context_max_turns || 3,
+      fast_context_max_turns: res.fast_context_max_turns || 4,
       fast_context_max_results: res.fast_context_max_results || 10,
       fast_context_max_commands: res.fast_context_max_commands || 8,
       fast_context_timeout_ms: res.fast_context_timeout_ms || 30000,
       fast_context_exclude_paths: res.fast_context_exclude_paths || ['node_modules', '.git', 'dist', 'build', 'target'],
     }
     if (!config.value.fast_context_api_key) {
-      // 中文说明：配置页首次加载时主动尝试从 Devin/Windsurf 读取并保存 Windsurf API Key，失败时保留手动填写入口。
+      // 中文说明：配置页首次加载时依次尝试 Devin 与 Windsurf 登录库，失败时保留手动填写入口。
       await detectFastContextApiKey(false)
     }
     lastSavedConnection.value = {
@@ -544,12 +551,12 @@ async function detectFastContextApiKey(showFeedback = true) {
     else {
       fastContextKeyStatusType.value = 'warning'
       if (showFeedback) {
-        message.warning(result.message || '未获取到 Windsurf API Key，请手动填写')
+        message.warning(result.message || '未获取到 Devin / Windsurf API Key，请手动填写')
       }
     }
   }
   catch (err) {
-    const msg = `获取 Windsurf API Key 失败: ${err}`
+    const msg = `获取 Devin / Windsurf API Key 失败: ${err}`
     fastContextKeyStatus.value = msg
     fastContextKeyStatusType.value = 'error'
     if (showFeedback) {
@@ -626,6 +633,7 @@ async function saveConfig() {
         souAutoOrder: config.value.sou_auto_order,
         souIncludeBackendHeaders: config.value.sou_include_backend_headers,
         souIncludeFailedBackendErrors: config.value.sou_include_failed_backend_errors,
+        uiuxKnowledgeBackend: config.value.uiux_knowledge_backend,
         // fast-context 配置
         fastContextApiKey: config.value.fast_context_api_key,
         fastContextTreeDepth: config.value.fast_context_tree_depth,
@@ -1069,6 +1077,16 @@ defineExpose({ saveConfig })
                   </n-grid-item>
                 </n-grid>
 
+                <n-form-item label="UIUX 知识检索默认策略">
+                  <n-select
+                    v-model:value="config.uiux_knowledge_backend"
+                    :options="uiuxKnowledgeBackendOptions"
+                  />
+                  <template #feedback>
+                    <span class="form-feedback">请求中的 knowledge_backend 会覆盖此默认值。</span>
+                  </template>
+                </n-form-item>
+
                 <n-grid :x-gap="24" :y-gap="16" :cols="3">
                   <n-grid-item>
                     <n-form-item label="启用 ACE">
@@ -1109,9 +1127,9 @@ defineExpose({ saveConfig })
               </n-space>
             </ConfigSection>
 
-            <ConfigSection title="Fast Context" description="Rust 原生 fast-context，无需 Node bridge；仅配置 Devin/Windsurf 搜索参数">
+            <ConfigSection title="Fast Context" description="Rust 原生 fast-context；支持从 Devin 与 Windsurf 本地登录库自动获取凭据">
               <n-space vertical size="medium">
-                <n-form-item label="Windsurf API Key">
+                <n-form-item label="Devin / Windsurf API Key">
                   <n-space vertical size="small" class="w-full">
                     <n-input-group>
                       <n-button
@@ -1126,7 +1144,7 @@ defineExpose({ saveConfig })
                         v-model:value="config.fast_context_api_key"
                         type="password"
                         show-password-on="click"
-                        placeholder="自动读取 Devin/Windsurf 登录信息，失败时请手动填写"
+                        placeholder="自动读取失败时请手动填写"
                         clearable
                       />
                     </n-input-group>
