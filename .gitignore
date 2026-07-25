@@ -96,3 +96,6 @@ test/
 .claude
 
 issue/*
+
+*.env
+/scripts/cursor-patch/backups

@@ -45,6 +45,25 @@ impl UiuxAction {
     }
 }
 
+/// UI/UX 内置知识库的检索后端，可按请求覆盖全局默认配置。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum UiuxKnowledgeBackend {
+    Auto,
+    FastContext,
+    Local,
+}
+
+impl UiuxKnowledgeBackend {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::FastContext => "fast_context",
+            Self::Local => "local",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct UiuxRequest {
     pub query: String,
@@ -64,4 +83,6 @@ pub struct UiuxRequest {
     pub output_format: Option<UiuxOutputFormat>,
     #[serde(default)]
     pub lang: Option<UiuxLang>,
+    #[serde(default)]
+    pub knowledge_backend: Option<UiuxKnowledgeBackend>,
 }
