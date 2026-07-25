@@ -9,6 +9,17 @@ use crate::mcp::types::{
 };
 use tauri::{AppHandle, Manager, State};
 
+/// MCP/CLI/图标弹窗模式下「响应是否已成功写入 stdout」的进程级幂等标记。
+///
+/// 中文说明（2026-07-06 修复·写重复）：MCP/CLI/图标弹窗模式下 stdout 是唯一回传通道，
+/// send_mcp_response 每次都 `println!` 一整段 JSON。前端在极少数竞态下（快捷键+点击、
+/// 跨组件 submitting prop 异步传播窗口）可能对同一 response 连调两次，导致 stdout 出现
+/// 两行完全相同的 JSON；MCP server 侧 `serde_json::from_str::<McpResponse>` 遇到第二行
+/// 会因 trailing 数据整体解析失败，一路回退到「超长落盘」，结构化上下文全部丢失。
+/// 这里用进程级 Mutex 把「检查 -> 写 stdout -> flush -> 标记成功」串成一个临界区：
+/// 只有真正写入并 flush 成功后才标记，避免先置位后写失败造成 0 条输出。
+static MCP_RESPONSE_EMITTED: std::sync::Mutex<bool> = std::sync::Mutex::new(false);
+
 #[tauri::command]
 pub async fn get_app_info() -> Result<String, String> {
     Ok(format!("三术 v{}", env!("CARGO_PKG_VERSION")))
@@ -474,10 +485,24 @@ pub async fn send_mcp_response(
     );
 
     if is_mcp_mode || is_cli_mode || is_icon_mode {
+        // 中文注释：进程级幂等守卫。锁内完成 check/write/flush/mark，
+        // 保证只有「成功写入」后才会吞掉后续重复提交。
+        // MCP/CLI/图标弹窗均走 stdout，需同一守卫防双写。
+        let mut emitted = MCP_RESPONSE_EMITTED
+            .lock()
+            .map_err(|e| format!("获取MCP响应写入锁失败: {}", e))?;
+        if *emitted {
+            log::warn!(
+                "[send_mcp_response] 检测到重复提交，stdout 已写入过响应，本次忽略（response_len={}）",
+                response_str.len()
+            );
+            return Ok(());
+        }
         // MCP/CLI/图标弹窗模式：直接输出到stdout（CLI要求结构化JSON）
         println!("{}", response_str);
         std::io::Write::flush(&mut std::io::stdout())
             .map_err(|e| format!("刷新stdout失败: {}", e))?;
+        *emitted = true;
         if is_cli_mode && is_cancelled {
             // CLI取消：按约定退出码 2
             eprintln!("用户取消操作");

@@ -98,3 +98,4 @@ test/
 issue/*
 
 *.env
+/scripts/cursor-patch/backups
