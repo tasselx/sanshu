@@ -1,8 +1,11 @@
 use crate::config::{save_config, AppState, WechatConfig};
 use crate::log_important;
+use crate::wechat::history::{
+    add_history_entry, clear_history, get_history, history_path, WechatHistoryEntry,
+};
 use crate::wechat::parser::{parse_wechat_reply, request_short_code};
 use crate::wechat::state::{
-    clear_wechat_state, load_wechat_state, save_wechat_state, StoredWechatCredentials,
+    clear_wechat_state, load_wechat_state, save_wechat_state, state_path, StoredWechatCredentials,
     WechatRuntimeState,
 };
 use base64::{engine::general_purpose::STANDARD, Engine as _};
@@ -19,12 +22,11 @@ use tokio::sync::oneshot;
 use tokio::time::{sleep, timeout, Duration};
 use uuid::Uuid;
 use wechatbot::protocol::{
-    build_cdn_upload_url, build_media_message, build_text_message, GetUploadUrlParams,
-    ILinkClient, CDN_BASE_URL, DEFAULT_BASE_URL,
+    build_cdn_upload_url, build_media_message, build_text_message, GetUploadUrlParams, ILinkClient,
+    CDN_BASE_URL, DEFAULT_BASE_URL,
 };
 use wechatbot::{
-    encode_aes_key_base64, encode_aes_key_hex, encrypt_aes_ecb, generate_aes_key,
-    IncomingMessage,
+    encode_aes_key_base64, encode_aes_key_hex, encrypt_aes_ecb, generate_aes_key, IncomingMessage,
 };
 
 static BINDING_ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -40,6 +42,18 @@ pub struct WechatStatus {
 }
 
 #[derive(Debug, Serialize)]
+pub struct WechatDiagnostics {
+    pub base_url: Option<String>,
+    pub account_id: Option<String>,
+    pub bot_user_id: Option<String>,
+    pub context_ready: bool,
+    pub cursor_ready: bool,
+    pub state_file: String,
+    pub history_file: String,
+    pub history_count: usize,
+}
+
+#[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum WechatEvent {
     Submit {
@@ -47,6 +61,19 @@ enum WechatEvent {
         user_input: Option<String>,
     },
     Continue,
+}
+
+// 历史写入只用于查询，不应阻断已经成功的微信收发主流程。
+fn record_history(
+    direction: &str,
+    kind: &str,
+    request_code: Option<&str>,
+    content: &str,
+    status: &str,
+) {
+    if let Err(error) = add_history_entry(direction, kind, request_code, content, status) {
+        log_important!(warn, "[wechat] history: write_failed error={}", error);
+    }
 }
 
 #[tauri::command]
@@ -94,6 +121,49 @@ pub async fn get_wechat_status(state: State<'_, AppState>) -> Result<WechatStatu
 }
 
 #[tauri::command]
+pub fn get_wechat_diagnostics() -> Result<WechatDiagnostics, String> {
+    let runtime = load_wechat_state().map_err(|e| e.to_string())?;
+    let history_count = get_history(200).map_err(|e| e.to_string())?.len();
+    Ok(WechatDiagnostics {
+        base_url: runtime
+            .credentials
+            .as_ref()
+            .map(|credentials| credentials.base_url.clone()),
+        account_id: runtime
+            .credentials
+            .as_ref()
+            .and_then(|credentials| mask_user_id(&credentials.account_id)),
+        bot_user_id: runtime
+            .credentials
+            .as_ref()
+            .and_then(|credentials| mask_user_id(&credentials.bot_user_id)),
+        context_ready: !runtime.context_token.trim().is_empty(),
+        cursor_ready: !runtime.cursor.trim().is_empty(),
+        state_file: state_path()
+            .map_err(|e| e.to_string())?
+            .to_string_lossy()
+            .to_string(),
+        history_file: history_path()
+            .map_err(|e| e.to_string())?
+            .to_string_lossy()
+            .to_string(),
+        history_count,
+    })
+}
+
+#[tauri::command]
+pub fn get_wechat_history(limit: Option<usize>) -> Result<Vec<WechatHistoryEntry>, String> {
+    get_history(limit.unwrap_or(200)).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn clear_wechat_history() -> Result<(), String> {
+    clear_history().map_err(|e| e.to_string())?;
+    log_important!(info, "[wechat] history: cleared");
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn start_wechat_binding(app: AppHandle) -> Result<(), String> {
     if BINDING_ACTIVE.swap(true, Ordering::SeqCst) {
         return Err("微信绑定正在进行中".to_string());
@@ -131,6 +201,8 @@ pub async fn clear_wechat_binding() -> Result<(), String> {
 pub async fn test_wechat_connection() -> Result<String, String> {
     let runtime = require_bound_state()?;
     send_text(&runtime, "三术微信通知连接测试成功").await?;
+    record_history("outgoing", "test", None, "三术微信通知连接测试成功", "sent");
+    log_important!(info, "[wechat] notification: test_sent");
     Ok("微信通知连接正常".to_string())
 }
 
@@ -169,6 +241,7 @@ pub fn get_system_last_input_tick() -> Result<u32, String> {
 #[tauri::command]
 pub async fn start_wechat_sync(
     request_id: String,
+    message: String,
     predefined_options: Vec<String>,
     image_pages: Vec<String>,
     state: State<'_, AppState>,
@@ -187,6 +260,13 @@ pub async fn start_wechat_sync(
     let runtime = require_bound_state()?;
     let code = request_short_code(&request_id);
     let start_time_ms = now_millis();
+    log_important!(
+        info,
+        "[wechat] notification: sending code={} pages={} options={}",
+        code,
+        image_pages.len(),
+        predefined_options.len()
+    );
     for (index, image_page) in image_pages.iter().enumerate() {
         let bytes = STANDARD
             .decode(image_page)
@@ -195,6 +275,8 @@ pub async fn start_wechat_sync(
         send_image(&runtime, bytes, Some(caption)).await?;
     }
     send_text(&runtime, &build_reply_guide(&code, &predefined_options)).await?;
+    record_history("outgoing", "zhi", Some(&code), &message, "sent");
+    log_important!(info, "[wechat] notification: sent code={}", code);
 
     tauri::async_runtime::spawn(async move {
         if let Err(error) = listen_for_reply(
@@ -326,10 +408,23 @@ async fn run_binding_flow(app: &AppHandle) -> Result<(), String> {
             runtime.cursor = updates.get_updates_buf;
         }
         if let Some(message) = updates.msgs.iter().find_map(IncomingMessage::from_wire) {
+            record_history("incoming", "system", None, &message.text, "received");
             runtime.target_user_id = message.user_id.clone();
             runtime.context_token = message.context_token().to_string();
             save_wechat_state(&runtime).map_err(|e| e.to_string())?;
-            send_text(&runtime, "微信通知绑定成功，后续 zhi 请求会发送到当前会话。").await?;
+            send_text(
+                &runtime,
+                "微信通知绑定成功，后续 zhi 请求会发送到当前会话。",
+            )
+            .await?;
+            record_history(
+                "outgoing",
+                "system",
+                None,
+                "微信通知绑定成功，后续 zhi 请求会发送到当前会话。",
+                "sent",
+            );
+            log_important!(info, "[wechat] binding: complete");
             let _ = app.emit("wechat-binding-complete", mask_user_id(&message.user_id));
             return Ok(());
         }
@@ -380,6 +475,8 @@ async fn listen_for_reply(
             }
             runtime.context_token = message.context_token().to_string();
             save_wechat_state(&runtime).map_err(|e| e.to_string())?;
+            record_history("incoming", "reply", Some(&code), &message.text, "received");
+            log_important!(info, "[wechat] reply: received code={}", code);
             if let Some(reply) = parse_wechat_reply(&message.text, &code, &options) {
                 let event = if reply.continue_requested {
                     WechatEvent::Continue
@@ -490,9 +587,7 @@ fn build_reply_guide(code: &str, options: &[String]) -> String {
         .map(|(index, option)| format!("{}. {option}", (b'A' + index as u8) as char))
         .collect::<Vec<_>>()
         .join("\n");
-    format!(
-        "三术 zhi #{code}\n{option_lines}\n\n复制并修改：\n#{code}\n选择：A\n补充："
-    )
+    format!("三术 zhi #{code}\n{option_lines}\n\n复制并修改：\n#{code}\n选择：A\n补充：")
 }
 
 fn require_bound_state() -> Result<WechatRuntimeState, String> {
@@ -509,7 +604,14 @@ fn mask_user_id(user_id: &str) -> Option<String> {
         return None;
     }
     let prefix: String = user_id.chars().take(6).collect();
-    let suffix: String = user_id.chars().rev().take(6).collect::<String>().chars().rev().collect();
+    let suffix: String = user_id
+        .chars()
+        .rev()
+        .take(6)
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect();
     Some(format!("{prefix}...{suffix}"))
 }
 

@@ -1,26 +1,27 @@
 <script setup lang="ts">
+import type { WechatConfig, WechatDiagnostics, WechatNotificationMode, WechatStatus } from '../../types/wechat'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { useMessage } from 'naive-ui'
-import { onMounted, onUnmounted, ref } from 'vue'
-
-interface WechatConfig {
-  enabled: boolean
-  notification_mode: WechatNotificationMode
-}
-
-type WechatNotificationMode = 'always' | 'smart' | 'manual'
-
-interface WechatStatus {
-  enabled: boolean
-  bound: boolean
-  binding: boolean
-  target_user: string | null
-}
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import WechatHistoryPanel from './WechatHistoryPanel.vue'
+import WechatLogPanel from './WechatLogPanel.vue'
 
 const message = useMessage()
 const config = ref<WechatConfig>({ enabled: false, notification_mode: 'always' })
 const status = ref<WechatStatus>({ enabled: false, bound: false, binding: false, target_user: null })
+const diagnostics = ref<WechatDiagnostics>({
+  base_url: null,
+  account_id: null,
+  bot_user_id: null,
+  context_ready: false,
+  cursor_ready: false,
+  state_file: '',
+  history_file: '',
+  history_count: 0,
+})
+const showManager = ref(false)
+const activeTab = ref('overview')
 const showBinding = ref(false)
 const qrUrl = ref('')
 const bindingStatus = ref('等待开始绑定')
@@ -28,7 +29,17 @@ const verifyCodeRequired = ref(false)
 const verifyCode = ref('')
 const isBinding = ref(false)
 const isTesting = ref(false)
+const diagnosticsLoading = ref(false)
 const cleanupFunctions: Array<() => void> = []
+
+const notificationModeLabel = computed(() => {
+  const labels: Record<WechatNotificationMode, string> = {
+    always: '每次立即通知',
+    smart: '智能判断（15 秒）',
+    manual: '仅手动通知',
+  }
+  return labels[config.value.notification_mode]
+})
 
 async function loadState() {
   try {
@@ -46,6 +57,28 @@ async function loadState() {
     console.error('加载微信通知状态失败:', error)
     message.error('加载微信通知状态失败')
   }
+}
+
+async function loadDiagnostics() {
+  diagnosticsLoading.value = true
+  try {
+    diagnostics.value = await invoke<WechatDiagnostics>('get_wechat_diagnostics')
+  }
+  catch (error) {
+    message.error(`加载微信诊断信息失败：${String(error)}`)
+  }
+  finally {
+    diagnosticsLoading.value = false
+  }
+}
+
+async function openManager() {
+  showManager.value = true
+  await Promise.all([loadState(), loadDiagnostics()])
+}
+
+function updateHistoryCount(count: number) {
+  diagnostics.value.history_count = count
 }
 
 async function updateNotificationMode(value: string | number) {
@@ -122,6 +155,7 @@ async function clearBinding() {
   try {
     await invoke('clear_wechat_binding')
     await loadState()
+    await loadDiagnostics()
     message.success('微信绑定已清除')
   }
   catch (error) {
@@ -152,6 +186,7 @@ onMounted(async () => {
     isBinding.value = false
     bindingStatus.value = '绑定完成'
     await loadState()
+    await loadDiagnostics()
     message.success('微信通知绑定成功')
   }))
   cleanupFunctions.push(await listen<string>('wechat-binding-error', (event) => {
@@ -162,85 +197,214 @@ onMounted(async () => {
 })
 
 onUnmounted(() => cleanupFunctions.forEach(cleanup => cleanup()))
+
+watch(showManager, (show) => {
+  if (!show)
+    activeTab.value = 'overview'
+})
 </script>
 
 <template>
-  <n-space vertical size="large">
-    <div class="flex items-center justify-between">
-      <div class="flex items-center">
-        <div class="w-1.5 h-1.5 bg-success rounded-full mr-3 flex-shrink-0" />
-        <div>
-          <div class="text-sm font-medium leading-relaxed">
-            每次 zhi 请求发送微信通知
-          </div>
-          <div class="text-xs opacity-60">
-            正文与选项生成 PNG，并支持通过标准模板回复
-          </div>
+  <!-- 设置页只保留状态摘要，复杂配置统一进入管理弹窗。 -->
+  <div class="flex flex-wrap items-center justify-between gap-4">
+    <div class="flex min-w-0 items-center gap-3">
+      <div class="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg bg-green-500/10">
+        <div class="i-carbon-logo-wechat h-5 w-5 text-green-600 dark:text-green-300" />
+      </div>
+      <div class="min-w-0">
+        <div class="flex flex-wrap items-center gap-2 text-sm font-medium">
+          <span>微信通知</span>
+          <n-tag :type="status.bound ? 'success' : 'default'" size="small" :bordered="false">
+            {{ status.bound ? '已绑定' : '待绑定' }}
+          </n-tag>
+        </div>
+        <div class="mt-1 truncate text-xs opacity-60">
+          {{ config.enabled ? notificationModeLabel : '通知已关闭' }} · {{ status.bound ? status.target_user : '尚未选择接收会话' }}
         </div>
       </div>
+    </div>
+    <div class="flex items-center gap-3">
       <n-switch :value="config.enabled" size="small" @update:value="toggleEnabled" />
+      <n-button size="small" secondary @click="openManager">
+        <template #icon>
+          <div class="i-carbon-settings-adjust w-4 h-4" />
+        </template>
+        管理微信通知
+      </n-button>
     </div>
+  </div>
 
-    <div class="pt-4 border-t border-gray-200 dark:border-gray-700">
-      <div class="text-sm font-medium mb-1">
-        通知策略
-      </div>
-      <div class="text-xs opacity-60 mb-3">
-        智能判断会等待 15 秒；检测到持续键盘或鼠标操作后，本次不发送。
-      </div>
-      <n-radio-group
-        :value="config.notification_mode"
-        :disabled="!config.enabled"
-        size="small"
-        @update:value="updateNotificationMode"
-      >
-        <n-radio-button value="always">
-          每次立即通知
-        </n-radio-button>
-        <n-radio-button value="smart">
-          智能判断
-        </n-radio-button>
-        <n-radio-button value="manual">
-          仅手动通知
-        </n-radio-button>
-      </n-radio-group>
-    </div>
+  <n-modal
+    v-model:show="showManager"
+    preset="card"
+    title="微信通知管理"
+    style="width: 960px; max-width: calc(100vw - 32px);"
+    content-style="padding-top: 8px;"
+  >
+    <template #header-extra>
+      <n-tag :type="status.bound ? 'success' : 'default'" size="small" :bordered="false">
+        {{ status.bound ? '服务已绑定' : '等待绑定' }}
+      </n-tag>
+    </template>
 
-    <div class="pt-4 border-t border-gray-200 dark:border-gray-700">
-      <div class="flex items-center justify-between gap-4">
-        <div>
-          <div class="text-sm font-medium mb-1">
-            绑定状态
+    <n-tabs v-model:value="activeTab" type="line" animated>
+      <n-tab-pane name="overview" tab="概览与配置">
+        <div class="max-h-[66vh] space-y-4 overflow-y-auto pr-1">
+          <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <n-card size="small" :bordered="true">
+              <div class="text-xs opacity-60">
+                通知状态
+              </div>
+              <div class="mt-1 text-sm font-medium">
+                {{ config.enabled ? '已启用' : '已关闭' }}
+              </div>
+            </n-card>
+            <n-card size="small" :bordered="true">
+              <div class="text-xs opacity-60">
+                绑定状态
+              </div>
+              <div class="mt-1 truncate text-sm font-medium">
+                {{ status.bound ? '已绑定会话' : '等待绑定' }}
+              </div>
+            </n-card>
+            <n-card size="small" :bordered="true">
+              <div class="text-xs opacity-60">
+                当前策略
+              </div>
+              <div class="mt-1 truncate text-sm font-medium">
+                {{ notificationModeLabel }}
+              </div>
+            </n-card>
+            <n-card size="small" :bordered="true">
+              <div class="text-xs opacity-60">
+                聊天记录
+              </div>
+              <div class="mt-1 text-sm font-medium">
+                {{ diagnostics.history_count }} 条
+              </div>
+            </n-card>
           </div>
-          <div class="text-xs opacity-60">
-            {{ status.bound ? `已绑定：${status.target_user}` : '尚未绑定接收通知的微信' }}
-          </div>
+
+          <n-card size="small" title="通知配置">
+            <div class="space-y-4">
+              <div class="flex items-center justify-between gap-4">
+                <div>
+                  <div class="text-sm font-medium">
+                    启用微信通知
+                  </div>
+                  <div class="mt-1 text-xs opacity-60">
+                    发送 zhi PNG，并允许当前会话直接回复。
+                  </div>
+                </div>
+                <n-switch :value="config.enabled" @update:value="toggleEnabled" />
+              </div>
+              <div class="border-t border-gray-200/70 pt-4 dark:border-gray-700/70">
+                <div class="mb-2 text-sm font-medium">
+                  通知策略
+                </div>
+                <n-radio-group
+                  :value="config.notification_mode"
+                  :disabled="!config.enabled"
+                  size="small"
+                  @update:value="updateNotificationMode"
+                >
+                  <n-radio-button value="always">
+                    每次立即通知
+                  </n-radio-button>
+                  <n-radio-button value="smart">
+                    智能判断
+                  </n-radio-button>
+                  <n-radio-button value="manual">
+                    仅手动通知
+                  </n-radio-button>
+                </n-radio-group>
+                <div class="mt-2 text-xs opacity-60">
+                  智能判断等待 15 秒；检测到持续键盘或鼠标操作后，本次不发送。
+                </div>
+              </div>
+            </div>
+          </n-card>
+
+          <n-card size="small" title="绑定与连接">
+            <div class="flex flex-wrap items-center justify-between gap-4">
+              <div class="min-w-0">
+                <div class="text-sm font-medium">
+                  {{ status.bound ? `已绑定：${status.target_user}` : '尚未绑定接收通知的微信' }}
+                </div>
+                <div class="mt-1 text-xs opacity-60">
+                  扫码后需在对应会话发送任意消息，建立主动通知上下文。
+                </div>
+              </div>
+              <n-space>
+                <n-button type="primary" size="small" :loading="isBinding || status.binding" :disabled="isBinding || status.binding" @click="startBinding">
+                  {{ status.bound ? '重新绑定' : '开始绑定' }}
+                </n-button>
+                <n-button v-if="status.bound" size="small" :loading="isTesting" @click="testConnection">
+                  测试通知
+                </n-button>
+                <n-popconfirm v-if="status.bound" @positive-click="clearBinding">
+                  <template #trigger>
+                    <n-button size="small" tertiary>
+                      清除绑定
+                    </n-button>
+                  </template>
+                  清除后需要重新扫码并发送绑定消息，聊天历史将保留。
+                </n-popconfirm>
+              </n-space>
+            </div>
+          </n-card>
+
+          <n-card size="small" title="安全诊断信息">
+            <n-spin :show="diagnosticsLoading">
+              <div class="grid grid-cols-1 gap-x-6 gap-y-3 text-xs md:grid-cols-2">
+                <div>
+                  <span class="opacity-55">API Base URL</span><n-ellipsis class="mt-1 font-mono">
+                    {{ diagnostics.base_url || '--' }}
+                  </n-ellipsis>
+                </div>
+                <div>
+                  <span class="opacity-55">Bot User ID</span><div class="mt-1 font-mono">
+                    {{ diagnostics.bot_user_id || '--' }}
+                  </div>
+                </div>
+                <div>
+                  <span class="opacity-55">Account ID</span><div class="mt-1 font-mono">
+                    {{ diagnostics.account_id || '--' }}
+                  </div>
+                </div>
+                <div>
+                  <span class="opacity-55">上下文 / 游标</span><div class="mt-1">
+                    {{ diagnostics.context_ready ? '就绪' : '待建立' }} / {{ diagnostics.cursor_ready ? '就绪' : '待建立' }}
+                  </div>
+                </div>
+                <div>
+                  <span class="opacity-55">状态文件</span><n-ellipsis class="mt-1 font-mono">
+                    {{ diagnostics.state_file || '--' }}
+                  </n-ellipsis>
+                </div>
+                <div>
+                  <span class="opacity-55">历史文件</span><n-ellipsis class="mt-1 font-mono">
+                    {{ diagnostics.history_file || '--' }}
+                  </n-ellipsis>
+                </div>
+              </div>
+              <div class="mt-3 text-xs opacity-55">
+                界面只展示掩码标识与就绪状态，不展示 token 和 context_token。
+              </div>
+            </n-spin>
+          </n-card>
         </div>
-        <n-space>
-          <n-button
-            size="small"
-            type="primary"
-            :loading="isBinding || status.binding"
-            :disabled="isBinding || status.binding"
-            @click="startBinding"
-          >
-            {{ status.bound ? '重新绑定' : '开始绑定' }}
-          </n-button>
-          <n-button v-if="status.bound" size="small" :loading="isTesting" @click="testConnection">
-            测试通知
-          </n-button>
-          <n-popconfirm v-if="status.bound" @positive-click="clearBinding">
-            <template #trigger>
-              <n-button size="small" tertiary>
-                清除绑定
-              </n-button>
-            </template>
-            清除后需要重新扫码并发送绑定消息。
-          </n-popconfirm>
-        </n-space>
-      </div>
-    </div>
-  </n-space>
+      </n-tab-pane>
+
+      <n-tab-pane name="history" tab="聊天记录">
+        <WechatHistoryPanel @count-change="updateHistoryCount" />
+      </n-tab-pane>
+
+      <n-tab-pane name="logs" tab="诊断日志">
+        <WechatLogPanel />
+      </n-tab-pane>
+    </n-tabs>
+  </n-modal>
 
   <n-modal v-model:show="showBinding" preset="card" title="微信通知绑定" style="width: 520px; max-width: calc(100vw - 32px);">
     <n-space vertical size="large">

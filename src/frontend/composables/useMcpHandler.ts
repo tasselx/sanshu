@@ -25,6 +25,7 @@ interface WechatConfig {
 
 interface WechatNotificationPayload {
   requestId: string
+  message: string
   predefinedOptions: string[]
   imagePages: string[]
 }
@@ -114,6 +115,7 @@ export function useMcpHandler() {
     const generation = notificationGeneration
     currentWechatPayload = {
       requestId: request.id || '',
+      message: request.message,
       predefinedOptions: request.predefined_options || [],
       imagePages: renderWechatNotificationImages(request),
     }

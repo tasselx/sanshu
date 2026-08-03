@@ -27,7 +27,7 @@ impl WechatRuntimeState {
     }
 }
 
-fn state_path() -> Result<PathBuf> {
+pub fn state_path() -> Result<PathBuf> {
     let config_dir = dirs::config_dir()
         .context("获取系统配置目录失败")?
         .join("sanshu");
