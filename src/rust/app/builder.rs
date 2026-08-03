@@ -144,6 +144,7 @@ pub fn build_tauri_app() -> Builder<tauri::Wry> {
             clear_wechat_binding,
             test_wechat_connection,
             start_wechat_sync,
+            get_system_last_input_tick,
             // 代码高亮主题命令
             get_hljs_theme,
             set_hljs_theme,

@@ -8,6 +8,7 @@ use crate::wechat::state::{
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use md5::{Digest, Md5};
 use once_cell::sync::Lazy;
+use qrcode::{render::svg, QrCode};
 use serde::Serialize;
 use serde_json::json;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -133,6 +134,38 @@ pub async fn test_wechat_connection() -> Result<String, String> {
     Ok("微信通知连接正常".to_string())
 }
 
+#[cfg(target_os = "windows")]
+#[repr(C)]
+struct LastInputInfo {
+    cb_size: u32,
+    dw_time: u32,
+}
+
+#[cfg(target_os = "windows")]
+#[link(name = "User32")]
+extern "system" {
+    fn GetLastInputInfo(last_input_info: *mut LastInputInfo) -> i32;
+}
+
+/// 读取系统最近一次键盘或鼠标输入时间，用于判断用户是否仍在电脑前操作。
+#[tauri::command]
+pub fn get_system_last_input_tick() -> Result<u32, String> {
+    #[cfg(target_os = "windows")]
+    {
+        let mut info = LastInputInfo {
+            cb_size: std::mem::size_of::<LastInputInfo>() as u32,
+            dw_time: 0,
+        };
+        let succeeded = unsafe { GetLastInputInfo(&mut info) };
+        return (succeeded != 0)
+            .then_some(info.dw_time)
+            .ok_or_else(|| "读取系统输入状态失败".to_string());
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    Err("当前平台未实现系统输入检测".to_string())
+}
+
 #[tauri::command]
 pub async fn start_wechat_sync(
     request_id: String,
@@ -180,6 +213,7 @@ pub async fn start_wechat_sync(
 }
 
 async fn run_binding_flow(app: &AppHandle) -> Result<(), String> {
+    log_important!(info, "[wechat] binding: start");
     let client = ILinkClient::with_bot_agent(Some("Sanshu/WechatNotification"));
     let existing = load_wechat_state().map_err(|e| e.to_string())?;
     let local_tokens = existing
@@ -189,14 +223,30 @@ async fn run_binding_flow(app: &AppHandle) -> Result<(), String> {
         .unwrap_or_default();
 
     let mut credentials = None;
-    for _ in 0..3 {
-        let qr = client
-            .get_qr_code(DEFAULT_BASE_URL, &local_tokens)
-            .await
-            .map_err(|e| format!("获取登录二维码失败: {e}"))?;
-        let _ = app.emit("wechat-qrcode", &qr.qrcode_img_content);
+    for attempt in 1..=3 {
+        log_important!(info, "[wechat] binding: requesting_qr attempt={}", attempt);
+        app.emit("wechat-binding-status", "requesting_qr")
+            .map_err(|e| format!("推送二维码请求状态失败: {e}"))?;
+        let qr = timeout(
+            Duration::from_secs(15),
+            client.get_qr_code(DEFAULT_BASE_URL, &local_tokens),
+        )
+        .await
+        .map_err(|_| "获取登录二维码超时，请检查网络或代理后重试".to_string())?
+        .map_err(|e| format!("获取登录二维码失败: {e}"))?;
+        let qr_image = render_qr_data_url(&qr.qrcode_img_content)?;
+        log_important!(
+            info,
+            "[wechat] binding: qr_ready content_length={}",
+            qr.qrcode_img_content.len()
+        );
+        app.emit("wechat-qrcode", &qr_image)
+            .map_err(|e| format!("推送二维码到界面失败: {e}"))?;
+        app.emit("wechat-binding-status", "qr_ready")
+            .map_err(|e| format!("推送二维码就绪状态失败: {e}"))?;
         let mut poll_base_url = DEFAULT_BASE_URL.to_string();
         let mut verify_code = None;
+        let mut last_status = String::new();
 
         loop {
             let status = client
@@ -204,6 +254,10 @@ async fn run_binding_flow(app: &AppHandle) -> Result<(), String> {
                 .await
                 .map_err(|e| format!("查询扫码状态失败: {e}"))?;
             verify_code = None;
+            if status.status != last_status {
+                log_important!(info, "[wechat] binding: status={}", status.status);
+                last_status = status.status.clone();
+            }
             let _ = app.emit("wechat-binding-status", &status.status);
             match status.status.as_str() {
                 "confirmed" => {
@@ -281,6 +335,20 @@ async fn run_binding_flow(app: &AppHandle) -> Result<(), String> {
         }
         save_wechat_state(&runtime).map_err(|e| e.to_string())?;
     }
+}
+
+/// 将接口返回的扫码 URL 编码为本地 SVG，避免把文本 URL 误作图片地址。
+fn render_qr_data_url(content: &str) -> Result<String, String> {
+    let code = QrCode::new(content.as_bytes()).map_err(|e| format!("生成登录二维码失败: {e}"))?;
+    let svg = code
+        .render::<svg::Color>()
+        .min_dimensions(256, 256)
+        .quiet_zone(true)
+        .build();
+    Ok(format!(
+        "data:image/svg+xml;base64,{}",
+        STANDARD.encode(svg.as_bytes())
+    ))
 }
 
 async fn listen_for_reply(

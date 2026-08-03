@@ -71,6 +71,7 @@ export function useAppManager() {
     app: {
       initialize: appInit.initializeApp,
       cleanup: () => {
+        mcpHandler.resetWechatNotification()
         // 清理窗口焦点监听器
         settings.removeWindowFocusListener()
       },
@@ -83,12 +84,16 @@ export function useAppManager() {
     naiveTheme: theme.naiveTheme,
     mcpRequest: mcpHandler.mcpRequest,
     showMcpPopup: mcpHandler.showMcpPopup,
+    wechatNotificationState: mcpHandler.wechatNotificationState,
     appConfig,
     isInitializing: appInit.isInitializing,
 
     // 图标模式状态
     isIconMode: mcpHandler.isIconMode,
     iconParams: mcpHandler.iconParams,
+
+    cancelWechatNotification: mcpHandler.cancelWechatNotification,
+    sendWechatNotificationNow: mcpHandler.sendWechatNotificationNow,
 
     // 操作
     actions,

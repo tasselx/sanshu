@@ -9,10 +9,13 @@ const {
   naiveTheme,
   mcpRequest,
   showMcpPopup,
+  wechatNotificationState,
   appConfig,
   isInitializing,
   isIconMode,
   iconParams,
+  cancelWechatNotification,
+  sendWechatNotificationNow,
   actions,
 } = useAppManager()
 
@@ -46,10 +49,13 @@ onUnmounted(() => {
             <AppContent
               :mcp-request="mcpRequest"
               :show-mcp-popup="showMcpPopup"
+              :wechat-notification-state="wechatNotificationState"
               :app-config="appConfig"
               :is-initializing="isInitializing"
               :is-icon-mode="isIconMode"
               :icon-params="iconParams"
+              @cancel-wechat-notification="cancelWechatNotification"
+              @send-wechat-notification="sendWechatNotificationNow"
               @mcp-response="handlers.onMcpResponse"
               @mcp-cancel="handlers.onMcpCancel"
               @theme-change="handlers.onThemeChange"

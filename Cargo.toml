@@ -60,6 +60,7 @@ rust-embed = "8.0"
 teloxide = { version = "0.15.0", features = [ "macros" ] }
 wechatbot = "0.4.0"
 md-5 = "0.10"
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 regex = "1.0"
 log = "0.4.27"
 env_logger = "0.11.8"

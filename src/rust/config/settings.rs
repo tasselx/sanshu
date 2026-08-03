@@ -270,6 +270,8 @@ pub struct TelegramConfig {
 pub struct WechatConfig {
     #[serde(default)]
     pub enabled: bool, // 是否在每次 zhi 请求时发送微信通知
+    #[serde(default = "default_wechat_notification_mode")]
+    pub notification_mode: String, // 通知策略：always / smart / manual
 }
 
 /// 代理配置
@@ -431,7 +433,14 @@ pub fn default_telegram_config() -> TelegramConfig {
 }
 
 pub fn default_wechat_config() -> WechatConfig {
-    WechatConfig { enabled: false }
+    WechatConfig {
+        enabled: false,
+        notification_mode: default_wechat_notification_mode(),
+    }
+}
+
+pub fn default_wechat_notification_mode() -> String {
+    "always".to_string()
 }
 
 pub fn default_custom_prompt_config() -> CustomPromptConfig {

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import type { WechatNotificationState } from '../composables/useMcpHandler'
 import { useMessage } from 'naive-ui'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useAcemcpSync } from '../composables/useAcemcpSync'
@@ -36,6 +37,7 @@ interface AppConfig {
 interface Props {
   mcpRequest: any
   showMcpPopup: boolean
+  wechatNotificationState: WechatNotificationState
   appConfig: AppConfig
   isInitializing: boolean
   isIconMode?: boolean
@@ -61,6 +63,8 @@ interface Emits {
   updateReplyConfig: [config: { enable_continue_reply?: boolean, continue_prompt?: string }]
   messageReady: [message: any]
   configReloaded: []
+  cancelWechatNotification: []
+  sendWechatNotification: []
 }
 
 const props = defineProps<Props>()
@@ -226,11 +230,14 @@ onUnmounted(() => {
           :mcp-failed-files="mcpFailedFiles"
           :mcp-last-failure-time="mcpLastFailureTime"
           :mcp-last-error="mcpLastError"
+          :wechat-notification-state="props.wechatNotificationState"
           @theme-change="$emit('themeChange', $event)"
           @open-main-layout="togglePopupSettings"
           @open-log-viewer="openLogViewer"
           @toggle-always-on-top="$emit('toggleAlwaysOnTop')"
           @open-index-status="showIndexDrawer = true"
+          @cancel-wechat-notification="$emit('cancelWechatNotification')"
+          @send-wechat-notification="$emit('sendWechatNotification')"
         />
       </div>
 

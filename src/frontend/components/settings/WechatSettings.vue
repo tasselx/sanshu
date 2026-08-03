@@ -6,7 +6,10 @@ import { onMounted, onUnmounted, ref } from 'vue'
 
 interface WechatConfig {
   enabled: boolean
+  notification_mode: WechatNotificationMode
 }
+
+type WechatNotificationMode = 'always' | 'smart' | 'manual'
 
 interface WechatStatus {
   enabled: boolean
@@ -16,7 +19,7 @@ interface WechatStatus {
 }
 
 const message = useMessage()
-const config = ref<WechatConfig>({ enabled: false })
+const config = ref<WechatConfig>({ enabled: false, notification_mode: 'always' })
 const status = ref<WechatStatus>({ enabled: false, bound: false, binding: false, target_user: null })
 const showBinding = ref(false)
 const qrUrl = ref('')
@@ -33,12 +36,29 @@ async function loadState() {
       invoke<WechatConfig>('get_wechat_config'),
       invoke<WechatStatus>('get_wechat_status'),
     ])
-    config.value = loadedConfig
+    config.value = {
+      ...loadedConfig,
+      notification_mode: loadedConfig.notification_mode || 'always',
+    }
     status.value = loadedStatus
   }
   catch (error) {
     console.error('加载微信通知状态失败:', error)
     message.error('加载微信通知状态失败')
+  }
+}
+
+async function updateNotificationMode(value: string | number) {
+  const mode = String(value) as WechatNotificationMode
+  const previous = config.value.notification_mode
+  config.value.notification_mode = mode
+  try {
+    await invoke('set_wechat_config', { wechatConfig: config.value })
+    message.success('微信通知策略已更新')
+  }
+  catch (error) {
+    config.value.notification_mode = previous
+    message.error(`保存微信通知策略失败：${String(error)}`)
   }
 }
 
@@ -116,6 +136,8 @@ onMounted(async () => {
   }))
   cleanupFunctions.push(await listen<string>('wechat-binding-status', (event) => {
     const labels: Record<string, string> = {
+      requesting_qr: '正在连接微信服务并生成二维码...（最长等待 15 秒）',
+      qr_ready: '请使用接收通知的微信扫码并确认',
       scaned: '二维码已扫描，请在微信中确认',
       confirmed: '登录已确认，正在等待目标微信发送绑定消息',
       waiting_message: '请在当前微信会话向 Bot 发送任意消息完成绑定',
@@ -157,6 +179,31 @@ onUnmounted(() => cleanupFunctions.forEach(cleanup => cleanup()))
         </div>
       </div>
       <n-switch :value="config.enabled" size="small" @update:value="toggleEnabled" />
+    </div>
+
+    <div class="pt-4 border-t border-gray-200 dark:border-gray-700">
+      <div class="text-sm font-medium mb-1">
+        通知策略
+      </div>
+      <div class="text-xs opacity-60 mb-3">
+        智能判断会等待 15 秒；检测到持续键盘或鼠标操作后，本次不发送。
+      </div>
+      <n-radio-group
+        :value="config.notification_mode"
+        :disabled="!config.enabled"
+        size="small"
+        @update:value="updateNotificationMode"
+      >
+        <n-radio-button value="always">
+          每次立即通知
+        </n-radio-button>
+        <n-radio-button value="smart">
+          智能判断
+        </n-radio-button>
+        <n-radio-button value="manual">
+          仅手动通知
+        </n-radio-button>
+      </n-radio-group>
     </div>
 
     <div class="pt-4 border-t border-gray-200 dark:border-gray-700">
@@ -203,6 +250,9 @@ onUnmounted(() => cleanupFunctions.forEach(cleanup => cleanup()))
       <div v-if="qrUrl" class="flex justify-center rounded-lg bg-white p-4">
         <img :src="qrUrl" alt="微信登录二维码" class="w-64 h-64 object-contain">
       </div>
+      <n-button v-if="!isBinding && !qrUrl" type="primary" secondary @click="startBinding">
+        重新获取二维码
+      </n-button>
       <n-space v-if="verifyCodeRequired" vertical>
         <n-input v-model:value="verifyCode" placeholder="输入微信中显示的配对码" @keyup.enter="submitVerifyCode" />
         <n-button type="primary" :disabled="!verifyCode.trim()" @click="submitVerifyCode">

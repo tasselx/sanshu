@@ -3,12 +3,48 @@ import { listen } from '@tauri-apps/api/event'
 import { ref } from 'vue'
 import { renderWechatNotificationImages } from '../utils/wechatNotificationImage'
 
+export type WechatNotificationPhase
+  = | 'idle'
+    | 'countdown'
+    | 'manual'
+    | 'sending'
+    | 'sent'
+    | 'activity_cancelled'
+    | 'cancelled'
+    | 'error'
+
+export interface WechatNotificationState {
+  phase: WechatNotificationPhase
+  secondsRemaining: number
+}
+
+interface WechatConfig {
+  enabled: boolean
+  notification_mode?: 'always' | 'smart' | 'manual'
+}
+
+interface WechatNotificationPayload {
+  requestId: string
+  predefinedOptions: string[]
+  imagePages: string[]
+}
+
+const SMART_NOTIFICATION_DELAY_SECONDS = 15
+const REQUIRED_ACTIVITY_SAMPLES = 2
+
 /**
  * MCP处理组合式函数
  */
 export function useMcpHandler() {
   const mcpRequest = ref(null)
   const showMcpPopup = ref(false)
+  const wechatNotificationState = ref<WechatNotificationState>({
+    phase: 'idle',
+    secondsRemaining: 0,
+  })
+  let wechatNotificationTimer: ReturnType<typeof setInterval> | null = null
+  let currentWechatPayload: WechatNotificationPayload | null = null
+  let notificationGeneration = 0
 
   // 图标搜索模式状态
   const isIconMode = ref(false)
@@ -19,11 +55,138 @@ export function useMcpHandler() {
     projectRoot: string
   } | null>(null)
 
+  function stopWechatNotificationTimer() {
+    if (wechatNotificationTimer) {
+      clearInterval(wechatNotificationTimer)
+      wechatNotificationTimer = null
+    }
+  }
+
+  function resetWechatNotification() {
+    notificationGeneration += 1
+    stopWechatNotificationTimer()
+    currentWechatPayload = null
+    wechatNotificationState.value = { phase: 'idle', secondsRemaining: 0 }
+  }
+
+  async function deliverWechatNotification(payload: WechatNotificationPayload, generation: number) {
+    stopWechatNotificationTimer()
+    wechatNotificationState.value = { phase: 'sending', secondsRemaining: 0 }
+    try {
+      await invoke('start_wechat_sync', payload)
+      if (generation === notificationGeneration)
+        wechatNotificationState.value = { phase: 'sent', secondsRemaining: 0 }
+      console.log('✅ 微信同步启动成功')
+    }
+    catch (error) {
+      if (generation === notificationGeneration)
+        wechatNotificationState.value = { phase: 'error', secondsRemaining: 0 }
+      console.error('启动微信同步失败:', error)
+    }
+  }
+
+  function cancelWechatNotification(reason: 'manual' | 'activity' = 'manual') {
+    if (!['countdown', 'manual'].includes(wechatNotificationState.value.phase))
+      return
+    notificationGeneration += 1
+    stopWechatNotificationTimer()
+    currentWechatPayload = null
+    wechatNotificationState.value = {
+      phase: reason === 'activity' ? 'activity_cancelled' : 'cancelled',
+      secondsRemaining: 0,
+    }
+  }
+
+  async function sendWechatNotificationNow() {
+    if (!currentWechatPayload || !['countdown', 'manual'].includes(wechatNotificationState.value.phase))
+      return
+    const payload = currentWechatPayload
+    const generation = notificationGeneration
+    currentWechatPayload = null
+    await deliverWechatNotification(payload, generation)
+  }
+
+  async function scheduleWechatNotification(request: any, config: WechatConfig) {
+    resetWechatNotification()
+    if (!config.enabled || !request?.message)
+      return
+
+    const generation = notificationGeneration
+    currentWechatPayload = {
+      requestId: request.id || '',
+      predefinedOptions: request.predefined_options || [],
+      imagePages: renderWechatNotificationImages(request),
+    }
+
+    const mode = config.notification_mode || 'always'
+    if (mode === 'always') {
+      const payload = currentWechatPayload
+      currentWechatPayload = null
+      if (payload)
+        await deliverWechatNotification(payload, generation)
+      return
+    }
+    if (mode === 'manual') {
+      wechatNotificationState.value = { phase: 'manual', secondsRemaining: 0 }
+      return
+    }
+
+    let lastInputTick: number
+    try {
+      lastInputTick = await invoke<number>('get_system_last_input_tick')
+    }
+    catch (error) {
+      console.error('读取系统输入状态失败，将按倒计时发送微信通知:', error)
+      lastInputTick = -1
+    }
+
+    const startedAt = Date.now()
+    let activitySamples = 0
+    let polling = false
+    wechatNotificationState.value = {
+      phase: 'countdown',
+      secondsRemaining: SMART_NOTIFICATION_DELAY_SECONDS,
+    }
+
+    wechatNotificationTimer = setInterval(async () => {
+      if (polling || generation !== notificationGeneration)
+        return
+      polling = true
+      try {
+        const elapsedSeconds = (Date.now() - startedAt) / 1000
+        const secondsRemaining = Math.max(0, Math.ceil(SMART_NOTIFICATION_DELAY_SECONDS - elapsedSeconds))
+        if (secondsRemaining === 0) {
+          const payload = currentWechatPayload
+          currentWechatPayload = null
+          if (payload)
+            await deliverWechatNotification(payload, generation)
+          return
+        }
+        wechatNotificationState.value = { phase: 'countdown', secondsRemaining }
+
+        const inputTick = await invoke<number>('get_system_last_input_tick')
+        if (lastInputTick >= 0 && inputTick !== lastInputTick) {
+          activitySamples += 1
+          lastInputTick = inputTick
+          if (activitySamples >= REQUIRED_ACTIVITY_SAMPLES)
+            cancelWechatNotification('activity')
+        }
+      }
+      catch (error) {
+        console.error('轮询系统输入状态失败:', error)
+      }
+      finally {
+        polling = false
+      }
+    }, 500)
+  }
+
   /**
    * 统一的MCP响应处理
    */
   async function handleMcpResponse(response: any) {
     try {
+      resetWechatNotification()
       // 通过Tauri命令发送响应并退出应用
       await invoke('send_mcp_response', { response })
       await invoke('exit_app')
@@ -38,6 +201,7 @@ export function useMcpHandler() {
    */
   async function handleMcpCancel() {
     try {
+      resetWechatNotification()
       // 发送取消信息并退出应用
       await invoke('send_mcp_response', { response: 'CANCELLED' })
       await invoke('exit_app')
@@ -54,19 +218,22 @@ export function useMcpHandler() {
   async function showMcpDialog(request: any) {
     // 获取通知配置；微信双向回复依赖当前弹窗进程监听，因此启用微信时保留前端弹窗。
     let shouldShowFrontendPopup = true
-    let wechatEnabled = false
+    let wechatConfig: WechatConfig = { enabled: false, notification_mode: 'always' }
     try {
-      const [telegramConfig, wechatConfig] = await Promise.all([
+      const [telegramConfig, rawWechatConfig] = await Promise.all([
         invoke('get_telegram_config'),
         invoke('get_wechat_config'),
       ])
-      wechatEnabled = !!(wechatConfig as any)?.enabled
+      wechatConfig = {
+        enabled: !!(rawWechatConfig as any)?.enabled,
+        notification_mode: (rawWechatConfig as any)?.notification_mode || 'always',
+      }
       // 如果Telegram启用且配置了隐藏前端弹窗，则不显示前端弹窗
       if (
         telegramConfig
         && (telegramConfig as any).enabled
         && (telegramConfig as any).hide_frontend_popup
-        && !wechatEnabled
+        && !wechatConfig.enabled
       ) {
         shouldShowFrontendPopup = false
         console.log('🔕 根据Telegram配置，隐藏前端弹窗')
@@ -110,20 +277,8 @@ export function useMcpHandler() {
       console.error('启动Telegram同步失败:', error)
     }
 
-    // 每个新的 zhi 请求生成主题一致的 PNG，并启动微信双向同步。
-    try {
-      if (request?.message && wechatEnabled) {
-        await invoke('start_wechat_sync', {
-          requestId: request.id || '',
-          predefinedOptions: request.predefined_options || [],
-          imagePages: renderWechatNotificationImages(request),
-        })
-        console.log('✅ 微信同步启动成功')
-      }
-    }
-    catch (error) {
-      console.error('启动微信同步失败:', error)
-    }
+    // 根据通知策略立即发送、智能等待或保留手动发送入口。
+    await scheduleWechatNotification(request, wechatConfig)
   }
 
   /**
@@ -199,6 +354,7 @@ export function useMcpHandler() {
   return {
     mcpRequest,
     showMcpPopup,
+    wechatNotificationState,
     isIconMode,
     iconParams,
     handleMcpResponse,
@@ -207,5 +363,8 @@ export function useMcpHandler() {
     checkMcpMode,
     setupMcpEventListener,
     setIconMode,
+    cancelWechatNotification,
+    sendWechatNotificationNow,
+    resetWechatNotification,
   }
 }
