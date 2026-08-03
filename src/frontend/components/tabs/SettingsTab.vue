@@ -13,6 +13,7 @@ import ShortcutSettings from '../settings/ShortcutSettings.vue'
 import TelegramSettings from '../settings/TelegramSettings.vue'
 import ThemeSettings from '../settings/ThemeSettings.vue'
 import VersionChecker from '../settings/VersionChecker.vue'
+import WechatSettings from '../settings/WechatSettings.vue'
 import WindowSettings from '../settings/WindowSettings.vue'
 
 interface Props {
@@ -266,6 +267,30 @@ function handleWindowSizeUpdate(size: { width: number, height: number, fixed: bo
         </template>
         <div class="setting-content">
           <TelegramSettings />
+        </div>
+      </n-collapse-item>
+
+      <!-- 微信通知设置 -->
+      <n-collapse-item name="wechat">
+        <template #header>
+          <div class="flex items-center justify-between w-full">
+            <div class="flex items-center">
+              <div class="w-10 h-10 rounded-lg bg-green-100 dark:bg-green-900 flex items-center justify-center mr-4">
+                <div class="i-carbon-logo-wechat text-lg text-green-600 dark:text-green-400" />
+              </div>
+              <div>
+                <div class="text-lg font-medium tracking-tight mb-1">
+                  微信通知
+                </div>
+                <div class="text-sm opacity-60 font-normal">
+                  配置 zhi 图片通知与双向回复
+                </div>
+              </div>
+            </div>
+          </div>
+        </template>
+        <div class="setting-content">
+          <WechatSettings />
         </div>
       </n-collapse-item>
 

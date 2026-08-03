@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { ref } from 'vue'
+import { renderWechatNotificationImages } from '../utils/wechatNotificationImage'
 
 /**
  * MCP处理组合式函数
@@ -51,18 +52,28 @@ export function useMcpHandler() {
    * 显示MCP弹窗
    */
   async function showMcpDialog(request: any) {
-    // 获取Telegram配置，检查是否需要隐藏前端弹窗
+    // 获取通知配置；微信双向回复依赖当前弹窗进程监听，因此启用微信时保留前端弹窗。
     let shouldShowFrontendPopup = true
+    let wechatEnabled = false
     try {
-      const telegramConfig = await invoke('get_telegram_config')
+      const [telegramConfig, wechatConfig] = await Promise.all([
+        invoke('get_telegram_config'),
+        invoke('get_wechat_config'),
+      ])
+      wechatEnabled = !!(wechatConfig as any)?.enabled
       // 如果Telegram启用且配置了隐藏前端弹窗，则不显示前端弹窗
-      if (telegramConfig && (telegramConfig as any).enabled && (telegramConfig as any).hide_frontend_popup) {
+      if (
+        telegramConfig
+        && (telegramConfig as any).enabled
+        && (telegramConfig as any).hide_frontend_popup
+        && !wechatEnabled
+      ) {
         shouldShowFrontendPopup = false
         console.log('🔕 根据Telegram配置，隐藏前端弹窗')
       }
     }
     catch (error) {
-      console.error('获取Telegram配置失败:', error)
+      console.error('获取通知配置失败:', error)
       // 配置获取失败时，保持默认行为（显示弹窗）
     }
 
@@ -97,6 +108,21 @@ export function useMcpHandler() {
     }
     catch (error) {
       console.error('启动Telegram同步失败:', error)
+    }
+
+    // 每个新的 zhi 请求生成主题一致的 PNG，并启动微信双向同步。
+    try {
+      if (request?.message && wechatEnabled) {
+        await invoke('start_wechat_sync', {
+          requestId: request.id || '',
+          predefinedOptions: request.predefined_options || [],
+          imagePages: renderWechatNotificationImages(request),
+        })
+        console.log('✅ 微信同步启动成功')
+      }
+    }
+    catch (error) {
+      console.error('启动微信同步失败:', error)
     }
   }
 

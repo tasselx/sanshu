@@ -1,5 +1,5 @@
 use crate::app::builder::run_tauri_app;
-use crate::config::load_standalone_telegram_config;
+use crate::config::load_standalone_config;
 use crate::log_important;
 use crate::mcp::types::PopupRequest;
 use crate::mcp::utils::{generate_request_id, normalize_zhi_choices};
@@ -203,10 +203,14 @@ fn split_cli_options(raw: &str) -> Vec<String> {
 /// 处理MCP请求
 fn handle_mcp_request(request_file: &str) -> Result<()> {
     log_important!(info, "[handle_mcp_request] 收到请求文件: {}", request_file);
-    // 检查Telegram配置，决定是否启用纯Telegram模式
-    match load_standalone_telegram_config() {
-        Ok(telegram_config) => {
-            if telegram_config.enabled && telegram_config.hide_frontend_popup {
+    // 微信双向回复依赖 GUI 进程的事件提交链；启用微信时保留 GUI。
+    match load_standalone_config() {
+        Ok(app_config) => {
+            let telegram_config = app_config.telegram_config;
+            if telegram_config.enabled
+                && telegram_config.hide_frontend_popup
+                && !app_config.wechat_config.enabled
+            {
                 // 纯Telegram模式：不启动GUI，直接处理
                 log_important!(
                     info,

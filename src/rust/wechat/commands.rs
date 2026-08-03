@@ -1,0 +1,453 @@
+use crate::config::{save_config, AppState, WechatConfig};
+use crate::log_important;
+use crate::wechat::parser::{parse_wechat_reply, request_short_code};
+use crate::wechat::state::{
+    clear_wechat_state, load_wechat_state, save_wechat_state, StoredWechatCredentials,
+    WechatRuntimeState,
+};
+use base64::{engine::general_purpose::STANDARD, Engine as _};
+use md5::{Digest, Md5};
+use once_cell::sync::Lazy;
+use serde::Serialize;
+use serde_json::json;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
+use std::time::{SystemTime, UNIX_EPOCH};
+use tauri::{AppHandle, Emitter, State};
+use tokio::sync::oneshot;
+use tokio::time::{sleep, timeout, Duration};
+use uuid::Uuid;
+use wechatbot::protocol::{
+    build_cdn_upload_url, build_media_message, build_text_message, GetUploadUrlParams,
+    ILinkClient, CDN_BASE_URL, DEFAULT_BASE_URL,
+};
+use wechatbot::{
+    encode_aes_key_base64, encode_aes_key_hex, encrypt_aes_ecb, generate_aes_key,
+    IncomingMessage,
+};
+
+static BINDING_ACTIVE: AtomicBool = AtomicBool::new(false);
+static VERIFY_CODE_SENDER: Lazy<Mutex<Option<oneshot::Sender<String>>>> =
+    Lazy::new(|| Mutex::new(None));
+
+#[derive(Debug, Serialize)]
+pub struct WechatStatus {
+    pub enabled: bool,
+    pub bound: bool,
+    pub binding: bool,
+    pub target_user: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum WechatEvent {
+    Submit {
+        selected_options: Vec<String>,
+        user_input: Option<String>,
+    },
+    Continue,
+}
+
+#[tauri::command]
+pub async fn get_wechat_config(state: State<'_, AppState>) -> Result<WechatConfig, String> {
+    let config = state
+        .config
+        .lock()
+        .map_err(|e| format!("获取配置失败: {e}"))?;
+    Ok(config.wechat_config.clone())
+}
+
+#[tauri::command]
+pub async fn set_wechat_config(
+    wechat_config: WechatConfig,
+    state: State<'_, AppState>,
+    app: AppHandle,
+) -> Result<(), String> {
+    {
+        let mut config = state
+            .config
+            .lock()
+            .map_err(|e| format!("获取配置失败: {e}"))?;
+        config.wechat_config = wechat_config;
+    }
+    save_config(&state, &app)
+        .await
+        .map_err(|e| format!("保存配置失败: {e}"))
+}
+
+#[tauri::command]
+pub async fn get_wechat_status(state: State<'_, AppState>) -> Result<WechatStatus, String> {
+    let enabled = state
+        .config
+        .lock()
+        .map_err(|e| format!("获取配置失败: {e}"))?
+        .wechat_config
+        .enabled;
+    let runtime = load_wechat_state().map_err(|e| e.to_string())?;
+    Ok(WechatStatus {
+        enabled,
+        bound: runtime.is_bound(),
+        binding: BINDING_ACTIVE.load(Ordering::SeqCst),
+        target_user: mask_user_id(&runtime.target_user_id),
+    })
+}
+
+#[tauri::command]
+pub async fn start_wechat_binding(app: AppHandle) -> Result<(), String> {
+    if BINDING_ACTIVE.swap(true, Ordering::SeqCst) {
+        return Err("微信绑定正在进行中".to_string());
+    }
+
+    tauri::async_runtime::spawn(async move {
+        let result = run_binding_flow(&app).await;
+        BINDING_ACTIVE.store(false, Ordering::SeqCst);
+        if let Err(error) = result {
+            log_important!(error, "[wechat] 绑定失败: {}", error);
+            let _ = app.emit("wechat-binding-error", error);
+        }
+    });
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn submit_wechat_verify_code(code: String) -> Result<(), String> {
+    let sender = VERIFY_CODE_SENDER
+        .lock()
+        .map_err(|_| "验证码通道状态异常".to_string())?
+        .take()
+        .ok_or_else(|| "当前没有待提交的配对码".to_string())?;
+    sender
+        .send(code.trim().to_string())
+        .map_err(|_| "配对码提交已过期".to_string())
+}
+
+#[tauri::command]
+pub async fn clear_wechat_binding() -> Result<(), String> {
+    clear_wechat_state().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn test_wechat_connection() -> Result<String, String> {
+    let runtime = require_bound_state()?;
+    send_text(&runtime, "三术微信通知连接测试成功").await?;
+    Ok("微信通知连接正常".to_string())
+}
+
+#[tauri::command]
+pub async fn start_wechat_sync(
+    request_id: String,
+    predefined_options: Vec<String>,
+    image_pages: Vec<String>,
+    state: State<'_, AppState>,
+    app: AppHandle,
+) -> Result<(), String> {
+    let enabled = state
+        .config
+        .lock()
+        .map_err(|e| format!("获取配置失败: {e}"))?
+        .wechat_config
+        .enabled;
+    if !enabled {
+        return Ok(());
+    }
+
+    let runtime = require_bound_state()?;
+    let code = request_short_code(&request_id);
+    let start_time_ms = now_millis();
+    for (index, image_page) in image_pages.iter().enumerate() {
+        let bytes = STANDARD
+            .decode(image_page)
+            .map_err(|e| format!("解析通知图片失败: {e}"))?;
+        let caption = format!("三术 zhi #{code} ({}/{})", index + 1, image_pages.len());
+        send_image(&runtime, bytes, Some(caption)).await?;
+    }
+    send_text(&runtime, &build_reply_guide(&code, &predefined_options)).await?;
+
+    tauri::async_runtime::spawn(async move {
+        if let Err(error) = listen_for_reply(
+            runtime,
+            code,
+            predefined_options,
+            start_time_ms,
+            app.clone(),
+        )
+        .await
+        {
+            log_important!(warn, "[wechat] 回复监听结束: {}", error);
+        }
+    });
+    Ok(())
+}
+
+async fn run_binding_flow(app: &AppHandle) -> Result<(), String> {
+    let client = ILinkClient::with_bot_agent(Some("Sanshu/WechatNotification"));
+    let existing = load_wechat_state().map_err(|e| e.to_string())?;
+    let local_tokens = existing
+        .credentials
+        .as_ref()
+        .map(|credentials| vec![credentials.token.clone()])
+        .unwrap_or_default();
+
+    let mut credentials = None;
+    for _ in 0..3 {
+        let qr = client
+            .get_qr_code(DEFAULT_BASE_URL, &local_tokens)
+            .await
+            .map_err(|e| format!("获取登录二维码失败: {e}"))?;
+        let _ = app.emit("wechat-qrcode", &qr.qrcode_img_content);
+        let mut poll_base_url = DEFAULT_BASE_URL.to_string();
+        let mut verify_code = None;
+
+        loop {
+            let status = client
+                .poll_qr_status(&poll_base_url, &qr.qrcode, verify_code.as_deref())
+                .await
+                .map_err(|e| format!("查询扫码状态失败: {e}"))?;
+            verify_code = None;
+            let _ = app.emit("wechat-binding-status", &status.status);
+            match status.status.as_str() {
+                "confirmed" => {
+                    credentials = Some(StoredWechatCredentials {
+                        token: status
+                            .bot_token
+                            .ok_or_else(|| "登录结果缺少 bot_token".to_string())?,
+                        base_url: status.baseurl.unwrap_or_else(|| poll_base_url.clone()),
+                        account_id: status.ilink_bot_id.unwrap_or_default(),
+                        bot_user_id: status.ilink_user_id.unwrap_or_default(),
+                    });
+                    break;
+                }
+                "binded_redirect" => {
+                    credentials = existing.credentials.clone();
+                    break;
+                }
+                "need_verifycode" => {
+                    let (sender, receiver) = oneshot::channel();
+                    *VERIFY_CODE_SENDER
+                        .lock()
+                        .map_err(|_| "创建配对码通道失败".to_string())? = Some(sender);
+                    let _ = app.emit("wechat-verify-code-required", ());
+                    verify_code = Some(
+                        timeout(Duration::from_secs(180), receiver)
+                            .await
+                            .map_err(|_| "等待配对码超时".to_string())?
+                            .map_err(|_| "配对码通道已关闭".to_string())?,
+                    );
+                    continue;
+                }
+                "scaned_but_redirect" => {
+                    if let Some(host) = status.redirect_host {
+                        poll_base_url = format!("https://{host}");
+                    }
+                }
+                "expired" | "verify_code_blocked" => break,
+                _ => {}
+            }
+            if credentials.is_some() {
+                break;
+            }
+            sleep(Duration::from_secs(2)).await;
+        }
+        if credentials.is_some() {
+            break;
+        }
+    }
+
+    let credentials = credentials.ok_or_else(|| "微信扫码登录未完成".to_string())?;
+    let mut runtime = WechatRuntimeState {
+        credentials: Some(credentials),
+        cursor: existing.cursor,
+        ..WechatRuntimeState::default()
+    };
+    save_wechat_state(&runtime).map_err(|e| e.to_string())?;
+    let _ = app.emit("wechat-binding-status", "waiting_message");
+
+    loop {
+        let credentials = runtime.credentials.as_ref().expect("凭据已设置");
+        let updates = client
+            .get_updates(&credentials.base_url, &credentials.token, &runtime.cursor)
+            .await
+            .map_err(|e| format!("等待绑定消息失败: {e}"))?;
+        if !updates.get_updates_buf.is_empty() {
+            runtime.cursor = updates.get_updates_buf;
+        }
+        if let Some(message) = updates.msgs.iter().find_map(IncomingMessage::from_wire) {
+            runtime.target_user_id = message.user_id.clone();
+            runtime.context_token = message.context_token().to_string();
+            save_wechat_state(&runtime).map_err(|e| e.to_string())?;
+            send_text(&runtime, "微信通知绑定成功，后续 zhi 请求会发送到当前会话。").await?;
+            let _ = app.emit("wechat-binding-complete", mask_user_id(&message.user_id));
+            return Ok(());
+        }
+        save_wechat_state(&runtime).map_err(|e| e.to_string())?;
+    }
+}
+
+async fn listen_for_reply(
+    mut runtime: WechatRuntimeState,
+    code: String,
+    options: Vec<String>,
+    start_time_ms: i64,
+    app: AppHandle,
+) -> Result<(), String> {
+    let client = ILinkClient::with_bot_agent(Some("Sanshu/WechatNotification"));
+    loop {
+        let credentials = runtime
+            .credentials
+            .as_ref()
+            .ok_or_else(|| "微信凭据缺失".to_string())?;
+        let updates = client
+            .get_updates(&credentials.base_url, &credentials.token, &runtime.cursor)
+            .await
+            .map_err(|e| format!("获取微信回复失败: {e}"))?;
+        if !updates.get_updates_buf.is_empty() {
+            runtime.cursor = updates.get_updates_buf;
+        }
+
+        for message in updates.msgs.iter().filter_map(IncomingMessage::from_wire) {
+            if message.user_id != runtime.target_user_id
+                || message.raw.create_time_ms < start_time_ms
+            {
+                continue;
+            }
+            runtime.context_token = message.context_token().to_string();
+            save_wechat_state(&runtime).map_err(|e| e.to_string())?;
+            if let Some(reply) = parse_wechat_reply(&message.text, &code, &options) {
+                let event = if reply.continue_requested {
+                    WechatEvent::Continue
+                } else {
+                    WechatEvent::Submit {
+                        selected_options: reply.selected_options,
+                        user_input: reply.user_input,
+                    }
+                };
+                app.emit("wechat-event", &event)
+                    .map_err(|e| format!("发送微信回复事件失败: {e}"))?;
+                send_text(&runtime, "已收到，本次 zhi 回复正在提交。").await?;
+                return Ok(());
+            }
+        }
+        save_wechat_state(&runtime).map_err(|e| e.to_string())?;
+    }
+}
+
+async fn send_text(runtime: &WechatRuntimeState, text: &str) -> Result<(), String> {
+    let credentials = runtime
+        .credentials
+        .as_ref()
+        .ok_or_else(|| "微信凭据缺失".to_string())?;
+    let client = ILinkClient::with_bot_agent(Some("Sanshu/WechatNotification"));
+    let payload = build_text_message(&runtime.target_user_id, &runtime.context_token, text);
+    client
+        .send_message(&credentials.base_url, &credentials.token, &payload)
+        .await
+        .map_err(|e| format!("发送微信文字失败: {e}"))
+}
+
+async fn send_image(
+    runtime: &WechatRuntimeState,
+    data: Vec<u8>,
+    caption: Option<String>,
+) -> Result<(), String> {
+    let credentials = runtime
+        .credentials
+        .as_ref()
+        .ok_or_else(|| "微信凭据缺失".to_string())?;
+    let client = ILinkClient::with_bot_agent(Some("Sanshu/WechatNotification"));
+    let aes_key = generate_aes_key();
+    let ciphertext = encrypt_aes_ecb(&data, &aes_key);
+    let filekey = Uuid::new_v4().simple().to_string();
+    let raw_md5 = hex::encode(Md5::digest(&data));
+    let upload = client
+        .get_upload_url(
+            &credentials.base_url,
+            &credentials.token,
+            &GetUploadUrlParams {
+                filekey: filekey.clone(),
+                media_type: 1,
+                to_user_id: runtime.target_user_id.clone(),
+                rawsize: data.len(),
+                rawfilemd5: raw_md5,
+                filesize: ciphertext.len(),
+                no_need_thumb: true,
+                aeskey: encode_aes_key_hex(&aes_key),
+            },
+        )
+        .await
+        .map_err(|e| format!("获取微信图片上传地址失败: {e}"))?;
+    let upload_url = match upload.upload_full_url.filter(|url| !url.trim().is_empty()) {
+        Some(url) => url,
+        None => {
+            let upload_param = upload
+                .upload_param
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| "微信图片上传结果缺少上传地址".to_string())?;
+            build_cdn_upload_url(CDN_BASE_URL, &upload_param, &filekey)
+        }
+    };
+    let encrypted_param = client
+        .upload_to_cdn(&upload_url, &ciphertext)
+        .await
+        .map_err(|e| format!("上传微信通知图片失败: {e}"))?;
+
+    let mut items = Vec::new();
+    if let Some(caption) = caption {
+        items.push(json!({"type": 1, "text_item": {"text": caption}}));
+    }
+    items.push(json!({
+        "type": 2,
+        "image_item": {
+            "media": {
+                "encrypt_query_param": encrypted_param,
+                "aes_key": encode_aes_key_base64(&aes_key),
+                "encrypt_type": 1
+            },
+            "mid_size": ciphertext.len()
+        }
+    }));
+    let payload = build_media_message(&runtime.target_user_id, &runtime.context_token, items);
+    client
+        .send_message(&credentials.base_url, &credentials.token, &payload)
+        .await
+        .map_err(|e| format!("发送微信通知图片失败: {e}"))
+}
+
+fn build_reply_guide(code: &str, options: &[String]) -> String {
+    if options.is_empty() {
+        return format!("三术 zhi #{code}\n复制并修改：\n#{code}\n回复：在这里填写回复");
+    }
+    let option_lines = options
+        .iter()
+        .enumerate()
+        .map(|(index, option)| format!("{}. {option}", (b'A' + index as u8) as char))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "三术 zhi #{code}\n{option_lines}\n\n复制并修改：\n#{code}\n选择：A\n补充："
+    )
+}
+
+fn require_bound_state() -> Result<WechatRuntimeState, String> {
+    let runtime = load_wechat_state().map_err(|e| e.to_string())?;
+    if runtime.is_bound() {
+        Ok(runtime)
+    } else {
+        Err("微信通知尚未完成绑定".to_string())
+    }
+}
+
+fn mask_user_id(user_id: &str) -> Option<String> {
+    if user_id.is_empty() {
+        return None;
+    }
+    let prefix: String = user_id.chars().take(6).collect();
+    let suffix: String = user_id.chars().rev().take(6).collect::<String>().chars().rev().collect();
+    Some(format!("{prefix}...{suffix}"))
+}
+
+fn now_millis() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64
+}

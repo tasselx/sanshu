@@ -15,6 +15,8 @@ pub struct AppConfig {
     pub mcp_config: McpConfig, // MCP工具配置
     #[serde(default = "default_telegram_config")]
     pub telegram_config: TelegramConfig, // Telegram Bot配置
+    #[serde(default = "default_wechat_config")]
+    pub wechat_config: WechatConfig, // 微信 iLink Bot配置
     #[serde(default = "default_custom_prompt_config")]
     pub custom_prompt_config: CustomPromptConfig, // 自定义prompt配置
     #[serde(default = "default_shortcut_config")]
@@ -264,6 +266,12 @@ pub struct TelegramConfig {
     pub api_base_url: String, // Telegram API基础URL
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct WechatConfig {
+    #[serde(default)]
+    pub enabled: bool, // 是否在每次 zhi 请求时发送微信通知
+}
+
 /// 代理配置
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ProxyConfig {
@@ -309,6 +317,7 @@ impl Default for AppConfig {
             reply_config: default_reply_config(),
             mcp_config: default_mcp_config(),
             telegram_config: default_telegram_config(),
+            wechat_config: default_wechat_config(),
             custom_prompt_config: default_custom_prompt_config(),
             shortcut_config: default_shortcut_config(),
             proxy_config: default_proxy_config(),
@@ -419,6 +428,10 @@ pub fn default_telegram_config() -> TelegramConfig {
         hide_frontend_popup: default_telegram_hide_frontend_popup(),
         api_base_url: default_telegram_api_base_url(),
     }
+}
+
+pub fn default_wechat_config() -> WechatConfig {
+    WechatConfig { enabled: false }
 }
 
 pub fn default_custom_prompt_config() -> CustomPromptConfig {

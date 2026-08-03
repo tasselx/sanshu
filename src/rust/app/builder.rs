@@ -135,6 +135,15 @@ pub fn build_tauri_app() -> Builder<tauri::Wry> {
             test_telegram_connection_cmd,
             auto_get_chat_id,
             start_telegram_sync,
+            // 微信通知命令
+            get_wechat_config,
+            set_wechat_config,
+            get_wechat_status,
+            start_wechat_binding,
+            submit_wechat_verify_code,
+            clear_wechat_binding,
+            test_wechat_connection,
+            start_wechat_sync,
             // 代码高亮主题命令
             get_hljs_theme,
             set_hljs_theme,

@@ -3,7 +3,7 @@ import type { McpRequest, ResponseContextBlock } from '../../types/popup'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { useDialog, useMessage } from 'naive-ui'
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 
 import { useAcemcpSync } from '../../composables/useAcemcpSync'
 import { useMcpToolsReactive } from '../../composables/useMcpTools'
@@ -111,6 +111,7 @@ const conditionalContext = ref('')
 const contextBlocks = ref<ResponseContextBlock[]>([])
 const draggedImages = ref<string[]>([])
 const inputRef = ref()
+const submissionSource = ref<'popup' | 'wechat'>('popup')
 
 // 继续回复配置
 const continueReplyEnabled = ref(true)
@@ -169,6 +170,7 @@ watch(() => props.appConfig.reply, (newReplyConfig) => {
 
 // Telegram事件监听器
 let telegramUnlisten: (() => void) | null = null
+let wechatUnlisten: (() => void) | null = null
 
 // 监听请求变化
 watch(() => props.request, (newRequest) => {
@@ -235,6 +237,37 @@ function handleTelegramEvent(event: any) {
   }
 }
 
+// 微信采用单条标准模板原子提交，避免多条消息之间出现选项与补充说明错配。
+async function setupWechatListener() {
+  try {
+    wechatUnlisten = await listen('wechat-event', async (event) => {
+      const payload = event.payload as any
+      submissionSource.value = 'wechat'
+      if (payload.type === 'continue') {
+        await handleContinue()
+        return
+      }
+      if (payload.type !== 'submit')
+        return
+
+      selectedOptions.value = Array.isArray(payload.selected_options) ? [...payload.selected_options] : []
+      const text = typeof payload.user_input === 'string' ? payload.user_input : ''
+      userInput.value = text
+      rawUserInput.value = text
+      inputRef.value?.updateData({
+        selectedOptions: selectedOptions.value,
+        userInput: text,
+        rawUserInput: text,
+      })
+      await nextTick()
+      await handleSubmit()
+    })
+  }
+  catch (error) {
+    console.error('设置微信事件监听器失败:', error)
+  }
+}
+
 // 处理选项切换
 function handleOptionToggle(option: string) {
   const index = selectedOptions.value.indexOf(option)
@@ -267,6 +300,7 @@ function handleTextUpdate(text: string) {
 onMounted(async () => {
   loadReplyConfig()
   setupTelegramListener()
+  setupWechatListener()
   // 加载 MCP 工具配置（用于检测 sou 是否启用）
   await loadMcpTools()
   // 检测 ACE 配置是否完整
@@ -277,6 +311,9 @@ onMounted(async () => {
 onUnmounted(() => {
   if (telegramUnlisten) {
     telegramUnlisten()
+  }
+  if (wechatUnlisten) {
+    wechatUnlisten()
   }
   // 组件卸载时停止索引状态轮询
   stopPolling()
@@ -291,6 +328,7 @@ function resetForm() {
   contextBlocks.value = []
   draggedImages.value = []
   submitting.value = false
+  submissionSource.value = 'popup'
 }
 
 // 构建用户回复摘要（不包含图片原始数据）
@@ -339,7 +377,7 @@ async function recordZhiHistory(userReplySummary = buildUserReplySummary()) {
       requestId,
       prompt,
       userReply: userReplySummary,
-      source: 'popup',
+      source: submissionSource.value,
     })
   }
   catch (error) {
@@ -369,7 +407,7 @@ async function handleSubmit() {
       metadata: {
         timestamp: new Date().toISOString(),
         request_id: props.request?.id || null,
-        source: 'popup',
+        source: submissionSource.value,
       },
     }
 
@@ -442,7 +480,7 @@ async function handleContinue() {
       metadata: {
         timestamp: new Date().toISOString(),
         request_id: props.request?.id || null,
-        source: 'popup_continue',
+        source: submissionSource.value === 'wechat' ? 'wechat_continue' : 'popup_continue',
       },
     }
 
