@@ -6,10 +6,11 @@
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};
+use md5::{Digest, Md5};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::fs;
-use std::path::PathBuf;
+use std::fs::{self, File, OpenOptions, TryLockError};
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use tauri::{AppHandle, Emitter};
 use uuid::Uuid;
@@ -118,6 +119,11 @@ pub(crate) struct IndexJobsManifest {
 static MANIFEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 static EVENT_APP: OnceLock<Mutex<Option<AppHandle>>> = OnceLock::new();
 
+/// 持有项目级操作系统锁直到 worker 结束；进程崩溃时由操作系统自动释放。
+pub(crate) struct ProjectLease {
+    _file: File,
+}
+
 fn manifest_lock() -> &'static Mutex<()> {
     MANIFEST_LOCK.get_or_init(|| Mutex::new(()))
 }
@@ -140,7 +146,23 @@ pub(crate) fn home_index_jobs_file() -> PathBuf {
     data_dir.join("index_jobs.json")
 }
 
-pub(crate) fn load_manifest() -> IndexJobsManifest {
+fn manifest_file_lock_path() -> PathBuf {
+    home_index_jobs_file().with_extension("lock")
+}
+
+fn acquire_manifest_file_lock() -> Result<File> {
+    let path = manifest_file_lock_path();
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .open(&path)?;
+    file.lock()
+        .map_err(|error| anyhow::anyhow!("锁定 ACE 索引任务清单失败: {}", error))?;
+    Ok(file)
+}
+
+fn load_manifest_unlocked() -> IndexJobsManifest {
     let path = home_index_jobs_file();
     let backup_path = path.with_extension("json.bak");
     for candidate in [&path, &backup_path] {
@@ -159,6 +181,18 @@ pub(crate) fn load_manifest() -> IndexJobsManifest {
         }
     }
     IndexJobsManifest::default()
+}
+
+/// 读取任务清单时也持有跨进程锁，避免读到原子替换过程中的中间状态。
+pub(crate) fn load_manifest() -> IndexJobsManifest {
+    match acquire_manifest_file_lock() {
+        Ok(_file_lock) => load_manifest_unlocked(),
+        Err(error) => {
+            // 读取接口没有 Result 契约；锁异常时保留可用的只读降级，并记录原因。
+            log::warn!("读取 ACE 索引任务清单时无法获取文件锁: {}", error);
+            load_manifest_unlocked()
+        }
+    }
 }
 
 fn atomic_write(path: &PathBuf, data: &str) -> Result<()> {
@@ -197,7 +231,8 @@ fn save_manifest_unlocked(manifest: &IndexJobsManifest) -> Result<()> {
 
 pub(crate) fn get_job(project_root: &str) -> Option<IndexJob> {
     let _guard = manifest_lock().lock().ok()?;
-    load_manifest().jobs.get(project_root).cloned()
+    let _file_lock = acquire_manifest_file_lock().ok();
+    load_manifest_unlocked().jobs.get(project_root).cloned()
 }
 
 pub(crate) fn resumable_jobs() -> Vec<IndexJob> {
@@ -205,7 +240,8 @@ pub(crate) fn resumable_jobs() -> Vec<IndexJob> {
         Ok(guard) => guard,
         Err(_) => return Vec::new(),
     };
-    load_manifest()
+    let _file_lock = acquire_manifest_file_lock().ok();
+    load_manifest_unlocked()
         .jobs
         .into_values()
         .filter(IndexJob::is_resumable)
@@ -221,7 +257,8 @@ pub(crate) fn create_job(
     let _guard = manifest_lock()
         .lock()
         .map_err(|_| anyhow::anyhow!("获取 ACE 索引任务清单锁失败"))?;
-    let mut manifest = load_manifest();
+    let _file_lock = acquire_manifest_file_lock()?;
+    let mut manifest = load_manifest_unlocked();
     let job = IndexJob::new(
         project_root.to_string(),
         mode,
@@ -247,7 +284,8 @@ where
         let _guard = manifest_lock()
             .lock()
             .map_err(|_| anyhow::anyhow!("获取 ACE 索引任务清单锁失败"))?;
-        let mut manifest = load_manifest();
+        let _file_lock = acquire_manifest_file_lock()?;
+        let mut manifest = load_manifest_unlocked();
         let Some(job) = manifest.jobs.get_mut(project_root) else {
             return Ok(None);
         };
@@ -289,12 +327,45 @@ pub(crate) fn remove_job(project_root: &str) -> Result<bool> {
     let _guard = manifest_lock()
         .lock()
         .map_err(|_| anyhow::anyhow!("获取 ACE 索引任务清单锁失败"))?;
-    let mut manifest = load_manifest();
+    let _file_lock = acquire_manifest_file_lock()?;
+    let mut manifest = load_manifest_unlocked();
     let removed = manifest.jobs.remove(project_root).is_some();
     if removed {
         save_manifest_unlocked(&manifest)?;
     }
     Ok(removed)
+}
+
+fn project_lease_path(project_root: &str) -> PathBuf {
+    let jobs_path = home_index_jobs_file();
+    let lease_dir = jobs_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("index_job_leases");
+    let digest = Md5::digest(project_root.as_bytes());
+    lease_dir.join(format!("{}.lock", hex::encode(digest)))
+}
+
+/// 尝试获取项目级 worker lease；`None` 表示另一个进程正在上传。
+pub(crate) fn try_acquire_project_lease(project_root: &str) -> Result<Option<ProjectLease>> {
+    let path = project_lease_path(project_root);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .open(&path)?;
+    match file.try_lock() {
+        Ok(()) => Ok(Some(ProjectLease { _file: file })),
+        Err(TryLockError::WouldBlock) => Ok(None),
+        Err(error) => Err(anyhow::anyhow!(
+            "获取 ACE 项目 worker lease 失败: path={}, error={}",
+            path.display(),
+            error
+        )),
+    }
 }
 
 fn publish_latest_event(job: &IndexJob) {

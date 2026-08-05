@@ -1982,7 +1982,6 @@ pub(crate) fn purge_project_index_records(
 
     let mut projects_deleted = false;
     let mut status_deleted = false;
-    let mut job_deleted = false;
 
     // 1. 从 projects.json 中删除项目的 blob 列表
     let projects_path = data_dir.join("projects.json");
@@ -2127,7 +2126,7 @@ pub(crate) fn purge_project_index_records(
     }
 
     // 3. 清理独立任务清单，避免全量重建误续传旧签名的批次。
-    job_deleted = super::jobs::remove_job(&normalized_root)
+    let job_deleted = super::jobs::remove_job(&normalized_root)
         .map_err(|e| format!("清理 index_jobs.json 失败: {}", e))?;
 
     // 4. 视需要停止该项目的文件监听

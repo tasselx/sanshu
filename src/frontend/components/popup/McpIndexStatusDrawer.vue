@@ -68,6 +68,8 @@ const displayStatusTagType = computed(() => {
     return 'warning'
   return props.projectStatus?.status === 'synced'
     ? 'success'
+    : props.projectStatus?.status === 'paused'
+      ? 'warning'
     : props.projectStatus?.status === 'failed'
       ? 'error'
       : 'info'
@@ -386,6 +388,8 @@ function getNestedStatusIcon(np: NestedProjectInfo): string {
       return 'i-carbon-checkmark-filled text-emerald-400'
     case 'indexing':
       return 'i-carbon-in-progress text-emerald-400/80 animate-spin'
+    case 'paused':
+      return 'i-carbon-pause-outline text-amber-400'
     case 'failed':
       return 'i-carbon-warning-filled text-rose-400'
     default:
@@ -400,6 +404,8 @@ function getNestedStatusText(np: NestedProjectInfo): string {
     return '未索引'
   if (status.is_stale && status.status !== 'indexing')
     return '待重建'
+  if (status.status === 'paused')
+    return `${status.indexed_files}/${status.total_files}（等待恢复）`
   return `${status.indexed_files}/${status.total_files}`
 }
 
@@ -534,8 +540,8 @@ function handleCopyPath() {
             :height="6"
             :border-radius="3"
             :show-indicator="false"
-            :status="projectStatus.status === 'failed' ? 'error' : projectStatus.progress === 100 ? 'success' : 'info'"
-            processing
+            :status="projectStatus.status === 'failed' ? 'error' : projectStatus.status === 'paused' ? 'warning' : projectStatus.progress === 100 ? 'success' : 'info'"
+            :processing="projectStatus.status === 'indexing'"
           />
         </div>
 

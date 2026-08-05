@@ -603,6 +603,8 @@ pub fn get_initial_index_state(project_root: &str) -> InitialIndexState {
         IndexStatus::Idle => InitialIndexState::Missing,
         IndexStatus::Synced => InitialIndexState::Synced,
         IndexStatus::Indexing => InitialIndexState::Indexing,
+        // 可恢复暂停与普通失败都允许再次触发；具体是否续传由 index_jobs.json 决定。
+        IndexStatus::Paused => InitialIndexState::Failed,
         IndexStatus::Failed => InitialIndexState::Failed,
     }
 }
@@ -759,6 +761,18 @@ async fn start_background_index_with_mode(
     mode: IndexJobMode,
     app: Option<AppHandle>,
 ) -> anyhow::Result<BackgroundIndexLaunchState> {
+    launch_index_worker(config, project_root, force, mode, app)
+}
+
+/// 同步完成任务去重、检查点初始化并启动异步 worker。
+/// 后继任务也走这里，避免 worker 内再次 await 自身形成递归 Future。
+fn launch_index_worker(
+    config: &AcemcpConfig,
+    project_root: &str,
+    force: bool,
+    mode: IndexJobMode,
+    app: Option<AppHandle>,
+) -> anyhow::Result<BackgroundIndexLaunchState> {
     let normalized_root = normalize_project_path(
         &PathBuf::from(project_root)
             .canonicalize()
@@ -768,22 +782,6 @@ async fn start_background_index_with_mode(
     let scope_hash = require_index_scope_hash(config)?;
     let initial_state = get_initial_index_state(project_root);
     let existing_job = jobs::get_job(&normalized_root);
-
-    // manifest 是跨重启恢复的权威来源；同一签名的任务只允许一个执行器。
-    if let Some(job) = &existing_job {
-        if job.is_resumable()
-            && job.mode == mode.as_str()
-            && job.scope_hash == scope_hash
-            && job.config_fingerprint == scope_hash
-        {
-            // 允许从 paused/进程中断状态恢复，即使旧状态仍显示 failed/indexing。
-        } else if job.is_resumable() && job.status != JOB_PAUSED {
-            if force {
-                request_followup_index(&normalized_root, mode);
-            }
-            return Ok(BackgroundIndexLaunchState::AlreadyRunning);
-        }
-    }
 
     if !force {
         match initial_state {
@@ -795,22 +793,13 @@ async fn start_background_index_with_mode(
             {
                 return Ok(BackgroundIndexLaunchState::Skipped);
             }
-            InitialIndexState::Indexing if existing_job.is_none() => {
-                return Ok(BackgroundIndexLaunchState::AlreadyRunning)
-            }
+            InitialIndexState::Indexing if existing_job.is_none() => {}
             InitialIndexState::Missing
             | InitialIndexState::Idle
             | InitialIndexState::Failed
             | InitialIndexState::Synced
             | InitialIndexState::Indexing => {}
         }
-    } else if initial_state == InitialIndexState::Indexing
-        && existing_job
-            .as_ref()
-            .map(|job| !job.is_resumable())
-            .unwrap_or(true)
-    {
-        return Ok(BackgroundIndexLaunchState::AlreadyRunning);
     }
 
     {
@@ -823,12 +812,32 @@ async fn start_background_index_with_mode(
         }
     }
 
+    // 中文说明：项目 lease 是跨进程互斥边界，进程退出后由操作系统自动释放，旧检查点可被接管。
+    let lease = match jobs::try_acquire_project_lease(&normalized_root) {
+        Ok(Some(lease)) => lease,
+        Ok(None) => {
+            auto_index_inflight().lock().unwrap().remove(&normalized_root);
+            if force {
+                request_followup_index(&normalized_root, mode);
+            }
+            return Ok(BackgroundIndexLaunchState::AlreadyRunning);
+        }
+        Err(error) => {
+            auto_index_inflight().lock().unwrap().remove(&normalized_root);
+            return Err(error);
+        }
+    };
+
+    // 取得 lease 后重新读取，避免 GUI 与 MCP 同时更新清单时使用旧快照。
+    let existing_job = jobs::get_job(&normalized_root);
     let job = match existing_job {
         Some(job)
             if job.is_resumable()
-                && job.mode == mode.as_str()
                 && job.scope_hash == scope_hash
-                && job.config_fingerprint == scope_hash => job,
+                && job.config_fingerprint == scope_hash
+                && (job.mode == mode.as_str()
+                    || (job.mode == IndexJobMode::Full.as_str()
+                        && mode == IndexJobMode::Incremental)) => job,
         _ => match jobs::create_job(&normalized_root, mode.as_str(), &scope_hash, &scope_hash) {
             Ok(job) => job,
             Err(error) => {
@@ -858,6 +867,7 @@ async fn start_background_index_with_mode(
     let project_root_clone = project_root.to_string();
     let normalized_root_clone = normalized_root.clone();
     tokio::spawn(async move {
+        let lease = lease;
         log_important!(
             info,
             "后台索引任务启动: project_root={}, job_id={}",
@@ -904,7 +914,14 @@ async fn start_background_index_with_mode(
                     }
                     let _ = update_project_status(&project_root_clone, |status| {
                         if status.status == IndexStatus::Indexing {
-                            status.status = IndexStatus::Failed;
+                            let resumable = jobs::get_job(&normalized_root_clone)
+                                .map(|job| job.status == JOB_PAUSED)
+                                .unwrap_or(false);
+                            status.status = if resumable {
+                                IndexStatus::Paused
+                            } else {
+                                IndexStatus::Failed
+                            };
                             status.last_error = Some(error_message.clone());
                             status.last_failure_time = Some(chrono::Utc::now());
                         }
@@ -918,6 +935,8 @@ async fn start_background_index_with_mode(
             let mut inflight = auto_index_inflight().lock().unwrap();
             inflight.remove(&normalized_root_clone);
         }
+        // 中文说明：当前 worker 已结束，先释放项目 lease，再尝试启动配置变更或后继任务。
+        drop(lease);
 
         // 中文说明：配置可能在任务执行期间被保存；旧任务退出后立即接续一次新签名的全量任务。
         if let Ok(latest_config) = AcemcpTool::get_acemcp_config().await {
@@ -927,32 +946,26 @@ async fn start_background_index_with_mode(
                     "检测到索引任务执行期间 ACE 配置已变更，提交新签名全量任务: project_root={}",
                     normalized_root_clone
                 );
-                let _ = crate::mcp::tools::acemcp::commands::purge_project_index_records(
-                    &normalized_root_clone,
-                    false,
-                );
-                let _ = start_background_index_with_mode(
+                let _ = launch_index_worker(
                     &latest_config,
                     &normalized_root_clone,
                     true,
                     IndexJobMode::Full,
                     None,
-                )
-                .await;
+                );
             } else if task_succeeded {
                 // 当前任务收集文件后发生的新变更，合并为一轮后继任务，避免异步排队吞掉监听事件。
                 let rerun_mode = jobs::get_job(&normalized_root_clone)
                     .and_then(|job| job.rerun_mode)
                     .map(|mode| IndexJobMode::from_str(&mode));
                 if let Some(rerun_mode) = rerun_mode {
-                    let _ = start_background_index_with_mode(
+                    let _ = launch_index_worker(
                         &latest_config,
                         &normalized_root_clone,
                         true,
                         rerun_mode,
                         None,
-                    )
-                    .await;
+                    );
                 }
             }
         }
@@ -1015,11 +1028,7 @@ pub async fn resume_index_jobs() -> anyhow::Result<()> {
             continue;
         }
         if current_scope_hash != job.scope_hash {
-            // 中文说明：清单签名落后于当前 ACE 配置时，旧任务不能继续上传到错误空间。
-            let _ = crate::mcp::tools::acemcp::commands::purge_project_index_records(
-                &job.project_root,
-                false,
-            );
+            // 中文说明：清单签名落后于当前 ACE 配置时交给全量 worker 接管；不先删除旧清单，避免与并行进程竞态。
             let _ = start_background_index_with_mode(
                 &config,
                 &job.project_root,
@@ -1409,7 +1418,15 @@ fn reconcile_project_status_with_job(status: &mut ProjectIndexStatus) {
             status.status = IndexStatus::Indexing;
             status.last_error = job.last_error.clone();
         }
-        JOB_PAUSED | JOB_FAILED => {
+        JOB_PAUSED => {
+            // 可恢复暂停保留当前断点，但不再显示为永久失败或持续旋转。
+            status.status = IndexStatus::Paused;
+            if status.last_failure_time.is_none() {
+                status.last_failure_time = Some(job.updated_at.clone());
+            }
+            status.last_error = job.last_error.clone();
+        }
+        JOB_FAILED => {
             status.status = IndexStatus::Failed;
             if status.last_failure_time.is_none() {
                 status.last_failure_time = Some(job.updated_at.clone());
@@ -1890,12 +1907,14 @@ fn mark_index_job_error(
     auth_scope_hash: Option<&str>,
 ) {
     let error_message = message.to_string();
+    let resumable_failure = failed_batch.is_some() && auth_scope_hash.is_none();
+    let event_type = if resumable_failure { "paused" } else { "failed" };
     let _ = jobs::update_job(
         normalized_root,
-        "paused",
+        event_type,
         Some(error_message.clone()),
         |job| {
-            job.status = if failed_batch.is_some() {
+            job.status = if resumable_failure {
                 JOB_PAUSED.to_string()
             } else {
                 JOB_FAILED.to_string()
@@ -1910,7 +1929,15 @@ fn mark_index_job_error(
     );
     let progress_job = jobs::get_job(normalized_root);
     let _ = update_project_status(project_root_path, |status| {
-        status.status = IndexStatus::Failed;
+        let resumable = progress_job
+            .as_ref()
+            .map(|job| job.status == JOB_PAUSED)
+            .unwrap_or(false);
+        status.status = if resumable {
+            IndexStatus::Paused
+        } else {
+            IndexStatus::Failed
+        };
         if let Some(job) = &progress_job {
             status.total_files = job.total_blobs;
             status.indexed_files = job.completed_blobs.min(job.total_blobs);
@@ -1961,9 +1988,9 @@ async fn update_index_with_mode(
             .unwrap_or_else(|_| PathBuf::from(project_root_path))
             .to_string_lossy(),
     );
-    let mut job = ensure_index_job(&normalized_root, mode, &current_scope_hash)?;
+    ensure_index_job(&normalized_root, mode, &current_scope_hash)?;
 
-    job = jobs::update_job(&normalized_root, "collecting", None, |job| {
+    let job = jobs::update_job(&normalized_root, "collecting", None, |job| {
         job.status = JOB_COLLECTING.to_string();
         job.last_error = None;
         job.failed_batches.clear();

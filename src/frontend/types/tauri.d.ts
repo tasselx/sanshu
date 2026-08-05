@@ -3,7 +3,7 @@ declare module '@tauri-apps/plugin-shell' {
 }
 
 // Acemcp 索引状态类型定义
-export type IndexStatus = 'idle' | 'indexing' | 'synced' | 'failed'
+export type IndexStatus = 'idle' | 'indexing' | 'paused' | 'synced' | 'failed'
 
 export interface ProjectIndexStatus {
   project_root: string

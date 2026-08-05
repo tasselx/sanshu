@@ -15,6 +15,13 @@ pub async fn setup_application(app_handle: &AppHandle) -> Result<(), String> {
         log_important!(warn, "加载配置失败: {}", e);
     }
 
+    // 中文说明：GUI 启动不等待索引恢复；任务由持久化检查点后台接管，避免阻塞首屏。
+    tauri::async_runtime::spawn(async {
+        if let Err(error) = crate::mcp::tools::acemcp::mcp::resume_index_jobs().await {
+            log_important!(warn, "GUI 启动恢复 ACE 未完成索引任务失败: {}", error);
+        }
+    });
+
     // 初始化音频资源管理器
     if let Err(e) = initialize_audio_asset_manager(app_handle) {
         log_important!(warn, "初始化音频资源管理器失败: {}", e);

@@ -55,6 +55,8 @@ pub enum IndexStatus {
     Indexing,
     /// 索引成功完成
     Synced,
+    /// 上传中断但保留断点，等待后台恢复
+    Paused,
     /// 索引失败
     Failed,
 }

@@ -108,6 +108,8 @@ const statusIcon = computed(() => {
       return 'i-carbon-circle-dash text-gray-400'
     case 'indexing':
       return 'i-carbon-in-progress text-emerald-400/80 animate-spin'
+    case 'paused':
+      return 'i-carbon-pause-outline text-amber-400'
     case 'synced':
       return 'i-carbon-checkmark-filled text-emerald-400'
     case 'failed':
@@ -127,6 +129,8 @@ const statusText = computed(() => {
       return '空闲'
     case 'indexing':
       return `索引中 ${props.projectStatus?.progress || 0}%`
+    case 'paused':
+      return `等待恢复 ${props.projectStatus?.progress || 0}%`
     case 'synced':
       return '已同步'
     case 'failed':
@@ -379,6 +383,8 @@ function getNestedStatusIcon(np: NestedProjectInfo): string {
       return 'i-carbon-checkmark-filled text-emerald-400'
     case 'indexing':
       return 'i-carbon-in-progress text-emerald-400/80 animate-spin'
+    case 'paused':
+      return 'i-carbon-pause-outline text-amber-400'
     case 'failed':
       return 'i-carbon-warning-filled text-rose-400'
     default:
@@ -391,6 +397,8 @@ function getNestedStatusText(np: NestedProjectInfo): string {
   const status = np.index_status
   if (!status)
     return '未索引'
+  if (status.status === 'paused')
+    return `${status.indexed_files}/${status.total_files}（等待恢复）`
   return `${status.indexed_files}/${status.total_files}`
 }
 

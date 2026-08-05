@@ -50,6 +50,7 @@ const sortBy = ref<'status' | 'time' | 'name'>('status')
 const statusOptions = [
   { label: '全部状态', value: 'all' },
   { label: '索引中', value: 'indexing' },
+  { label: '等待恢复', value: 'paused' },
   { label: '待重建', value: 'stale' },
   { label: '已完成', value: 'synced' },
   { label: '失败', value: 'failed' },
@@ -88,6 +89,8 @@ const selectedStatusSummary = computed(() => {
       return '空闲'
     case 'indexing':
       return `索引中 ${status.progress}%`
+    case 'paused':
+      return `等待恢复 ${status.progress}%`
     case 'synced':
       return '已同步'
     case 'failed':
@@ -109,6 +112,8 @@ const selectedStatusIcon = computed(() => {
       return 'i-carbon-circle-dash text-gray-400'
     case 'indexing':
       return 'i-carbon-in-progress text-blue-500 animate-spin'
+    case 'paused':
+      return 'i-carbon-pause-outline text-amber-500'
     case 'synced':
       return 'i-carbon-checkmark-filled text-green-500'
     case 'failed':
@@ -148,7 +153,7 @@ const projectList = computed(() => {
   }
 
   // 排序
-  const statusOrder = { indexing: 0, stale: 1, synced: 2, failed: 3, idle: 4 }
+  const statusOrder = { indexing: 0, paused: 1, stale: 2, synced: 3, failed: 4, idle: 5 }
   list.sort((a, b) => {
     switch (sortBy.value) {
       case 'status':
@@ -178,6 +183,7 @@ const stats = computed(() => {
   return {
     total: projects.length,
     indexing: projects.filter(p => p.status === 'indexing').length,
+    paused: projects.filter(p => p.status === 'paused').length,
     stale: projects.filter(p => p.is_stale && p.status !== 'indexing').length,
     synced: projects.filter(p => p.status === 'synced' && !p.is_stale).length,
     failed: projects.filter(p => p.status === 'failed').length,
@@ -455,6 +461,10 @@ function getDirectoryExists(projectRoot: string): boolean {
           <div class="i-carbon-in-progress animate-spin" />
           <span>{{ stats.indexing }} 索引中</span>
         </div>
+        <div v-if="stats.paused > 0" class="stat-chip is-paused">
+          <div class="i-carbon-pause-outline" />
+          <span>{{ stats.paused }} 等待恢复</span>
+        </div>
         <div v-if="stats.stale > 0" class="stat-chip is-stale">
           <div class="i-carbon-warning-alt" />
           <span>{{ stats.stale }} 待重建</span>
@@ -625,6 +635,12 @@ function getDirectoryExists(projectRoot: string): boolean {
   color: rgb(59, 130, 246);
   border-color: rgba(59, 130, 246, 0.25);
   background: rgba(59, 130, 246, 0.06);
+}
+
+.stat-chip.is-paused {
+  color: rgb(245, 158, 11);
+  border-color: rgba(245, 158, 11, 0.25);
+  background: rgba(245, 158, 11, 0.06);
 }
 
 .stat-chip.is-stale {
