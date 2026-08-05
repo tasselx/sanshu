@@ -209,6 +209,10 @@ impl ServerHandler for ZhiServer {
                 "workspace": {
                     "type": "string",
                     "description": "工作区根目录绝对路径（必填）"
+                },
+                "agent_label": {
+                    "type": "string",
+                    "description": "AI 实例显示名称（可选，未提供时按请求短码回退）"
                 }
             },
             "required": ["brief", "workspace"]

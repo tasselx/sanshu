@@ -3,6 +3,10 @@ use crate::log_important;
 use crate::wechat::history::{
     add_history_entry, clear_history, get_history, history_path, WechatHistoryEntry,
 };
+use crate::wechat::pending::{
+    list_pending, normalize_project_path, register_pending, update_pending,
+    WechatPendingRequest, WechatPendingStatus, WECHAT_PENDING_EXPIRY_SECS,
+};
 use crate::wechat::parser::{parse_wechat_reply, request_short_code};
 use crate::wechat::state::{
     clear_wechat_state, load_wechat_state, save_wechat_state, state_path, StoredWechatCredentials,
@@ -101,6 +105,51 @@ pub async fn set_wechat_config(
     save_config(&state, &app)
         .await
         .map_err(|e| format!("保存配置失败: {e}"))
+}
+
+/// 获取跨进程微信待处理请求，供管理页展示项目、AI 和短码。
+#[tauri::command]
+pub fn get_wechat_pending_requests() -> Result<Vec<WechatPendingRequest>, String> {
+    list_pending().map_err(|error| error.to_string())
+}
+
+/// 保存项目别名；路径只作为本地配置键，不会发送到微信。
+#[tauri::command]
+pub async fn set_wechat_project_alias(
+    project_root_path: String,
+    alias: String,
+    state: State<'_, AppState>,
+    app: AppHandle,
+) -> Result<(), String> {
+    let normalized = normalize_project_path(&project_root_path);
+    if normalized.is_empty() {
+        return Err("项目路径不能为空".to_string());
+    }
+    let alias = alias.trim().to_string();
+    if alias.chars().count() > 40 {
+        return Err("项目别名不能超过 40 个字符".to_string());
+    }
+    if alias.chars().any(|ch| ch.is_control()) {
+        return Err("项目别名不能包含控制字符".to_string());
+    }
+    {
+        let mut config = state
+            .config
+            .lock()
+            .map_err(|error| format!("获取配置失败: {error}"))?;
+        if alias.is_empty() {
+            config.wechat_config.project_aliases.remove(&normalized);
+        } else {
+            config
+                .wechat_config
+                .project_aliases
+                .insert(normalized, alias);
+        }
+    }
+    save_config(&state, &app)
+        .await
+        .map_err(|error| format!("保存项目别名失败: {error}"))?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -244,21 +293,36 @@ pub async fn start_wechat_sync(
     message: String,
     predefined_options: Vec<String>,
     image_pages: Vec<String>,
+    project_root_path: Option<String>,
+    agent_label: Option<String>,
     state: State<'_, AppState>,
     app: AppHandle,
 ) -> Result<(), String> {
-    let enabled = state
+    let wechat_config = state
         .config
         .lock()
         .map_err(|e| format!("获取配置失败: {e}"))?
         .wechat_config
-        .enabled;
-    if !enabled {
+        .clone();
+    if !wechat_config.enabled {
         return Ok(());
     }
 
     let runtime = require_bound_state()?;
     let code = request_short_code(&request_id);
+    let project_root_path = project_root_path.unwrap_or_default();
+    let project_alias = if project_root_path.trim().is_empty() {
+        "未命名项目".to_string()
+    } else {
+        crate::wechat::pending::project_alias(
+            &project_root_path,
+            &wechat_config.project_aliases,
+        )
+    };
+    let agent_label = agent_label
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| format!("AI-{code}"));
     let start_time_ms = now_millis();
     log_important!(
         info,
@@ -271,11 +335,31 @@ pub async fn start_wechat_sync(
         let bytes = STANDARD
             .decode(image_page)
             .map_err(|e| format!("解析通知图片失败: {e}"))?;
-        let caption = format!("三术 zhi #{code} ({}/{})", index + 1, image_pages.len());
+        let caption = format!(
+            "三术 zhi · {} · {} · #{code} ({}/{})",
+            project_alias,
+            agent_label,
+            index + 1,
+            image_pages.len()
+        );
         send_image(&runtime, bytes, Some(caption)).await?;
     }
-    send_text(&runtime, &build_reply_guide(&code, &predefined_options)).await?;
+    send_text(
+        &runtime,
+        &build_reply_guide(&code, &project_alias, &agent_label, &predefined_options),
+    )
+    .await?;
     record_history("outgoing", "zhi", Some(&code), &message, "sent");
+    if let Err(error) = register_pending(
+        &request_id,
+        &code,
+        &project_root_path,
+        &wechat_config.project_aliases,
+        &agent_label,
+        &message,
+    ) {
+        log_important!(warn, "[wechat] pending: register_failed error={error}");
+    }
     log_important!(info, "[wechat] notification: sent code={}", code);
 
     tauri::async_runtime::spawn(async move {
@@ -284,6 +368,9 @@ pub async fn start_wechat_sync(
             code,
             predefined_options,
             start_time_ms,
+            request_id,
+            project_alias,
+            agent_label,
             app.clone(),
         )
         .await
@@ -451,10 +538,25 @@ async fn listen_for_reply(
     code: String,
     options: Vec<String>,
     start_time_ms: i64,
+    request_id: String,
+    project_alias: String,
+    agent_label: String,
     app: AppHandle,
 ) -> Result<(), String> {
     let client = ILinkClient::with_bot_agent(Some("Sanshu/WechatNotification"));
+    let expires_at = start_time_ms + WECHAT_PENDING_EXPIRY_SECS * 1000;
     loop {
+        if now_millis() >= expires_at {
+            let _ = update_pending(&request_id, WechatPendingStatus::Expired, None);
+            let expiration = format!(
+                "项目 {project_alias} · AI {agent_label} · #{code} 已过期，请回到对应 zhi 重新发起。"
+            );
+            if let Err(error) = send_text(&runtime, &expiration).await {
+                log_important!(warn, "[wechat] reply: expiration_notice_failed error={error}");
+            }
+            log_important!(info, "[wechat] reply: expired code={code}");
+            return Ok(());
+        }
         let credentials = runtime
             .credentials
             .as_ref()
@@ -489,6 +591,8 @@ async fn listen_for_reply(
                 app.emit("wechat-event", &event)
                     .map_err(|e| format!("发送微信回复事件失败: {e}"))?;
                 send_text(&runtime, "已收到，本次 zhi 回复正在提交。").await?;
+                update_pending(&request_id, WechatPendingStatus::Replied, Some("wechat"))
+                    .map_err(|error| format!("更新微信待处理状态失败: {error}"))?;
                 return Ok(());
             }
         }
@@ -577,9 +681,11 @@ async fn send_image(
         .map_err(|e| format!("发送微信通知图片失败: {e}"))
 }
 
-fn build_reply_guide(code: &str, options: &[String]) -> String {
+fn build_reply_guide(code: &str, project_alias: &str, agent_label: &str, options: &[String]) -> String {
     if options.is_empty() {
-        return format!("三术 zhi #{code}\n复制并修改：\n#{code}\n回复：在这里填写回复");
+        return format!(
+            "三术 zhi #{code}\n项目：{project_alias}\nAI：{agent_label}\n\n复制并修改：\n#{code}\n项目：{project_alias}\nAI：{agent_label}\n回复：在这里填写回复"
+        );
     }
     let option_lines = options
         .iter()
@@ -587,7 +693,9 @@ fn build_reply_guide(code: &str, options: &[String]) -> String {
         .map(|(index, option)| format!("{}. {option}", (b'A' + index as u8) as char))
         .collect::<Vec<_>>()
         .join("\n");
-    format!("三术 zhi #{code}\n{option_lines}\n\n复制并修改：\n#{code}\n选择：A\n补充：")
+    format!(
+        "三术 zhi #{code}\n项目：{project_alias}\nAI：{agent_label}\n{option_lines}\n\n复制并修改：\n#{code}\n项目：{project_alias}\nAI：{agent_label}\n选择：A\n补充："
+    )
 }
 
 fn require_bound_state() -> Result<WechatRuntimeState, String> {

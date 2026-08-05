@@ -72,6 +72,7 @@ fn handle_cli_mode(args: &[String]) -> Result<()> {
     let mut options: Vec<String> = Vec::new();
     let mut is_markdown = true;
     let mut project_root: Option<String> = None;
+    let mut agent_label: Option<String> = None;
     let mut uiux_intent: Option<String> = None;
     let mut uiux_context_policy: Option<String> = None;
     let mut uiux_reason: Option<String> = None;
@@ -102,6 +103,10 @@ fn handle_cli_mode(args: &[String]) -> Result<()> {
             }
             "--project-root" if i + 1 < args.len() => {
                 project_root = Some(args[i + 1].clone());
+                i += 2;
+            }
+            "--agent-label" if i + 1 < args.len() => {
+                agent_label = Some(args[i + 1].clone());
                 i += 2;
             }
             "--uiux-intent" if i + 1 < args.len() => {
@@ -179,6 +184,7 @@ fn handle_cli_mode(args: &[String]) -> Result<()> {
         },
         is_markdown,
         project_root_path: project_root,
+        agent_label,
         uiux_intent,
         uiux_context_policy,
         uiux_reason,
@@ -303,6 +309,7 @@ fn print_help() {
     println!("  --option <选项>                      预定义选项（可重复）");
     println!("  --markdown / --no-markdown           是否按 Markdown 渲染（默认开启）");
     println!("  --project-root <路径>                项目根目录");
+    println!("  --agent-label <名称>                 AI 实例显示名称（可选）");
     println!("  --uiux-intent <值>                   none/beautify/page_refactor/uiux_search");
     println!("  --uiux-context-policy <值>           auto/force/forbid");
     println!("  --uiux-reason <内容>                  UI/UX 上下文追加原因");

@@ -141,6 +141,8 @@ pub fn build_tauri_app() -> Builder<tauri::Wry> {
             get_wechat_status,
             get_wechat_diagnostics,
             get_wechat_history,
+            get_wechat_pending_requests,
+            set_wechat_project_alias,
             clear_wechat_history,
             start_wechat_binding,
             submit_wechat_verify_code,

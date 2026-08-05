@@ -15,6 +15,9 @@ pub struct ZhiRequest {
     pub render_markdown: bool,
     #[schemars(description = "工作区根目录绝对路径（必填）")]
     pub workspace: String,
+    #[schemars(description = "AI 实例显示名称（可选，未提供时按请求短码回退）")]
+    #[serde(default)]
+    pub agent_label: Option<String>,
     #[schemars(description = "UI/UX 意图标记：none|beautify|page_refactor|uiux_search")]
     #[serde(default)]
     pub uiux_intent: Option<String>,
@@ -211,6 +214,9 @@ pub struct PopupRequest {
     pub predefined_options: Option<Vec<String>>,
     pub is_markdown: bool,
     pub project_root_path: Option<String>,
+    /// AI 实例显示名称，用于多 AI 并发时的人工识别。
+    #[serde(default)]
+    pub agent_label: Option<String>,
     pub uiux_intent: Option<String>,
     pub uiux_context_policy: Option<String>,
     pub uiux_reason: Option<String>,

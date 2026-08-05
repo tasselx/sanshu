@@ -272,6 +272,12 @@ pub struct WechatConfig {
     pub enabled: bool, // 是否在每次 zhi 请求时发送微信通知
     #[serde(default = "default_wechat_notification_mode")]
     pub notification_mode: String, // 通知策略：always / smart / manual
+    /// 微信通知图片主题：auto / paper / midnight。
+    #[serde(default = "default_wechat_notification_image_theme")]
+    pub notification_image_theme: String,
+    /// 规范化项目根路径到展示别名的本地映射。
+    #[serde(default)]
+    pub project_aliases: HashMap<String, String>,
 }
 
 /// 代理配置
@@ -436,11 +442,17 @@ pub fn default_wechat_config() -> WechatConfig {
     WechatConfig {
         enabled: false,
         notification_mode: default_wechat_notification_mode(),
+        notification_image_theme: default_wechat_notification_image_theme(),
+        project_aliases: HashMap::new(),
     }
 }
 
 pub fn default_wechat_notification_mode() -> String {
     "always".to_string()
+}
+
+pub fn default_wechat_notification_image_theme() -> String {
+    "auto".to_string()
 }
 
 pub fn default_custom_prompt_config() -> CustomPromptConfig {

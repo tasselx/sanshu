@@ -32,12 +32,13 @@ pub fn parse_wechat_reply(
         return None;
     }
 
-    if let Some(code) = lines[0].strip_prefix('#') {
-        if !code.trim().eq_ignore_ascii_case(expected_code) {
-            return None;
-        }
-        lines.remove(0);
+    let code = lines[0].strip_prefix('#')?;
+    if !code.trim().eq_ignore_ascii_case(expected_code) {
+        return None;
     }
+    lines.remove(0);
+    // 项目和 AI 行只用于人工复核，不应污染最终用户回复内容。
+    lines.retain(|line| !is_identity_line(line));
     if lines.is_empty() {
         return None;
     }
@@ -106,6 +107,13 @@ fn strip_field<'a>(line: &'a str, prefixes: &[&str]) -> Option<&'a str> {
         .find_map(|prefix| line.strip_prefix(prefix).map(str::trim))
 }
 
+fn is_identity_line(line: &str) -> bool {
+    line.starts_with("项目：")
+        || line.starts_with("项目:")
+        || line.starts_with("AI：")
+        || line.starts_with("AI:")
+}
+
 fn parse_selection(value: &str, options: &[String]) -> Option<Vec<String>> {
     if value.trim().is_empty() {
         return Some(Vec::new());
@@ -131,4 +139,28 @@ fn parse_selection(value: &str, options: &[String]) -> Option<Vec<String>> {
         }
     }
     Some(selected)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_wechat_reply;
+
+    #[test]
+    fn reply_requires_matching_short_code() {
+        let options = vec!["执行".to_string()];
+        assert!(parse_wechat_reply("选择：A", "ABC123", &options).is_none());
+        assert!(parse_wechat_reply("#OTHER\n选择：A", "ABC123", &options).is_none());
+        assert!(parse_wechat_reply("#abc123\n选择：A", "ABC123", &options).is_some());
+    }
+
+    #[test]
+    fn identity_lines_are_not_user_input() {
+        let reply = parse_wechat_reply(
+            "#ABC123\n项目：sanshu\nAI：Codex\n回复：继续处理",
+            "ABC123",
+            &[],
+        )
+        .expect("应解析带身份标识的回复");
+        assert_eq!(reply.user_input.as_deref(), Some("回复：继续处理"));
+    }
 }

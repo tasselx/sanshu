@@ -1,8 +1,11 @@
 export type WechatNotificationMode = 'always' | 'smart' | 'manual'
+export type WechatNotificationImageTheme = 'auto' | 'paper' | 'midnight'
 
 export interface WechatConfig {
   enabled: boolean
   notification_mode: WechatNotificationMode
+  notification_image_theme: WechatNotificationImageTheme
+  project_aliases: Record<string, string>
 }
 
 export interface WechatStatus {
@@ -31,4 +34,21 @@ export interface WechatHistoryEntry {
   request_code: string | null
   content: string
   status: string
+}
+
+export type WechatPendingStatus = 'pending' | 'replied' | 'expired' | 'cancelled'
+
+export interface WechatPendingRequest {
+  request_id: string
+  request_code: string
+  project_root_path: string
+  project_key: string
+  project_alias: string
+  agent_label: string
+  prompt_preview: string
+  created_at: string
+  expires_at: string
+  updated_at: string
+  status: WechatPendingStatus
+  completion_source: 'wechat' | 'desktop' | null
 }
