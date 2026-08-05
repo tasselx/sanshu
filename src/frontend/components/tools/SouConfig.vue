@@ -63,10 +63,18 @@ const config = ref({
 
 const loadingConfig = ref(false)
 const showProxyModal = ref(false)
-const lastSavedConnection = ref({
-  base_url: '',
-  token: '',
-})
+const lastSavedIndexSignature = ref('')
+
+function buildIndexSignature(value: typeof config.value): string {
+  return JSON.stringify({
+    base_url: normalizeBaseUrl(value.base_url),
+    token: (value.token || '').trim(),
+    batch_size: value.batch_size,
+    max_lines_per_blob: value.max_lines_per_blob,
+    text_extensions: [...value.text_extensions].map(item => item.trim().toLowerCase()).sort(),
+    exclude_patterns: [...value.exclude_patterns].map(item => item.trim().toLowerCase()).sort(),
+  })
+}
 // 调试状态
 const debugProjectRoot = ref('')
 const debugQuery = ref('')
@@ -585,10 +593,7 @@ async function loadAcemcpConfig() {
       // 中文说明：配置页首次加载时依次尝试 Devin 与 Windsurf 登录库，失败时保留手动填写入口。
       await detectFastContextApiKey(false)
     }
-    lastSavedConnection.value = {
-      base_url: normalizeBaseUrl(res.base_url || ''),
-      token: (res.token || '').trim(),
-    }
+    lastSavedIndexSignature.value = buildIndexSignature(config.value)
 
     // 确保选项存在
     const extSet = new Set(extOptions.value.map(o => o.value))
@@ -687,10 +692,8 @@ async function saveConfig() {
       }
     }
 
-    const nextBaseUrl = normalizeBaseUrl(config.value.base_url)
-    const nextToken = (config.value.token || '').trim()
-    const connectionChanged = lastSavedConnection.value.base_url !== nextBaseUrl
-      || lastSavedConnection.value.token !== nextToken
+    const nextIndexSignature = buildIndexSignature(config.value)
+    const indexConfigChanged = lastSavedIndexSignature.value !== nextIndexSignature
 
     await invoke('save_acemcp_config', {
       args: {
@@ -727,13 +730,10 @@ async function saveConfig() {
         fastContextExcludePaths: config.value.fast_context_exclude_paths,
       },
     })
-    lastSavedConnection.value = {
-      base_url: nextBaseUrl,
-      token: nextToken,
-    }
+    lastSavedIndexSignature.value = nextIndexSignature
     message.success('配置已保存')
-    if (connectionChanged) {
-      message.warning('检测到 ACE 配置变更，现有索引将在下次搜索时自动重建', {
+    if (indexConfigChanged) {
+      message.warning('检测到 ACE 索引配置变更，已有项目已提交后台全量重建', {
         duration: 5000,
       })
     }

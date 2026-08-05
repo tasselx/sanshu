@@ -6,6 +6,8 @@ use tauri::{AppHandle, Manager};
 
 /// 应用设置和初始化
 pub async fn setup_application(app_handle: &AppHandle) -> Result<(), String> {
+    // 中文说明：把索引任务事件接入 GUI；MCP 独立进程仍会通过 manifest 持久化事件。
+    crate::mcp::tools::acemcp::jobs::register_event_app(app_handle);
     let state = app_handle.state::<AppState>();
 
     // 加载配置并应用窗口设置

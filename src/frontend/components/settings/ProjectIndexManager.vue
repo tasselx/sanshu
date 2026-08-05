@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { IndexStatus, ProjectIndexStatus } from '../../types/tauri'
 import { invoke } from '@tauri-apps/api/core'
+import { listen } from '@tauri-apps/api/event'
 import { useDialog, useMessage } from 'naive-ui'
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useAcemcpSync } from '../../composables/useAcemcpSync'
@@ -64,6 +65,9 @@ const sortOptions = [
 
 // 轮询定时器
 let pollingTimer: number | null = null
+let pollingIntervalMs = 0
+let eventRefreshTimer: number | null = null
+let unlistenIndexJob: (() => void) | null = null
 
 // 选中项目的状态信息（用于抽屉组件）
 const selectedProjectStatus = computed<ProjectIndexStatus | null>(() => {
@@ -182,6 +186,20 @@ const stats = computed(() => {
 
 // 初始化加载
 onMounted(async () => {
+  // 索引批次完成后由后端事件驱动刷新；定时轮询仅作为进程分离场景的兜底。
+  try {
+    unlistenIndexJob = await listen('acemcp-index-job', () => {
+      if (eventRefreshTimer)
+        return
+      eventRefreshTimer = window.setTimeout(() => {
+        eventRefreshTimer = null
+        void refreshData()
+      }, 200)
+    })
+  }
+  catch (err) {
+    console.warn('监听索引任务事件失败，将使用轮询刷新:', err)
+  }
   await loadAllData()
   // 加载完成后检测所有目录的存在状态
   await checkAllDirectoriesExist()
@@ -191,6 +209,12 @@ onMounted(async () => {
 // 组件卸载时清理
 onUnmounted(() => {
   stopPolling()
+  if (eventRefreshTimer) {
+    clearTimeout(eventRefreshTimer)
+    eventRefreshTimer = null
+  }
+  unlistenIndexJob?.()
+  unlistenIndexJob = null
 })
 
 // 开始轮询
@@ -198,18 +222,10 @@ function startPolling() {
   if (pollingTimer)
     return
   // 根据是否有索引中的项目调整轮询频率
-  const interval = hasIndexingProject.value ? 3000 : 30000
+  pollingIntervalMs = hasIndexingProject.value ? 3000 : 30000
   pollingTimer = window.setInterval(async () => {
     await refreshData()
-    // 动态调整轮询频率
-    if (pollingTimer) {
-      const newInterval = hasIndexingProject.value ? 3000 : 30000
-      if (newInterval !== interval) {
-        stopPolling()
-        startPolling()
-      }
-    }
-  }, interval)
+  }, pollingIntervalMs)
 }
 
 // 停止轮询
@@ -217,6 +233,15 @@ function stopPolling() {
   if (pollingTimer) {
     clearInterval(pollingTimer)
     pollingTimer = null
+    pollingIntervalMs = 0
+  }
+}
+
+function syncPollingInterval() {
+  const nextInterval = hasIndexingProject.value ? 3000 : 30000
+  if (pollingTimer && pollingIntervalMs !== nextInterval) {
+    stopPolling()
+    startPolling()
   }
 }
 
@@ -229,6 +254,7 @@ async function refreshData() {
     ])
     allProjects.value = statusResult.projects
     watchingProjects.value = watchingResult
+    syncPollingInterval()
   }
   catch (err) {
     console.error('刷新项目索引数据失败:', err)
@@ -297,17 +323,18 @@ function handleReindex(projectRoot: string) {
     content: `确定要重新索引项目吗？\n\n${normalizedPath}\n\n这将重新扫描所有文件并更新索引。`,
     positiveText: '确认',
     negativeText: '取消',
-    onPositiveClick: async () => {
-      try {
-        await triggerIndexUpdate(normalizedPath)
-        message.success('已触发重新索引')
-        // 延迟刷新状态
-        setTimeout(() => loadAllData(), 1000)
-      }
-      catch (err) {
-        console.error('重新索引失败:', err)
-        message.error('重新索引失败')
-      }
+    onPositiveClick: () => {
+      // 立即返回让确认框关闭；后端命令只负责排队，上传进度通过任务事件持续同步。
+      void triggerIndexUpdate(normalizedPath)
+        .then(() => {
+          message.success('后台重新索引任务已提交')
+          void refreshData()
+        })
+        .catch((err) => {
+          console.error('重新索引失败:', err)
+          message.error(`提交重新索引任务失败: ${err}`)
+        })
+      return true
     },
   })
 }
@@ -326,9 +353,8 @@ async function handleDrawerResync() {
   try {
     // selectedProject 已经是规范化的路径
     await triggerIndexUpdate(selectedProject.value)
-    message.success('已触发重新索引')
-    // 延迟刷新状态
-    setTimeout(() => loadAllData(), 1000)
+    message.success('后台重新索引任务已提交')
+    await refreshData()
   }
   catch (err) {
     console.error('重新索引失败:', err)

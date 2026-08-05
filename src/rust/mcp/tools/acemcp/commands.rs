@@ -246,6 +246,12 @@ pub async fn save_acemcp_config(
     state: State<'_, AppState>,
     app: AppHandle,
 ) -> Result<(), String> {
+    // 中文说明：索引签名覆盖所有会改变 blob 集合的 ACE 参数，保存后按签名判断是否需要全量任务。
+    let previous_index_scope = super::mcp::build_index_scope_hash(
+        &super::AcemcpTool::get_acemcp_config()
+            .await
+            .map_err(|e| format!("读取旧 ACE 配置失败: {}", e))?,
+    );
     // 允许只使用 fast-context，此时 ACE base_url/token 可以留空。
     let normalized_base_url = {
         let trimmed = args.base_url.trim();
@@ -353,6 +359,65 @@ pub async fn save_acemcp_config(
     save_config(&state, &app)
         .await
         .map_err(|e| format!("保存配置失败: {}", e))?;
+
+    let next_config = super::AcemcpTool::get_acemcp_config()
+        .await
+        .map_err(|e| format!("读取新 ACE 配置失败: {}", e))?;
+    let next_index_scope = super::mcp::build_index_scope_hash(&next_config);
+    if previous_index_scope != next_index_scope {
+        let (mut projects, index_nested_projects) = crate::config::load_standalone_config()
+            .ok()
+            .map(|config| {
+                (
+                    config
+                        .mcp_config
+                        .acemcp_watched_projects
+                        .unwrap_or_default(),
+                    config
+                        .mcp_config
+                        .acemcp_index_nested_projects
+                        .unwrap_or(true),
+                )
+            })
+            .unwrap_or_else(|| (Vec::new(), true));
+        projects.extend(
+            super::AcemcpTool::get_all_index_status()
+                .projects
+                .keys()
+                .cloned(),
+        );
+        let projects = if index_nested_projects {
+            collapse_nested_project_roots(projects)
+        } else {
+            normalize_project_list(projects)
+        };
+        for project_root in projects {
+            let current_status = super::AcemcpTool::get_index_status(project_root.clone());
+            if current_status.status == super::types::IndexStatus::Indexing {
+                // 中文说明：已有上传任务不在配置保存线程中强行打断；任务结束/重启恢复时会按新签名补跑全量。
+                log::info!(
+                    "ACE 配置变更已记录，等待当前索引任务结束后重建: project={}",
+                    project_root
+                );
+                continue;
+            }
+            // 中文说明：配置变更必须清掉旧空间记录，再由 manifest 任务重新建立可验证的全量批次。
+            if let Err(error) = purge_project_index_records(&project_root, false) {
+                log::warn!("ACE 配置变更清理旧索引失败: project={}, error={}", project_root, error);
+                continue;
+            }
+            if let Err(error) = super::AcemcpTool::trigger_index_update_with_app(
+                project_root.clone(),
+                true,
+                Some(app.clone()),
+            )
+            .await
+            {
+                log::warn!("ACE 配置变更提交全量索引失败: project={}, error={}", project_root, error);
+            }
+        }
+        log::info!("ACE 索引参数已变化，已提交已有项目的后台全量重建任务");
+    }
 
     Ok(())
 }
@@ -1620,8 +1685,11 @@ pub fn get_acemcp_project_with_nested(
 
 /// 手动触发索引更新
 #[tauri::command]
-pub async fn trigger_acemcp_index_update(project_root_path: String) -> Result<String, String> {
-    AcemcpTool::trigger_index_update(project_root_path)
+pub async fn trigger_acemcp_index_update(
+    project_root_path: String,
+    app: AppHandle,
+) -> Result<String, String> {
+    AcemcpTool::trigger_index_update_with_app(project_root_path, false, Some(app))
         .await
         .map_err(|e| e.to_string())
 }
@@ -1629,14 +1697,26 @@ pub async fn trigger_acemcp_index_update(project_root_path: String) -> Result<St
 /// 手动触发索引全量重建
 /// 先清理本地索引记录，再重新触发索引
 #[tauri::command]
-pub async fn trigger_acemcp_index_rebuild(project_root_path: String) -> Result<String, String> {
+pub async fn trigger_acemcp_index_rebuild(
+    project_root_path: String,
+    app: AppHandle,
+) -> Result<String, String> {
+    // 中文说明：运行中的任务保留其检查点，全量请求登记为后继任务，避免先删清单造成断点丢失。
+    if AcemcpTool::get_index_status(project_root_path.clone()).status
+        == super::types::IndexStatus::Indexing
+    {
+        return AcemcpTool::trigger_index_update_with_app(project_root_path, true, Some(app))
+            .await
+            .map_err(|e| e.to_string());
+    }
+
     // 先清理本地索引记录（projects.json + projects_status.json）
     // 全量重建不主动停止文件监听，避免影响自动索引
     purge_project_index_records(&project_root_path, false)
         .map_err(|e| format!("全量重建前清理索引记录失败: {}", e))?;
 
     // 再触发索引更新（全量重建）
-    AcemcpTool::trigger_index_update(project_root_path)
+    AcemcpTool::trigger_index_update_with_app(project_root_path, true, Some(app))
         .await
         .map_err(|e| e.to_string())
 }
@@ -1846,9 +1926,37 @@ fn normalize_project_list(projects: Vec<String>) -> Vec<String> {
     normalized
 }
 
+/// 嵌套索引开启时只保留最外层根目录，由统一调度器负责拆分子项目，避免重复排队。
+fn collapse_nested_project_roots(projects: Vec<String>) -> Vec<String> {
+    let mut normalized = normalize_project_list(projects);
+    normalized.sort_by_key(|path| path.len());
+    let mut roots: Vec<String> = Vec::new();
+    for path in normalized {
+        let comparable_path = if cfg!(windows) {
+            path.to_ascii_lowercase()
+        } else {
+            path.clone()
+        };
+        let is_nested = roots.iter().any(|root| {
+            let comparable_root = if cfg!(windows) {
+                root.to_ascii_lowercase()
+            } else {
+                root.clone()
+            };
+            comparable_path
+                .strip_prefix(comparable_root.trim_end_matches('/'))
+                .is_some_and(|suffix| suffix.starts_with('/'))
+        });
+        if !is_nested {
+            roots.push(path);
+        }
+    }
+    roots
+}
+
 /// 清理指定项目的索引记录
 /// stop_watching = true 时会停止文件监听
-fn purge_project_index_records(
+pub(crate) fn purge_project_index_records(
     project_root_path: &str,
     stop_watching: bool,
 ) -> Result<String, String> {
@@ -1874,6 +1982,7 @@ fn purge_project_index_records(
 
     let mut projects_deleted = false;
     let mut status_deleted = false;
+    let mut job_deleted = false;
 
     // 1. 从 projects.json 中删除项目的 blob 列表
     let projects_path = data_dir.join("projects.json");
@@ -2017,17 +2126,22 @@ fn purge_project_index_records(
         );
     }
 
-    // 3. 视需要停止该项目的文件监听
+    // 3. 清理独立任务清单，避免全量重建误续传旧签名的批次。
+    job_deleted = super::jobs::remove_job(&normalized_root)
+        .map_err(|e| format!("清理 index_jobs.json 失败: {}", e))?;
+
+    // 4. 视需要停止该项目的文件监听
     if stop_watching {
         let watcher_manager = super::watcher::get_watcher_manager();
         let _ = watcher_manager.stop_watching(&normalized_root);
     }
 
-    if projects_deleted || status_deleted {
+    if projects_deleted || status_deleted || job_deleted {
         log::info!(
-            "[purge_project_index_records] 清理完成: projects.json={}, status.json={}",
+            "[purge_project_index_records] 清理完成: projects.json={}, status.json={}, index_jobs.json={}",
             projects_deleted,
-            status_deleted
+            status_deleted,
+            job_deleted
         );
         Ok(format!("已清理项目索引记录: {}", normalized_root))
     } else {

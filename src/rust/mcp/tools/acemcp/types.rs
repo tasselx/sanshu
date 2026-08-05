@@ -100,6 +100,18 @@ pub struct ProjectIndexStatus {
     /// 最近增量索引的文件列表（最多保留 5 个，相对路径）
     #[serde(default)]
     pub recent_indexed_files: Vec<String>,
+    /// 当前后台任务 ID（从 index_jobs.json 校正）
+    #[serde(default)]
+    pub job_id: Option<String>,
+    /// 当前任务总批次
+    #[serde(default)]
+    pub total_batches: usize,
+    /// 当前任务已完成批次
+    #[serde(default)]
+    pub completed_batches: usize,
+    /// 任务检查点最后更新时间
+    #[serde(default)]
+    pub job_updated_at: Option<DateTime<Utc>>,
 }
 
 impl Default for ProjectIndexStatus {
@@ -121,6 +133,10 @@ impl Default for ProjectIndexStatus {
             stale_reason: None,
             directory_stats: HashMap::new(),
             recent_indexed_files: Vec::new(),
+            job_id: None,
+            total_batches: 0,
+            completed_batches: 0,
+            job_updated_at: None,
         }
     }
 }

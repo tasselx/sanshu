@@ -19,7 +19,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
-use super::mcp::{should_skip_auto_index_for_auth_failure, update_index};
+use super::mcp::should_skip_auto_index_for_auth_failure;
 use super::types::AcemcpConfig;
 use crate::config::load_standalone_config;
 use crate::log_debug;
@@ -776,13 +776,12 @@ async fn flush_index(
             continue;
         }
 
-        match update_index(&latest_config, &project_path).await {
-            Ok(blob_names) => {
+        match super::mcp::enqueue_incremental_index(&latest_config, &project_path).await {
+            Ok(()) => {
                 log_important!(
                     info,
-                    "自动索引更新成功: project={}, blobs={}, changed_files={}, changed_sample={:?}",
+                    "自动索引任务已提交: project={}, changed_files={}, changed_sample={:?}",
                     project_path,
-                    blob_names.len(),
                     changed_paths.len(),
                     summarize_changed_paths(&project_path, changed_paths, 8)
                 );

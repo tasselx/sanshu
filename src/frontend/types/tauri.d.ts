@@ -22,6 +22,10 @@ export interface ProjectIndexStatus {
   stale_reason?: string | null
   directory_stats: Record<string, [number, number]> // 目录路径 -> [总文件数, 已索引文件数]
   recent_indexed_files?: string[] // 最近增量索引的文件列表（最多 5 个）
+  job_id?: string | null
+  total_batches?: number
+  completed_batches?: number
+  job_updated_at?: string | null
 }
 
 export interface ProjectsIndexStatus {

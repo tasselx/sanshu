@@ -716,6 +716,9 @@ fn start_acemcp_watch_config_sync() {
     tokio::spawn(async {
         let watcher_manager = crate::mcp::tools::acemcp::watcher::get_watcher_manager();
         watcher_manager.sync_with_persisted_watch_projects().await;
+        if let Err(error) = crate::mcp::tools::acemcp::mcp::resume_index_jobs().await {
+            log_important!(warn, "恢复 ACE 未完成索引任务失败: {}", error);
+        }
 
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(15));
         loop {

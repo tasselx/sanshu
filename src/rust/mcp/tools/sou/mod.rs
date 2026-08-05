@@ -123,7 +123,7 @@ impl SouTool {
                 },
                 "timeout_ms": {
                     "type": "number",
-                    "description": "fast-context 单次请求超时毫秒数。"
+                    "description": "auto 模式远端后端总预算；显式 fast-context 模式下为单次请求超时毫秒数。"
                 },
                 "exclude_paths": {
                     "type": "array",
@@ -388,17 +388,50 @@ async fn run_auto_result(
     config: &SouRuntimeConfig,
 ) -> Result<BackendRunResult, Vec<BackendRunError>> {
     let mut errors = Vec::new();
+    let remote_backend_count = config
+        .auto_order
+        .iter()
+        .filter(|backend| matches!(backend.as_str(), BACKEND_ACE | BACKEND_FAST_CONTEXT))
+        .count()
+        .max(1) as u64;
+    let total_remote_budget_ms = request
+        .timeout_ms
+        .unwrap_or(config.fast_context.timeout_ms)
+        .clamp(1000, 300000);
+    let per_remote_timeout_ms = (total_remote_budget_ms / remote_backend_count).max(1000);
+
     for backend in &config.auto_order {
         log_important!(info, "[sou] auto 尝试后端: {}", backend);
         let result = match backend.as_str() {
-            BACKEND_ACE => run_ace(request).await,
+            BACKEND_ACE => match tokio::time::timeout(
+                Duration::from_millis(per_remote_timeout_ms),
+                run_ace(request),
+            )
+            .await
+            {
+                Ok(result) => result,
+                Err(_) => Err(format!(
+                    "ACE 自动回退预算超时（{}ms），继续尝试下一后端",
+                    per_remote_timeout_ms
+                )),
+            },
             BACKEND_FAST_CONTEXT => {
-                run_fast_context(
-                    request,
-                    &config.fast_context,
-                    config.include_backend_headers,
+                match tokio::time::timeout(
+                    Duration::from_millis(per_remote_timeout_ms),
+                    run_fast_context(
+                        request,
+                        &config.fast_context,
+                        config.include_backend_headers,
+                    ),
                 )
                 .await
+                {
+                    Ok(result) => result,
+                    Err(_) => Err(format!(
+                        "FastContext 自动回退预算超时（{}ms），继续尝试下一后端",
+                        per_remote_timeout_ms
+                    )),
+                }
             }
             BACKEND_LOCAL if config.local_enabled => run_local(request, &config.fast_context).await,
             BACKEND_LOCAL => Err("本地兜底已禁用".to_string()),
