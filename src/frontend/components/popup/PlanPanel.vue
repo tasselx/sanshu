@@ -449,7 +449,7 @@ onUnmounted(() => {
         />
         <div class="i-carbon-list-checked w-3.5 h-3.5 shrink-0 text-teal-600 dark:text-teal-400" />
         <span class="truncate font-medium text-on-surface">执行计划</span>
-        <span class="shrink-0 rounded-full border border-gray-500/45 px-1.5 py-0.5 text-[11px] leading-4 text-on-surface-secondary">{{ completed }}/{{ total }}</span>
+        <span class="shrink-0 rounded-full border border-gray-500/45 px-1.5 py-0.5 text-[11px] leading-4 text-on-surface-secondary">({{ completed }}/{{ total }})</span>
       </button>
 
       <div class="flex shrink-0 items-center gap-0.5">
