@@ -3,11 +3,11 @@ use crate::log_important;
 use crate::wechat::history::{
     add_history_entry, clear_history, get_history, history_path, WechatHistoryEntry,
 };
-use crate::wechat::pending::{
-    list_pending, normalize_project_path, register_pending, update_pending,
-    WechatPendingRequest, WechatPendingStatus, WECHAT_PENDING_EXPIRY_SECS,
-};
 use crate::wechat::parser::{parse_wechat_reply, request_short_code};
+use crate::wechat::pending::{
+    list_pending, normalize_project_path, register_pending, update_pending, WechatPendingRequest,
+    WechatPendingStatus, WECHAT_PENDING_EXPIRY_SECS,
+};
 use crate::wechat::state::{
     clear_wechat_state, load_wechat_state, save_wechat_state, state_path, StoredWechatCredentials,
     WechatRuntimeState,
@@ -314,10 +314,7 @@ pub async fn start_wechat_sync(
     let project_alias = if project_root_path.trim().is_empty() {
         "未命名项目".to_string()
     } else {
-        crate::wechat::pending::project_alias(
-            &project_root_path,
-            &wechat_config.project_aliases,
-        )
+        crate::wechat::pending::project_alias(&project_root_path, &wechat_config.project_aliases)
     };
     let agent_label = agent_label
         .map(|value| value.trim().to_string())
@@ -552,7 +549,10 @@ async fn listen_for_reply(
                 "项目 {project_alias} · AI {agent_label} · #{code} 已过期，请回到对应 zhi 重新发起。"
             );
             if let Err(error) = send_text(&runtime, &expiration).await {
-                log_important!(warn, "[wechat] reply: expiration_notice_failed error={error}");
+                log_important!(
+                    warn,
+                    "[wechat] reply: expiration_notice_failed error={error}"
+                );
             }
             log_important!(info, "[wechat] reply: expired code={code}");
             return Ok(());
@@ -681,7 +681,12 @@ async fn send_image(
         .map_err(|e| format!("发送微信通知图片失败: {e}"))
 }
 
-fn build_reply_guide(code: &str, project_alias: &str, agent_label: &str, options: &[String]) -> String {
+fn build_reply_guide(
+    code: &str,
+    project_alias: &str,
+    agent_label: &str,
+    options: &[String],
+) -> String {
     if options.is_empty() {
         return format!(
             "三术 zhi #{code}\n项目：{project_alias}\nAI：{agent_label}\n\n复制并修改：\n#{code}\n项目：{project_alias}\nAI：{agent_label}\n回复：在这里填写回复"

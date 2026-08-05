@@ -1,14 +1,16 @@
 <script setup lang="ts">
-import type { WechatConfig, WechatDiagnostics, WechatNotificationMode, WechatStatus } from '../../types/wechat'
+import type { WechatConfig, WechatDiagnostics, WechatNotificationImageTheme, WechatNotificationMode, WechatStatus } from '../../types/wechat'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { useMessage } from 'naive-ui'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { renderWechatNotificationImages } from '../../utils/wechatNotificationImage'
 import WechatHistoryPanel from './WechatHistoryPanel.vue'
 import WechatLogPanel from './WechatLogPanel.vue'
+import WechatPendingPanel from './WechatPendingPanel.vue'
 
 const message = useMessage()
-const config = ref<WechatConfig>({ enabled: false, notification_mode: 'always' })
+const config = ref<WechatConfig>({ enabled: false, notification_mode: 'always', notification_image_theme: 'auto', project_aliases: {} })
 const status = ref<WechatStatus>({ enabled: false, bound: false, binding: false, target_user: null })
 const diagnostics = ref<WechatDiagnostics>({
   base_url: null,
@@ -30,6 +32,10 @@ const verifyCode = ref('')
 const isBinding = ref(false)
 const isTesting = ref(false)
 const diagnosticsLoading = ref(false)
+const pendingCount = ref(0)
+const previewVisible = ref(false)
+const previewLoading = ref(false)
+const previewImages = ref<string[]>([])
 const cleanupFunctions: Array<() => void> = []
 
 const notificationModeLabel = computed(() => {
@@ -50,6 +56,8 @@ async function loadState() {
     config.value = {
       ...loadedConfig,
       notification_mode: loadedConfig.notification_mode || 'always',
+      notification_image_theme: loadedConfig.notification_image_theme || 'auto',
+      project_aliases: loadedConfig.project_aliases || {},
     }
     status.value = loadedStatus
   }
@@ -92,6 +100,44 @@ async function updateNotificationMode(value: string | number) {
   catch (error) {
     config.value.notification_mode = previous
     message.error(`保存微信通知策略失败：${String(error)}`)
+  }
+}
+
+async function updateNotificationImageTheme(value: string | number) {
+  const theme = String(value) as WechatNotificationImageTheme
+  const previous = config.value.notification_image_theme
+  config.value.notification_image_theme = theme
+  try {
+    await invoke('set_wechat_config', { wechatConfig: config.value })
+    message.success('通知图片主题已更新')
+  }
+  catch (error) {
+    config.value.notification_image_theme = previous
+    message.error(`保存通知图片主题失败：${String(error)}`)
+  }
+}
+
+async function showNotificationPreview() {
+  previewLoading.value = true
+  previewVisible.value = true
+  try {
+    const pages = await renderWechatNotificationImages({
+      id: 'preview123',
+      message: '# 示例通知\n\n这是 Markdown、代码和流程图的图片预览。\n\n```ts\nconst answer = "zhi"\n```\n\n```mermaid\ngraph LR\n  A[请求] --> B[回复]\n```',
+      predefined_options: ['按当前方案执行', '调整后再讨论'],
+      is_markdown: true,
+      project_alias: '当前项目',
+      agent_label: '预览 AI',
+      image_theme: config.value.notification_image_theme,
+    })
+    previewImages.value = pages.map(page => `data:image/png;base64,${page}`)
+  }
+  catch (error) {
+    previewVisible.value = false
+    message.error(`生成通知图片预览失败：${String(error)}`)
+  }
+  finally {
+    previewLoading.value = false
   }
 }
 
@@ -250,13 +296,21 @@ watch(showManager, (show) => {
     <n-tabs v-model:value="activeTab" type="line" animated>
       <n-tab-pane name="overview" tab="概览与配置">
         <div class="max-h-[66vh] space-y-4 overflow-y-auto pr-1">
-          <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5">
             <n-card size="small" :bordered="true">
               <div class="text-xs opacity-60">
                 通知状态
               </div>
               <div class="mt-1 text-sm font-medium">
                 {{ config.enabled ? '已启用' : '已关闭' }}
+              </div>
+            </n-card>
+            <n-card size="small" :bordered="true">
+              <div class="text-xs opacity-60">
+                待处理请求
+              </div>
+              <div class="mt-1 text-sm font-medium">
+                {{ pendingCount }} 条
               </div>
             </n-card>
             <n-card size="small" :bordered="true">
@@ -322,8 +376,44 @@ watch(showManager, (show) => {
                   智能判断等待 15 秒；检测到持续键盘或鼠标操作后，本次不发送。
                 </div>
               </div>
+              <div class="border-t border-gray-200/70 pt-4 dark:border-gray-700/70">
+                <div class="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <div class="text-sm font-medium">
+                      通知图片主题
+                    </div>
+                    <div class="mt-1 text-xs opacity-60">
+                      Markdown、代码、公式和流程图会按所选主题生成连续图片。
+                    </div>
+                  </div>
+                  <n-button size="small" secondary :loading="previewLoading" @click="showNotificationPreview">
+                    <template #icon>
+                      <div class="i-carbon-view w-4 h-4" />
+                    </template>
+                    预览图片
+                  </n-button>
+                </div>
+                <n-radio-group
+                  class="mt-3"
+                  :value="config.notification_image_theme"
+                  size="small"
+                  @update:value="updateNotificationImageTheme"
+                >
+                  <n-radio-button value="auto">
+                    跟随界面
+                  </n-radio-button>
+                  <n-radio-button value="paper">
+                    纸张浅色
+                  </n-radio-button>
+                  <n-radio-button value="midnight">
+                    午夜深色
+                  </n-radio-button>
+                </n-radio-group>
+              </div>
             </div>
           </n-card>
+
+          <WechatPendingPanel @count-change="pendingCount = $event" />
 
           <n-card size="small" title="绑定与连接">
             <div class="flex flex-wrap items-center justify-between gap-4">
@@ -404,6 +494,15 @@ watch(showManager, (show) => {
         <WechatLogPanel />
       </n-tab-pane>
     </n-tabs>
+  </n-modal>
+
+  <n-modal v-model:show="previewVisible" preset="card" title="通知图片预览" style="width: 620px; max-width: calc(100vw - 32px);">
+    <n-spin :show="previewLoading">
+      <div v-if="previewImages.length" class="space-y-3 overflow-y-auto" style="max-height: 70vh;">
+        <img v-for="(image, index) in previewImages" :key="index" :src="image" :alt="`通知图片预览 ${index + 1}`" class="w-full rounded border border-gray-200/70 dark:border-gray-700/70">
+      </div>
+      <n-empty v-else description="暂无预览图片" />
+    </n-spin>
   </n-modal>
 
   <n-modal v-model:show="showBinding" preset="card" title="微信通知绑定" style="width: 520px; max-width: calc(100vw - 32px);">

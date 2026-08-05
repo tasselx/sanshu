@@ -142,8 +142,8 @@ pub fn update_pending(
         return Ok(());
     }
     let content = fs::read_to_string(&path).context("读取微信待处理请求失败")?;
-    let mut entry: WechatPendingRequest = serde_json::from_str(&content)
-        .context("解析微信待处理请求失败")?;
+    let mut entry: WechatPendingRequest =
+        serde_json::from_str(&content).context("解析微信待处理请求失败")?;
     entry.status = status;
     entry.completion_source = completion_source.map(str::to_string);
     entry.updated_at = Utc::now();

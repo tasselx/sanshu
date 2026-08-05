@@ -1,7 +1,7 @@
 {
   "name": "sanshu",
   "type": "module",
-  "version": "0.6.6",
+  "version": "0.6.5",
   "packageManager": "pnpm@10.28.2",
   "author": "煎饼果子(86)",
   "license": "MIT",
@@ -34,6 +34,7 @@
     "@types/markdown-it": "^14.1.2",
     "@vueuse/core": "^13.3.0",
     "@vueuse/integrations": "^13.4.0",
+    "dom-to-image-more": "^3.10.2",
     "highlight.js": "^11.11.1",
     "katex": "^0.16.45",
     "markdown-it": "^14.1.0",

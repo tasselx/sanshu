@@ -21,6 +21,8 @@ export interface WechatNotificationState {
 interface WechatConfig {
   enabled: boolean
   notification_mode?: 'always' | 'smart' | 'manual'
+  notification_image_theme?: 'auto' | 'paper' | 'midnight'
+  project_aliases?: Record<string, string>
 }
 
 interface WechatNotificationPayload {
@@ -28,6 +30,8 @@ interface WechatNotificationPayload {
   message: string
   predefinedOptions: string[]
   imagePages: string[]
+  projectRootPath: string
+  agentLabel: string
 }
 
 const SMART_NOTIFICATION_DELAY_SECONDS = 15
@@ -113,11 +117,32 @@ export function useMcpHandler() {
       return
 
     const generation = notificationGeneration
-    currentWechatPayload = {
-      requestId: request.id || '',
-      message: request.message,
-      predefinedOptions: request.predefined_options || [],
-      imagePages: renderWechatNotificationImages(request),
+    try {
+      const projectRootPath = request.project_root_path || ''
+      const projectKey = projectRootPath.replace(/^\/\/\?\//, '').replace(/\\/g, '/').replace(/\/$/, '').toLowerCase()
+      const projectAlias = config.project_aliases?.[projectKey]
+        || projectRootPath.split(/[\\/]/).filter(Boolean).pop()
+        || '未命名项目'
+      const agentLabel = String(request.agent_label || '').trim() || `AI-${String(request.id || '').replace(/[^a-z0-9]/gi, '').slice(0, 6).toUpperCase() || 'ZHI'}`
+      const imagePages = await renderWechatNotificationImages({
+        ...request,
+        project_alias: projectAlias,
+        agent_label: agentLabel,
+        image_theme: config.notification_image_theme || 'auto',
+      })
+      currentWechatPayload = {
+        requestId: request.id || '',
+        message: request.message,
+        predefinedOptions: request.predefined_options || [],
+        imagePages,
+        projectRootPath,
+        agentLabel,
+      }
+    }
+    catch (error) {
+      wechatNotificationState.value = { phase: 'error', secondsRemaining: 0 }
+      console.error('生成微信 Markdown 通知图片失败:', error)
+      return
     }
 
     const mode = config.notification_mode || 'always'
@@ -229,6 +254,8 @@ export function useMcpHandler() {
       wechatConfig = {
         enabled: !!(rawWechatConfig as any)?.enabled,
         notification_mode: (rawWechatConfig as any)?.notification_mode || 'always',
+        notification_image_theme: (rawWechatConfig as any)?.notification_image_theme || 'auto',
+        project_aliases: (rawWechatConfig as any)?.project_aliases || {},
       }
       // 如果Telegram启用且配置了隐藏前端弹窗，则不显示前端弹窗
       if (

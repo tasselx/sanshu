@@ -24,6 +24,7 @@ try {
         'src/rust/wechat/commands.rs'
         'src/rust/wechat/history.rs'
         'src/rust/wechat/mod.rs'
+        'src/rust/wechat/pending.rs'
         'src/rust/wechat/state.rs'
     )
     rustfmt --edition 2021 --check --config skip_children=true $rustFiles
@@ -32,6 +33,8 @@ try {
     if (-not $SkipCheck) {
         cargo check
         Assert-NativeSuccess 'Rust 编译检查' $LASTEXITCODE
+        cargo test --lib wechat::
+        Assert-NativeSuccess '微信通知 Rust 定向单测' $LASTEXITCODE
     }
 
     if (-not $SkipFrontend) {
@@ -46,6 +49,11 @@ try {
             pnpm exec eslint $frontendFile
             Assert-NativeSuccess "微信通知前端 ESLint 检查 ($frontendFile)" $LASTEXITCODE
         }
+
+        pnpm exec eslint 'src/frontend/components/settings/WechatPendingPanel.vue'
+        Assert-NativeSuccess '微信通知前端 ESLint 检查 (WechatPendingPanel.vue)' $LASTEXITCODE
+        pnpm exec eslint 'src/frontend/utils/wechatNotificationImage.ts'
+        Assert-NativeSuccess '微信通知前端 ESLint 检查 (wechatNotificationImage.ts)' $LASTEXITCODE
 
         pnpm build
         Assert-NativeSuccess '前端生产构建' $LASTEXITCODE

@@ -161,6 +161,6 @@ mod tests {
             &[],
         )
         .expect("应解析带身份标识的回复");
-        assert_eq!(reply.user_input.as_deref(), Some("回复：继续处理"));
+        assert_eq!(reply.user_input.as_deref(), Some("继续处理"));
     }
 }
