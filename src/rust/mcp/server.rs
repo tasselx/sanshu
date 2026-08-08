@@ -169,6 +169,26 @@ impl ZhiServer {
     fn is_zhi_entry(tool_name: &str) -> bool {
         tool_name == "zhi" || tool_name == WINDSURF_ZHI_ALIAS
     }
+
+    /// 非 zhi 的 sanshu 工具成功返回后追加收尾提醒，降低「调了 ji/sou 却未 zhi 就 stop」概率。
+    /// Cursor stop hook 会拦截这类 turn 并注入 followup（多一条 request）；提示放在工具结果末尾，
+    /// 比仅依赖 workspace rule 更靠近模型决策点。成功且未含相同标记时才追加。
+    fn attach_zhi_closeout_reminder(tool_name: &str, mut result: CallToolResult) -> CallToolResult {
+        if Self::is_zhi_entry(tool_name) || result.is_error.unwrap_or(false) {
+            return result;
+        }
+        const MARKER: &str = "【sanshu 收尾】";
+        const FOOTER: &str = "【sanshu 收尾】若本轮任务还可继续请直接干活；若可结束，必须先调用 zhi 做收尾确认，禁止直接结束对话（否则 stop hook 会强制续跑）。";
+        let already = result.content.iter().any(|c| {
+            c.as_text()
+                .map(|t| t.text.contains(MARKER))
+                .unwrap_or(false)
+        });
+        if !already {
+            result.content.push(Content::text(FOOTER));
+        }
+        result
+    }
 }
 
 impl ServerHandler for ZhiServer {
@@ -324,7 +344,8 @@ impl ServerHandler for ZhiServer {
                 tools.push(Tool {
                     name: Cow::Borrowed("ji"),
                     description: Some(Cow::Borrowed(
-                        "全局记忆管理工具，用于存储和管理重要的开发规范、用户偏好和最佳实践",
+                        "全局记忆管理工具，用于存储和管理重要的开发规范、用户偏好和最佳实践。\
+                         注意：本轮一旦调用过本工具或其它 sanshu 工具，结束本轮前必须先调用 zhi 做收尾确认，禁止直接结束对话。",
                     )),
                     input_schema: Arc::new(schema_map),
                     annotations: None,
@@ -753,6 +774,12 @@ impl ServerHandler for ZhiServer {
                 format!("未知的工具: {}", tool_name),
                 None,
             )),
+        };
+
+        // 非 zhi 成功路径：追加「必须以 zhi 收尾」提示，降低 stop hook 误伤/被迫续跑
+        let result = match result {
+            Ok(r) => Ok(Self::attach_zhi_closeout_reminder(&tool_name, r)),
+            Err(e) => Err(e),
         };
 
         // 统一出口日志（全链路追踪用）

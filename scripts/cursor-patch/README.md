@@ -37,6 +37,19 @@
 - 断流后不自动第二次 attempt  
 - 代价：长 turn 直接停；手动 Continue 可能变成新 request  
 
+### 附带：`slow-pool-dump`（默认随 `apply` 注入）
+
+在 `usageLimitPolicyStatusService.performFetch` 拿到 status 后：
+
+1. 写纯文本 `artifacts/slow-pool-models.txt`（可 `--dump-path=` 覆盖）  
+2. Console 打印 `path=…`  
+3. 兜底：`localStorage['sanshu-slow-pool-models']` / `globalThis.__sanshuSlowPool`  
+
+字段（txt 行）：`isInSlowPool`、`stage`、`allowedModelIds`、`allowedModelTags`、`slownessMs`、`grants`…
+
+触发：重启后打开 Composer（`addConsumer` → refetch）。**名单由服务端下发**，客户端只落盘。  
+查看：`./apply-cursor-patch.sh slow-pool`（会把 **path** 和内容一起打出来）。
+
 ## 用法
 
 ```bash
@@ -49,14 +62,21 @@
 # 用 backups 里的官方包做离线自检（不碰 /Applications）
 ./scripts/cursor-patch/apply-cursor-patch.sh selftest
 
-# 默认 = reuse 双保险（先 dry-run 门槛 → 备份 → 原子写 → 写后校验，失败回滚）
+# 默认 = reuse 双保险 + slow-pool-dump（先 dry-run 门槛 → 备份 → 原子写 → 写后校验，失败回滚）
 ./scripts/cursor-patch/apply-cursor-patch.sh apply
+
+# 仅补 slow-pool dump（reuse 已打过时）
+./scripts/cursor-patch/apply-cursor-patch.sh apply --mode=dump-slow-pool
+
+# 不带 slow-dump
+./scripts/cursor-patch/apply-cursor-patch.sh apply --no-slow-pool-dump
 
 # 可选：彻底关闭自动重试
 ./scripts/cursor-patch/apply-cursor-patch.sh apply --mode=disable-retries
 
-# 查看是否生效
+# 查看是否生效 / 读最新 dump
 ./scripts/cursor-patch/apply-cursor-patch.sh status
+./scripts/cursor-patch/apply-cursor-patch.sh slow-pool
 
 # 恢复备份（版本不一致默认拒绝，需 --force）
 ./scripts/cursor-patch/apply-cursor-patch.sh restore
