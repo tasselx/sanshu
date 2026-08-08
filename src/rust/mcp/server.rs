@@ -229,6 +229,10 @@ impl ServerHandler for ZhiServer {
                 "workspace": {
                     "type": "string",
                     "description": "工作区根目录绝对路径（必填）"
+                },
+                "agent_label": {
+                    "type": "string",
+                    "description": "AI 实例显示名称（可选，未提供时按请求短码回退）"
                 }
             },
             "required": ["brief", "workspace"]
@@ -819,6 +823,9 @@ fn start_acemcp_watch_config_sync() {
     tokio::spawn(async {
         let watcher_manager = crate::mcp::tools::acemcp::watcher::get_watcher_manager();
         watcher_manager.sync_with_persisted_watch_projects().await;
+        if let Err(error) = crate::mcp::tools::acemcp::mcp::resume_index_jobs().await {
+            log_important!(warn, "恢复 ACE 未完成索引任务失败: {}", error);
+        }
 
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(15));
         loop {

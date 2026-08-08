@@ -247,6 +247,26 @@ body {
 .markdown-content.theme-light th,
 .markdown-content.theme-light td { border-color: #e5e7eb; }
 
+/* 微信通知图片使用固定画布，需要覆盖应用正文的小字号排版。 */
+.wechat-notification-card .markdown-content {
+  max-width: none;
+  font-size: 24px;
+  line-height: 1.55;
+}
+.wechat-notification-card .markdown-content h1 { font-size: 38px; margin: 0.8rem 0 0.5rem; }
+.wechat-notification-card .markdown-content h2 { font-size: 32px; margin: 0.7rem 0 0.45rem; }
+.wechat-notification-card .markdown-content h3,
+.wechat-notification-card .markdown-content h4 { font-size: 28px; margin: 0.6rem 0 0.35rem; }
+.wechat-notification-card .markdown-content p,
+.wechat-notification-card .markdown-content ul,
+.wechat-notification-card .markdown-content ol,
+.wechat-notification-card .markdown-content li,
+.wechat-notification-card .markdown-content blockquote,
+.wechat-notification-card .markdown-content table { font-size: 24px; }
+.wechat-notification-card .markdown-content pre { font-size: 20px; line-height: 1.45; }
+.wechat-notification-card .markdown-content code:not(pre code) { font-size: 21px; }
+.wechat-notification-card .markdown-content img { max-height: 420px; object-fit: contain; }
+
 /* ========== 代码块增强样式 ========== */
 
 /* 代码块包装器 */

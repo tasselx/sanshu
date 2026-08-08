@@ -1,5 +1,5 @@
 use crate::app::builder::run_tauri_app;
-use crate::config::load_standalone_telegram_config;
+use crate::config::load_standalone_config;
 use crate::log_important;
 use crate::mcp::types::PopupRequest;
 use crate::mcp::utils::{generate_request_id, normalize_zhi_choices};
@@ -72,6 +72,7 @@ fn handle_cli_mode(args: &[String]) -> Result<()> {
     let mut options: Vec<String> = Vec::new();
     let mut is_markdown = true;
     let mut project_root: Option<String> = None;
+    let mut agent_label: Option<String> = None;
     let mut uiux_intent: Option<String> = None;
     let mut uiux_context_policy: Option<String> = None;
     let mut uiux_reason: Option<String> = None;
@@ -102,6 +103,10 @@ fn handle_cli_mode(args: &[String]) -> Result<()> {
             }
             "--project-root" if i + 1 < args.len() => {
                 project_root = Some(args[i + 1].clone());
+                i += 2;
+            }
+            "--agent-label" if i + 1 < args.len() => {
+                agent_label = Some(args[i + 1].clone());
                 i += 2;
             }
             "--uiux-intent" if i + 1 < args.len() => {
@@ -179,6 +184,7 @@ fn handle_cli_mode(args: &[String]) -> Result<()> {
         },
         is_markdown,
         project_root_path: project_root,
+        agent_label,
         uiux_intent,
         uiux_context_policy,
         uiux_reason,
@@ -203,10 +209,14 @@ fn split_cli_options(raw: &str) -> Vec<String> {
 /// 处理MCP请求
 fn handle_mcp_request(request_file: &str) -> Result<()> {
     log_important!(info, "[handle_mcp_request] 收到请求文件: {}", request_file);
-    // 检查Telegram配置，决定是否启用纯Telegram模式
-    match load_standalone_telegram_config() {
-        Ok(telegram_config) => {
-            if telegram_config.enabled && telegram_config.hide_frontend_popup {
+    // 微信双向回复依赖 GUI 进程的事件提交链；启用微信时保留 GUI。
+    match load_standalone_config() {
+        Ok(app_config) => {
+            let telegram_config = app_config.telegram_config;
+            if telegram_config.enabled
+                && telegram_config.hide_frontend_popup
+                && !app_config.wechat_config.enabled
+            {
                 // 纯Telegram模式：不启动GUI，直接处理
                 log_important!(
                     info,
@@ -299,6 +309,7 @@ fn print_help() {
     println!("  --option <选项>                      预定义选项（可重复）");
     println!("  --markdown / --no-markdown           是否按 Markdown 渲染（默认开启）");
     println!("  --project-root <路径>                项目根目录");
+    println!("  --agent-label <名称>                 AI 实例显示名称（可选）");
     println!("  --uiux-intent <值>                   none/beautify/page_refactor/uiux_search");
     println!("  --uiux-context-policy <值>           auto/force/forbid");
     println!("  --uiux-reason <内容>                  UI/UX 上下文追加原因");

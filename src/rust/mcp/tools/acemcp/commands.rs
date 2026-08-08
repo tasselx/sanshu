@@ -127,6 +127,8 @@ pub struct SaveAcemcpConfigArgs {
         alias = "sou_include_failed_backend_errors"
     )]
     pub sou_include_failed_backend_errors: Option<bool>,
+    #[serde(alias = "souLocalEnabled", alias = "sou_local_enabled")]
+    pub sou_local_enabled: Option<bool>,
     #[serde(alias = "uiuxKnowledgeBackend", alias = "uiux_knowledge_backend")]
     pub uiux_knowledge_backend: Option<String>,
     #[serde(alias = "fastContextCommand", alias = "fast_context_command")]
@@ -244,6 +246,12 @@ pub async fn save_acemcp_config(
     state: State<'_, AppState>,
     app: AppHandle,
 ) -> Result<(), String> {
+    // 中文说明：索引签名覆盖所有会改变 blob 集合的 ACE 参数，保存后按签名判断是否需要全量任务。
+    let previous_index_scope = super::mcp::build_index_scope_hash(
+        &super::AcemcpTool::get_acemcp_config()
+            .await
+            .map_err(|e| format!("读取旧 ACE 配置失败: {}", e))?,
+    );
     // 允许只使用 fast-context，此时 ACE base_url/token 可以留空。
     let normalized_base_url = {
         let trimmed = args.base_url.trim();
@@ -309,6 +317,9 @@ pub async fn save_acemcp_config(
         if let Some(v) = args.sou_include_failed_backend_errors {
             config.mcp_config.sou_include_failed_backend_errors = Some(v);
         }
+        if let Some(v) = args.sou_local_enabled {
+            config.mcp_config.sou_local_enabled = Some(v);
+        }
         if let Some(v) = args.uiux_knowledge_backend.as_deref() {
             let normalized = v.trim().to_ascii_lowercase().replace('-', "_");
             if !matches!(normalized.as_str(), "auto" | "fast_context" | "local") {
@@ -348,6 +359,65 @@ pub async fn save_acemcp_config(
     save_config(&state, &app)
         .await
         .map_err(|e| format!("保存配置失败: {}", e))?;
+
+    let next_config = super::AcemcpTool::get_acemcp_config()
+        .await
+        .map_err(|e| format!("读取新 ACE 配置失败: {}", e))?;
+    let next_index_scope = super::mcp::build_index_scope_hash(&next_config);
+    if previous_index_scope != next_index_scope {
+        let (mut projects, index_nested_projects) = crate::config::load_standalone_config()
+            .ok()
+            .map(|config| {
+                (
+                    config
+                        .mcp_config
+                        .acemcp_watched_projects
+                        .unwrap_or_default(),
+                    config
+                        .mcp_config
+                        .acemcp_index_nested_projects
+                        .unwrap_or(true),
+                )
+            })
+            .unwrap_or_else(|| (Vec::new(), true));
+        projects.extend(
+            super::AcemcpTool::get_all_index_status()
+                .projects
+                .keys()
+                .cloned(),
+        );
+        let projects = if index_nested_projects {
+            collapse_nested_project_roots(projects)
+        } else {
+            normalize_project_list(projects)
+        };
+        for project_root in projects {
+            let current_status = super::AcemcpTool::get_index_status(project_root.clone());
+            if current_status.status == super::types::IndexStatus::Indexing {
+                // 中文说明：已有上传任务不在配置保存线程中强行打断；任务结束/重启恢复时会按新签名补跑全量。
+                log::info!(
+                    "ACE 配置变更已记录，等待当前索引任务结束后重建: project={}",
+                    project_root
+                );
+                continue;
+            }
+            // 中文说明：配置变更必须清掉旧空间记录，再由 manifest 任务重新建立可验证的全量批次。
+            if let Err(error) = purge_project_index_records(&project_root, false) {
+                log::warn!("ACE 配置变更清理旧索引失败: project={}, error={}", project_root, error);
+                continue;
+            }
+            if let Err(error) = super::AcemcpTool::trigger_index_update_with_app(
+                project_root.clone(),
+                true,
+                Some(app.clone()),
+            )
+            .await
+            {
+                log::warn!("ACE 配置变更提交全量索引失败: project={}, error={}", project_root, error);
+            }
+        }
+        log::info!("ACE 索引参数已变化，已提交已有项目的后台全量重建任务");
+    }
 
     Ok(())
 }
@@ -1099,6 +1169,7 @@ pub struct AcemcpConfigResponse {
     pub sou_auto_order: Vec<String>,
     pub sou_include_backend_headers: bool,
     pub sou_include_failed_backend_errors: bool,
+    pub sou_local_enabled: bool,
     pub uiux_knowledge_backend: String,
     pub fast_context_command: String,
     pub fast_context_script_path: Option<String>,
@@ -1239,11 +1310,13 @@ pub async fn get_acemcp_config(state: State<'_, AppState>) -> Result<AcemcpConfi
             .sou_default_backend
             .clone()
             .unwrap_or_else(|| "auto".to_string()),
-        sou_auto_order: config
-            .mcp_config
-            .sou_auto_order
-            .clone()
-            .unwrap_or_else(|| vec!["ace".to_string(), "fast_context".to_string()]),
+        sou_auto_order: config.mcp_config.sou_auto_order.clone().unwrap_or_else(|| {
+            vec![
+                "ace".to_string(),
+                "fast_context".to_string(),
+                "local".to_string(),
+            ]
+        }),
         sou_include_backend_headers: config
             .mcp_config
             .sou_include_backend_headers
@@ -1252,6 +1325,7 @@ pub async fn get_acemcp_config(state: State<'_, AppState>) -> Result<AcemcpConfi
             .mcp_config
             .sou_include_failed_backend_errors
             .unwrap_or(true),
+        sou_local_enabled: config.mcp_config.sou_local_enabled.unwrap_or(true),
         uiux_knowledge_backend: config
             .mcp_config
             .uiux_knowledge_backend
@@ -1305,6 +1379,16 @@ pub struct DebugSearchResult {
     pub project_path: String,
     /// 查询语句
     pub query: String,
+    /// 实际完成检索的后端
+    pub actual_backend: Option<String>,
+    /// 是否由首选后端降级而来
+    pub degraded: bool,
+    /// Local 后端实际使用的引擎
+    pub engine: Option<String>,
+    /// Local 索引状态
+    pub index_state: Option<String>,
+    /// 触发降级的原因
+    pub fallback_reason: Option<String>,
 }
 
 /// 纯 Rust 的调试命令：直接执行 acemcp 搜索，返回结果及耗时统计
@@ -1352,11 +1436,34 @@ pub async fn debug_acemcp_search(
     match search_result {
         Ok(result) => {
             let mut result_text = String::new();
-            let mut result_count: Option<usize> = None;
+            let metadata = result.structured_content.as_ref();
+            let result_count = metadata
+                .and_then(|value| value.get("hit_count"))
+                .and_then(serde_json::Value::as_u64)
+                .map(|value| value as usize);
+            let actual_backend = metadata
+                .and_then(|value| value.get("actual_backend"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string);
+            let degraded = metadata
+                .and_then(|value| value.get("degraded"))
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+            let engine = metadata
+                .and_then(|value| value.get("engine"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string);
+            let index_state = metadata
+                .and_then(|value| value.get("index_state"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string);
+            let fallback_reason = metadata
+                .and_then(|value| value.get("fallback_reason"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string);
 
             if let Ok(val) = serde_json::to_value(&result) {
                 if let Some(arr) = val.get("content").and_then(|v| v.as_array()) {
-                    result_count = Some(arr.len());
                     for item in arr {
                         if item.get("type").and_then(|t| t.as_str()) == Some("text") {
                             if let Some(txt) = item.get("text").and_then(|t| t.as_str()) {
@@ -1367,16 +1474,23 @@ pub async fn debug_acemcp_search(
                 }
             }
 
+            let is_error = result.is_error.unwrap_or(false);
+
             Ok(DebugSearchResult {
-                success: true,
-                result: Some(result_text),
-                error: None,
+                success: !is_error,
+                result: (!is_error).then_some(result_text.clone()),
+                error: is_error.then_some(result_text),
                 request_time: request_time_str,
                 response_time: response_time_str,
                 total_duration_ms,
                 result_count,
                 project_path: project_root_path,
                 query,
+                actual_backend,
+                degraded,
+                engine,
+                index_state,
+                fallback_reason,
             })
         }
         Err(e) => {
@@ -1393,9 +1507,50 @@ pub async fn debug_acemcp_search(
                 result_count: None,
                 project_path: project_root_path,
                 query,
+                actual_backend: None,
+                degraded: false,
+                engine: None,
+                index_state: None,
+                fallback_reason: None,
             })
         }
     }
+}
+
+#[tauri::command]
+pub fn get_sou_local_index_status(
+    project_root_path: String,
+) -> Result<crate::mcp::tools::sou::local::LocalIndexStatus, String> {
+    crate::mcp::tools::sou::local::status(&project_root_path).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn rebuild_sou_local_index(
+    project_root_path: String,
+    state: State<'_, AppState>,
+) -> Result<crate::mcp::tools::sou::local::LocalIndexStatus, String> {
+    let excludes = {
+        let config = state
+            .config
+            .lock()
+            .map_err(|error| format!("获取配置失败: {}", error))?;
+        config
+            .mcp_config
+            .fast_context_exclude_paths
+            .clone()
+            .unwrap_or_else(|| {
+                vec![
+                    "node_modules".to_string(),
+                    ".git".to_string(),
+                    "dist".to_string(),
+                    "build".to_string(),
+                    "target".to_string(),
+                ]
+            })
+    };
+    crate::mcp::tools::sou::local::rebuild(&project_root_path, excludes)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 /// 执行acemcp工具
@@ -1530,8 +1685,11 @@ pub fn get_acemcp_project_with_nested(
 
 /// 手动触发索引更新
 #[tauri::command]
-pub async fn trigger_acemcp_index_update(project_root_path: String) -> Result<String, String> {
-    AcemcpTool::trigger_index_update(project_root_path)
+pub async fn trigger_acemcp_index_update(
+    project_root_path: String,
+    app: AppHandle,
+) -> Result<String, String> {
+    AcemcpTool::trigger_index_update_with_app(project_root_path, false, Some(app))
         .await
         .map_err(|e| e.to_string())
 }
@@ -1539,14 +1697,26 @@ pub async fn trigger_acemcp_index_update(project_root_path: String) -> Result<St
 /// 手动触发索引全量重建
 /// 先清理本地索引记录，再重新触发索引
 #[tauri::command]
-pub async fn trigger_acemcp_index_rebuild(project_root_path: String) -> Result<String, String> {
+pub async fn trigger_acemcp_index_rebuild(
+    project_root_path: String,
+    app: AppHandle,
+) -> Result<String, String> {
+    // 中文说明：运行中的任务保留其检查点，全量请求登记为后继任务，避免先删清单造成断点丢失。
+    if AcemcpTool::get_index_status(project_root_path.clone()).status
+        == super::types::IndexStatus::Indexing
+    {
+        return AcemcpTool::trigger_index_update_with_app(project_root_path, true, Some(app))
+            .await
+            .map_err(|e| e.to_string());
+    }
+
     // 先清理本地索引记录（projects.json + projects_status.json）
     // 全量重建不主动停止文件监听，避免影响自动索引
     purge_project_index_records(&project_root_path, false)
         .map_err(|e| format!("全量重建前清理索引记录失败: {}", e))?;
 
     // 再触发索引更新（全量重建）
-    AcemcpTool::trigger_index_update(project_root_path)
+    AcemcpTool::trigger_index_update_with_app(project_root_path, true, Some(app))
         .await
         .map_err(|e| e.to_string())
 }
@@ -1756,9 +1926,37 @@ fn normalize_project_list(projects: Vec<String>) -> Vec<String> {
     normalized
 }
 
+/// 嵌套索引开启时只保留最外层根目录，由统一调度器负责拆分子项目，避免重复排队。
+fn collapse_nested_project_roots(projects: Vec<String>) -> Vec<String> {
+    let mut normalized = normalize_project_list(projects);
+    normalized.sort_by_key(|path| path.len());
+    let mut roots: Vec<String> = Vec::new();
+    for path in normalized {
+        let comparable_path = if cfg!(windows) {
+            path.to_ascii_lowercase()
+        } else {
+            path.clone()
+        };
+        let is_nested = roots.iter().any(|root| {
+            let comparable_root = if cfg!(windows) {
+                root.to_ascii_lowercase()
+            } else {
+                root.clone()
+            };
+            comparable_path
+                .strip_prefix(comparable_root.trim_end_matches('/'))
+                .is_some_and(|suffix| suffix.starts_with('/'))
+        });
+        if !is_nested {
+            roots.push(path);
+        }
+    }
+    roots
+}
+
 /// 清理指定项目的索引记录
 /// stop_watching = true 时会停止文件监听
-fn purge_project_index_records(
+pub(crate) fn purge_project_index_records(
     project_root_path: &str,
     stop_watching: bool,
 ) -> Result<String, String> {
@@ -1927,17 +2125,22 @@ fn purge_project_index_records(
         );
     }
 
-    // 3. 视需要停止该项目的文件监听
+    // 3. 清理独立任务清单，避免全量重建误续传旧签名的批次。
+    let job_deleted = super::jobs::remove_job(&normalized_root)
+        .map_err(|e| format!("清理 index_jobs.json 失败: {}", e))?;
+
+    // 4. 视需要停止该项目的文件监听
     if stop_watching {
         let watcher_manager = super::watcher::get_watcher_manager();
         let _ = watcher_manager.stop_watching(&normalized_root);
     }
 
-    if projects_deleted || status_deleted {
+    if projects_deleted || status_deleted || job_deleted {
         log::info!(
-            "[purge_project_index_records] 清理完成: projects.json={}, status.json={}",
+            "[purge_project_index_records] 清理完成: projects.json={}, status.json={}, index_jobs.json={}",
             projects_deleted,
-            status_deleted
+            status_deleted,
+            job_deleted
         );
         Ok(format!("已清理项目索引记录: {}", normalized_root))
     } else {

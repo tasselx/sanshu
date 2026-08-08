@@ -87,7 +87,12 @@ scripts/
 metadata.json
 demo/
 
-
+/docs/
+!/docs/
+/docs/*
+!/docs/log-viewer-global-debug.md
+!/docs/sou-local-fallback.md
+!/docs/wechat-notification-console.md
 
 
 test/
@@ -99,3 +104,5 @@ issue/*
 
 *.env
 /scripts/cursor-patch/backups
+
+.agents/

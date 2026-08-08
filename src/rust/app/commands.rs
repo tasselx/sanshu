@@ -7,6 +7,9 @@ pub use crate::mcp::commands::*;
 pub use crate::telegram::commands::*;
 pub use crate::telegram::handle_telegram_only_mcp_request;
 
+// 微信通知命令
+pub use crate::wechat::commands::*;
+
 // UI 命令
 pub use crate::ui::{
     audio::*, audio_assets::*, code_executor::*, commands::*, exit::*, exit_handler::*,

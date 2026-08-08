@@ -2,6 +2,7 @@
 // 用于代码库索引和语义搜索的MCP工具
 
 pub mod commands;
+pub mod jobs;
 pub mod mcp;
 pub mod types;
 pub mod watcher;

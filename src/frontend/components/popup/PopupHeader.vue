@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import type { WechatNotificationState } from '../../composables/useMcpHandler'
+import { computed } from 'vue'
 import ThemeIcon from '../common/ThemeIcon.vue'
 
 interface Props {
@@ -20,6 +22,7 @@ interface Props {
   mcpLastError?: string | null
   /** 当前项目失败文件数量，用于快速告警提示 */
   mcpFailedFiles?: number
+  wechatNotificationState?: WechatNotificationState
 }
 
 interface Emits {
@@ -30,6 +33,8 @@ interface Emits {
   toggleAlwaysOnTop: []
   /** 打开 MCP 代码索引详情抽屉 */
   openIndexStatus: []
+  cancelWechatNotification: []
+  sendWechatNotification: []
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -44,6 +49,7 @@ const props = withDefaults(defineProps<Props>(), {
   mcpLastFailureTime: null,
   mcpLastError: null,
   mcpFailedFiles: 0,
+  wechatNotificationState: () => ({ phase: 'idle', secondsRemaining: 0 }),
 })
 
 const emit = defineEmits<Emits>()
@@ -73,6 +79,29 @@ function handleOpenIndexStatus() {
   emit('openIndexStatus')
 }
 
+const showWechatNotificationState = computed(() => props.wechatNotificationState.phase !== 'idle')
+const wechatNotificationLabel = computed(() => {
+  const state = props.wechatNotificationState
+  switch (state.phase) {
+    case 'countdown':
+      return `${state.secondsRemaining}s 后通知`
+    case 'manual':
+      return '发送微信'
+    case 'sending':
+      return '正在发送'
+    case 'sent':
+      return '微信通知已发送'
+    case 'activity_cancelled':
+      return '检测到操作 · 本次不通知'
+    case 'cancelled':
+      return '已取消本次微信通知'
+    case 'error':
+      return '微信通知发送失败'
+    default:
+      return ''
+  }
+})
+
 function isAuthFailure(): boolean {
   const lastError = props.mcpLastError || ''
   const lower = lastError.toLowerCase()
@@ -82,7 +111,7 @@ function isAuthFailure(): boolean {
 
 <template>
   <div class="px-4 py-3 select-none">
-    <div class="flex items-center justify-between gap-3">
+    <div class="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-3">
       <!-- 左侧：标题 -->
       <div class="flex items-center gap-3 min-w-0">
         <div class="w-3 h-3 rounded-full bg-primary-500" />
@@ -91,8 +120,45 @@ function isAuthFailure(): boolean {
         </h1>
       </div>
 
+      <!-- 中间：单次微信通知状态，避免与正文和主要操作争夺注意力。 -->
+      <div v-if="showWechatNotificationState" class="justify-self-center min-w-0">
+        <div
+          class="inline-flex h-8 max-w-[320px] items-center gap-1.5 rounded-full border border-slate-500/40 bg-black-100/80 px-2.5 text-xs text-slate-200 shadow-sm"
+          role="status"
+          aria-live="polite"
+          :title="wechatNotificationLabel"
+        >
+          <div
+            v-if="wechatNotificationState.phase === 'countdown'"
+            class="i-carbon-alarm w-3.5 h-3.5 flex-shrink-0 text-slate-300"
+          />
+          <div class="i-carbon-logo-wechat w-3.5 h-3.5 flex-shrink-0 text-green-300/80" />
+          <button
+            v-if="wechatNotificationState.phase === 'manual'"
+            type="button"
+            class="rounded px-0.5 font-medium text-slate-100 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-400/70"
+            title="立即发送本次微信通知"
+            @click="emit('sendWechatNotification')"
+          >
+            {{ wechatNotificationLabel }}
+          </button>
+          <span v-else class="truncate whitespace-nowrap">{{ wechatNotificationLabel }}</span>
+          <button
+            v-if="wechatNotificationState.phase === 'countdown'"
+            type="button"
+            class="ml-0.5 inline-flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-full text-slate-400 transition-colors duration-150 hover:bg-white/10 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-400/70"
+            title="取消本次微信通知"
+            aria-label="取消本次微信通知"
+            @click="emit('cancelWechatNotification')"
+          >
+            <div class="i-carbon-close w-3.5 h-3.5" />
+          </button>
+        </div>
+      </div>
+      <div v-else />
+
       <!-- 右侧：MCP 索引状态指示器 + 操作按钮 -->
-      <div class="flex items-center gap-3">
+      <div class="flex items-center justify-self-end gap-3">
         <!-- MCP 代码索引状态指示器（仅在 sou 工具启用且有项目索引状态时显示） -->
         <n-tooltip
           v-if="mcpEnabled && mcpStatusSummary"

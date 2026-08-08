@@ -85,7 +85,7 @@ interface SpeedTestProgress {
   sub_step: string | null
 }
 
-type IndexStatus = 'idle' | 'indexing' | 'synced' | 'failed'
+type IndexStatus = 'idle' | 'indexing' | 'paused' | 'synced' | 'failed'
 
 interface ProjectIndexStatusLite {
   project_root: string

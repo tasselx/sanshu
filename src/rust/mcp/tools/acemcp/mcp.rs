@@ -14,8 +14,13 @@ use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
 use reqwest::{Client, StatusCode};
 use ring::digest::{Context as ShaContext, SHA256};
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use tauri::AppHandle;
 
+use super::jobs::{
+    self, IndexJob, JOB_COLLECTING, JOB_COMPLETED, JOB_FAILED, JOB_PAUSED, JOB_QUEUED,
+    JOB_UPLOADING,
+};
 use super::types::{
     AcemcpConfig, AcemcpRequest, FileIndexStatus, FileIndexStatusKind, IndexStatus,
     NestedProjectInfo, ProjectFilesStatus, ProjectIndexStatus, ProjectWithNestedStatus,
@@ -30,9 +35,19 @@ pub struct AcemcpTool;
 
 /// 记录当前进程内已启动的后台索引任务，避免首次并发搜索时重复触发。
 static AUTO_INDEX_INFLIGHT: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+static PROJECTS_FILE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+static PROJECTS_STATUS_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 fn auto_index_inflight() -> &'static Mutex<HashSet<String>> {
     AUTO_INDEX_INFLIGHT.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+fn projects_file_lock() -> &'static Mutex<()> {
+    PROJECTS_FILE_LOCK.get_or_init(|| Mutex::new(()))
+}
+
+fn projects_status_lock() -> &'static Mutex<()> {
+    PROJECTS_STATUS_LOCK.get_or_init(|| Mutex::new(()))
 }
 
 impl AcemcpTool {
@@ -208,13 +223,40 @@ impl AcemcpTool {
         }
     }
 
-    /// 手动触发索引更新（供 Tauri 命令调用）
-    /// 支持级联索引嵌套的 Git 子项目
+    /// 手动触发索引更新（供 Tauri 命令调用）。这里只提交任务，不等待网络上传。
     pub async fn trigger_index_update(project_root_path: String) -> Result<String> {
+        Self::schedule_index_update(project_root_path, IndexJobMode::Incremental, None).await
+    }
+
+    /// 提交后台索引任务，并可把任务事件广播到 GUI。
+    pub async fn trigger_index_update_with_app(
+        project_root_path: String,
+        full_rebuild: bool,
+        app: Option<AppHandle>,
+    ) -> Result<String> {
+        Self::schedule_index_update(
+            project_root_path,
+            if full_rebuild {
+                IndexJobMode::Full
+            } else {
+                IndexJobMode::Incremental
+            },
+            app,
+        )
+        .await
+    }
+
+    /// 支持级联索引嵌套的 Git 子项目；该函数只负责排队，实际上传在后台执行。
+    async fn schedule_index_update(
+        project_root_path: String,
+        mode: IndexJobMode,
+        app: Option<AppHandle>,
+    ) -> Result<String> {
         log_important!(
             info,
-            "手动触发索引更新: project_root_path={}",
-            project_root_path
+            "提交后台索引任务: project_root_path={}, mode={}",
+            project_root_path,
+            mode.as_str()
         );
 
         let acemcp_config = Self::get_acemcp_config().await?;
@@ -230,11 +272,15 @@ impl AcemcpTool {
             Ok(status) => status,
             Err(e) => {
                 log_debug!("获取嵌套项目状态失败，将直接索引父目录: {}", e);
-                // 回退到原有逻辑
-                return match update_index(&acemcp_config, &project_root_path).await {
-                    Ok(blob_names) => Ok(format!("索引更新成功，共 {} 个 blobs", blob_names.len())),
-                    Err(e) => Err(anyhow::anyhow!("索引更新失败: {}", e)),
-                };
+                let launch = start_background_index_with_mode(
+                    &acemcp_config,
+                    &project_root_path,
+                    true,
+                    mode,
+                    app,
+                )
+                .await?;
+                return Ok(format!("已提交后台索引任务: {:?}", launch));
             }
         };
 
@@ -248,49 +294,30 @@ impl AcemcpTool {
                 nested_status.nested_projects.len()
             );
 
-            let mut results = Vec::new();
-            let mut errors = Vec::new();
-
+            let mut launched = Vec::new();
             for nested in &nested_status.nested_projects {
-                log_important!(info, "索引嵌套子项目: {}", nested.absolute_path);
-                match update_index(&acemcp_config, &nested.absolute_path).await {
-                    Ok(blobs) => {
-                        log_important!(
-                            info,
-                            "子项目索引成功: {} ({} blobs)",
-                            nested.relative_path,
-                            blobs.len()
-                        );
-                        results.push((nested.relative_path.clone(), blobs.len()));
-                    }
-                    Err(e) => {
-                        log_important!(info, "子项目索引失败: {} - {}", nested.relative_path, e);
-                        errors.push((nested.relative_path.clone(), e.to_string()));
-                    }
-                }
+                let state = start_background_index_with_mode(
+                    &acemcp_config,
+                    &nested.absolute_path,
+                    true,
+                    mode,
+                    app.clone(),
+                )
+                .await?;
+                launched.push((nested.relative_path.clone(), format!("{:?}", state)));
             }
-
-            if errors.is_empty() {
-                Ok(format!(
-                    "索引更新成功，共 {} 个子项目: {:?}",
-                    results.len(),
-                    results
-                ))
-            } else {
-                Ok(format!(
-                    "索引更新部分成功: 成功 {} 个，失败 {} 个。成功: {:?}，失败: {:?}",
-                    results.len(),
-                    errors.len(),
-                    results,
-                    errors
-                ))
-            }
+            Ok(format!("已提交 {} 个子项目后台索引任务: {:?}", launched.len(), launched))
         } else {
-            // 策略B: 无嵌套子项目或开关关闭，直接索引
-            match update_index(&acemcp_config, &project_root_path).await {
-                Ok(blob_names) => Ok(format!("索引更新成功，共 {} 个 blobs", blob_names.len())),
-                Err(e) => Err(anyhow::anyhow!("索引更新失败: {}", e)),
-            }
+            // 策略B: 无嵌套子项目或开关关闭，直接提交父项目后台任务。
+            let state = start_background_index_with_mode(
+                &acemcp_config,
+                &project_root_path,
+                true,
+                mode,
+                app,
+            )
+            .await?;
+            Ok(format!("已提交后台索引任务: {:?}", state))
         }
     }
 
@@ -302,7 +329,29 @@ impl AcemcpTool {
     /// 获取所有项目的索引状态（供 Tauri 命令调用）
     pub fn get_all_index_status() -> ProjectsIndexStatus {
         let mut all_status = load_projects_status();
+        // 三份持久化状态互相校验：状态文件丢失时，仍可从已确认 blob 或任务清单补回项目。
+        for project_root in load_projects_file().0.into_keys() {
+            all_status
+                .projects
+                .entry(project_root.clone())
+                .or_insert_with(|| {
+                    let mut status = ProjectIndexStatus::default();
+                    status.project_root = project_root;
+                    status
+                });
+        }
+        for job in jobs::load_manifest().jobs.into_values() {
+            all_status
+                .projects
+                .entry(job.project_root.clone())
+                .or_insert_with(|| {
+                    let mut status = ProjectIndexStatus::default();
+                    status.project_root = job.project_root;
+                    status
+                });
+        }
         for status in all_status.projects.values_mut() {
+            reconcile_project_status_with_job(status);
             enrich_project_scope_state(status);
         }
         all_status
@@ -319,13 +368,7 @@ impl AcemcpTool {
         let exclude_patterns = acemcp_config.exclude_patterns.clone().unwrap_or_default();
 
         // 读取 projects.json，获取已索引的 blob 名称集合
-        let projects_path = home_projects_file();
-        let projects: ProjectsFile = if projects_path.exists() {
-            let data = fs::read_to_string(&projects_path).unwrap_or_default();
-            serde_json::from_str(&data).unwrap_or_default()
-        } else {
-            ProjectsFile::default()
-        };
+        let projects = load_projects_file();
 
         // 使用 normalize_project_path 去除 Windows 扩展路径前缀
         let normalized_root = normalize_project_path(
@@ -560,6 +603,8 @@ pub fn get_initial_index_state(project_root: &str) -> InitialIndexState {
         IndexStatus::Idle => InitialIndexState::Missing,
         IndexStatus::Synced => InitialIndexState::Synced,
         IndexStatus::Indexing => InitialIndexState::Indexing,
+        // 可恢复暂停与普通失败都允许再次触发；具体是否续传由 index_jobs.json 决定。
+        IndexStatus::Paused => InitialIndexState::Failed,
         IndexStatus::Failed => InitialIndexState::Failed,
     }
 }
@@ -571,21 +616,58 @@ enum BackgroundIndexLaunchState {
     Skipped,
 }
 
-fn build_index_scope_hash_from_parts(
-    base_url: Option<&str>,
-    token: Option<&str>,
-) -> Option<String> {
-    let normalized_base_url = normalize_base_url(base_url?);
-    let mut ctx = ShaContext::new(&SHA256);
-    ctx.update(normalized_base_url.as_bytes());
-    ctx.update(b"\n");
-    ctx.update(token?.trim().as_bytes());
-    Some(hex::encode(ctx.finish().as_ref()))
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IndexJobMode {
+    Incremental,
+    Full,
 }
 
-/// 计算当前 ACE 索引空间签名，用于判断本地索引是否仍然绑定到当前 base_url/token。
+impl IndexJobMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Incremental => "incremental",
+            Self::Full => "full",
+        }
+    }
+
+    fn from_str(value: &str) -> Self {
+        if value == "full" {
+            Self::Full
+        } else {
+            Self::Incremental
+        }
+    }
+}
+
+fn normalized_config_values(values: Option<&Vec<String>>) -> Vec<String> {
+    let mut normalized = values
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>();
+    normalized.sort();
+    normalized.dedup();
+    normalized
+}
+
+/// ACE 索引空间签名同时覆盖连接身份与会改变 blob 集合的索引参数。
+/// 这样扩展名、排除规则或分块大小变化时，也会自动进入全量重建。
 pub(crate) fn build_index_scope_hash(config: &AcemcpConfig) -> Option<String> {
-    build_index_scope_hash_from_parts(config.base_url.as_deref(), config.token.as_deref())
+    let normalized_base_url = normalize_base_url(config.base_url.as_deref()?);
+    let token = config.token.as_deref()?.trim();
+    let fingerprint = serde_json::json!({
+        "base_url": normalized_base_url,
+        "token": token,
+        "batch_size": config.batch_size.unwrap_or(10),
+        "max_lines_per_blob": config.max_lines_per_blob.unwrap_or(800),
+        "text_extensions": normalized_config_values(config.text_extensions.as_ref()),
+        "exclude_patterns": normalized_config_values(config.exclude_patterns.as_ref()),
+    });
+    let mut ctx = ShaContext::new(&SHA256);
+    ctx.update(fingerprint.to_string().as_bytes());
+    Some(hex::encode(ctx.finish().as_ref()))
 }
 
 fn require_index_scope_hash(config: &AcemcpConfig) -> anyhow::Result<String> {
@@ -610,10 +692,21 @@ fn enrich_project_scope_state(status: &mut ProjectIndexStatus) {
     let current_scope_hash = crate::config::load_standalone_config()
         .ok()
         .and_then(|config| {
-            build_index_scope_hash_from_parts(
-                config.mcp_config.acemcp_base_url.as_deref(),
-                config.mcp_config.acemcp_token.as_deref(),
-            )
+            build_index_scope_hash(&AcemcpConfig {
+                base_url: config.mcp_config.acemcp_base_url,
+                token: config.mcp_config.acemcp_token,
+                batch_size: config.mcp_config.acemcp_batch_size,
+                max_lines_per_blob: config.mcp_config.acemcp_max_lines_per_blob,
+                text_extensions: config.mcp_config.acemcp_text_extensions,
+                exclude_patterns: config.mcp_config.acemcp_exclude_patterns,
+                smart_wait_range: None,
+                proxy_enabled: config.mcp_config.acemcp_proxy_enabled,
+                proxy_host: config.mcp_config.acemcp_proxy_host,
+                proxy_port: config.mcp_config.acemcp_proxy_port,
+                proxy_type: config.mcp_config.acemcp_proxy_type,
+                proxy_username: config.mcp_config.acemcp_proxy_username,
+                proxy_password: config.mcp_config.acemcp_proxy_password,
+            })
         });
     let has_local_blobs = if status.project_root.is_empty() {
         false
@@ -630,37 +723,139 @@ fn enrich_project_scope_state(status: &mut ProjectIndexStatus) {
     };
 }
 
+/// 运行中的任务只保留一个后继请求；全量优先于增量，避免文件事件风暴制造重复任务。
+fn request_followup_index(project_root: &str, mode: IndexJobMode) {
+    let requested_mode = mode.as_str().to_string();
+    let _ = jobs::update_job(
+        project_root,
+        "rerun_requested",
+        Some(format!("已合并后继 {} 索引请求", requested_mode)),
+        |job| {
+            if job.rerun_mode.as_deref() != Some(IndexJobMode::Full.as_str()) {
+                job.rerun_mode = Some(requested_mode.clone());
+            }
+        },
+    );
+}
+
 /// 在真正调度异步任务前先做进程内去重，并把项目状态切到 indexing，缩小重复触发窗口。
 async fn start_background_index(
     config: &AcemcpConfig,
     project_root: &str,
     force: bool,
 ) -> anyhow::Result<BackgroundIndexLaunchState> {
-    let initial_state = get_initial_index_state(project_root);
-    if !force {
-        match initial_state {
-            InitialIndexState::Synced => return Ok(BackgroundIndexLaunchState::Skipped),
-            InitialIndexState::Indexing => return Ok(BackgroundIndexLaunchState::AlreadyRunning),
-            InitialIndexState::Missing | InitialIndexState::Idle | InitialIndexState::Failed => {}
-        }
-    } else if initial_state == InitialIndexState::Indexing {
-        return Ok(BackgroundIndexLaunchState::AlreadyRunning);
-    }
+    start_background_index_with_mode(
+        config,
+        project_root,
+        force,
+        IndexJobMode::Incremental,
+        None,
+    )
+    .await
+}
 
+async fn start_background_index_with_mode(
+    config: &AcemcpConfig,
+    project_root: &str,
+    force: bool,
+    mode: IndexJobMode,
+    app: Option<AppHandle>,
+) -> anyhow::Result<BackgroundIndexLaunchState> {
+    launch_index_worker(config, project_root, force, mode, app)
+}
+
+/// 同步完成任务去重、检查点初始化并启动异步 worker。
+/// 后继任务也走这里，避免 worker 内再次 await 自身形成递归 Future。
+fn launch_index_worker(
+    config: &AcemcpConfig,
+    project_root: &str,
+    force: bool,
+    mode: IndexJobMode,
+    app: Option<AppHandle>,
+) -> anyhow::Result<BackgroundIndexLaunchState> {
     let normalized_root = normalize_project_path(
         &PathBuf::from(project_root)
             .canonicalize()
             .unwrap_or_else(|_| PathBuf::from(project_root))
             .to_string_lossy(),
     );
+    let scope_hash = require_index_scope_hash(config)?;
+    let initial_state = get_initial_index_state(project_root);
+    let existing_job = jobs::get_job(&normalized_root);
+
+    if !force {
+        match initial_state {
+            InitialIndexState::Synced
+                if existing_job
+                    .as_ref()
+                    .map(|job| !job.is_resumable())
+                    .unwrap_or(true) =>
+            {
+                return Ok(BackgroundIndexLaunchState::Skipped);
+            }
+            InitialIndexState::Indexing if existing_job.is_none() => {}
+            InitialIndexState::Missing
+            | InitialIndexState::Idle
+            | InitialIndexState::Failed
+            | InitialIndexState::Synced
+            | InitialIndexState::Indexing => {}
+        }
+    }
 
     {
         let mut inflight = auto_index_inflight().lock().unwrap();
         if !inflight.insert(normalized_root.clone()) {
+            if force {
+                request_followup_index(&normalized_root, mode);
+            }
             return Ok(BackgroundIndexLaunchState::AlreadyRunning);
         }
     }
 
+    // 中文说明：项目 lease 是跨进程互斥边界，进程退出后由操作系统自动释放，旧检查点可被接管。
+    let lease = match jobs::try_acquire_project_lease(&normalized_root) {
+        Ok(Some(lease)) => lease,
+        Ok(None) => {
+            auto_index_inflight().lock().unwrap().remove(&normalized_root);
+            if force {
+                request_followup_index(&normalized_root, mode);
+            }
+            return Ok(BackgroundIndexLaunchState::AlreadyRunning);
+        }
+        Err(error) => {
+            auto_index_inflight().lock().unwrap().remove(&normalized_root);
+            return Err(error);
+        }
+    };
+
+    // 取得 lease 后重新读取，避免 GUI 与 MCP 同时更新清单时使用旧快照。
+    let existing_job = jobs::get_job(&normalized_root);
+    let job = match existing_job {
+        Some(job)
+            if job.is_resumable()
+                && job.scope_hash == scope_hash
+                && job.config_fingerprint == scope_hash
+                && (job.mode == mode.as_str()
+                    || (job.mode == IndexJobMode::Full.as_str()
+                        && mode == IndexJobMode::Incremental)) => job,
+        _ => match jobs::create_job(&normalized_root, mode.as_str(), &scope_hash, &scope_hash) {
+            Ok(job) => job,
+            Err(error) => {
+                auto_index_inflight().lock().unwrap().remove(&normalized_root);
+                return Err(error);
+            }
+        },
+    };
+    if let Some(app) = app.as_ref() {
+        jobs::register_event_app(app);
+    }
+    let job_id = job.job_id.clone();
+    let _ = jobs::update_job(
+        &normalized_root,
+        "queued",
+        Some("后台任务已排队".to_string()),
+        |job| job.status = JOB_QUEUED.to_string(),
+    );
     let _ = update_project_status(project_root, |status| {
         status.status = IndexStatus::Indexing;
         status.progress = 0;
@@ -670,34 +865,110 @@ async fn start_background_index(
 
     let config_clone = config.clone();
     let project_root_clone = project_root.to_string();
+    let normalized_root_clone = normalized_root.clone();
     tokio::spawn(async move {
+        let lease = lease;
         log_important!(
             info,
-            "后台索引任务启动: project_root={}",
-            project_root_clone
+            "后台索引任务启动: project_root={}, job_id={}",
+            project_root_clone,
+            job_id
         );
-        if let Err(e) = update_index(&config_clone, &project_root_clone).await {
-            log_important!(
-                info,
-                "后台索引失败: project_root={}, error={}",
-                project_root_clone,
-                e
-            );
-            let error_message = e.to_string();
-            let _ = update_project_status(&project_root_clone, |status| {
-                if status.status == IndexStatus::Indexing {
-                    status.status = IndexStatus::Failed;
-                    status.last_error = Some(error_message.clone());
-                    status.last_failure_time = Some(chrono::Utc::now());
-                    status.last_failure_scope_hash = None;
+        let task_succeeded = match update_index_with_mode(
+            &config_clone,
+            &project_root_clone,
+            mode,
+        )
+        .await
+        {
+            Ok(_) => {
+                log_important!(info, "后台索引成功: project_root={}", project_root_clone);
+                true
+            }
+            Err(error) => {
+                let error_message = error.to_string();
+                log_important!(
+                    info,
+                    "后台索引失败: project_root={}, error={}",
+                    project_root_clone,
+                    error_message
+                );
+                // 认证失败已经由上传循环记录了失败签名，不能在这里覆盖它。
+                if !is_ace_auth_failure_error(&error_message) {
+                    let should_record = jobs::get_job(&normalized_root_clone)
+                        .map(|job| job.status != JOB_PAUSED && job.status != JOB_COMPLETED)
+                        .unwrap_or(true);
+                    if should_record {
+                        let _ = jobs::update_job(
+                            &normalized_root_clone,
+                            "failed",
+                            Some(error_message.clone()),
+                            |job| {
+                                if job.status != JOB_COMPLETED {
+                                    // 网络/进程级失败保留为 paused，启动后可继续重试剩余批次。
+                                    job.status = JOB_PAUSED.to_string();
+                                    job.last_error = Some(error_message.clone());
+                                }
+                            },
+                        );
+                    }
+                    let _ = update_project_status(&project_root_clone, |status| {
+                        if status.status == IndexStatus::Indexing {
+                            let resumable = jobs::get_job(&normalized_root_clone)
+                                .map(|job| job.status == JOB_PAUSED)
+                                .unwrap_or(false);
+                            status.status = if resumable {
+                                IndexStatus::Paused
+                            } else {
+                                IndexStatus::Failed
+                            };
+                            status.last_error = Some(error_message.clone());
+                            status.last_failure_time = Some(chrono::Utc::now());
+                        }
+                    });
                 }
-            });
-        } else {
-            log_important!(info, "后台索引成功: project_root={}", project_root_clone);
-        }
+                false
+            }
+        };
 
-        let mut inflight = auto_index_inflight().lock().unwrap();
-        inflight.remove(&normalized_root);
+        {
+            let mut inflight = auto_index_inflight().lock().unwrap();
+            inflight.remove(&normalized_root_clone);
+        }
+        // 中文说明：当前 worker 已结束，先释放项目 lease，再尝试启动配置变更或后继任务。
+        drop(lease);
+
+        // 中文说明：配置可能在任务执行期间被保存；旧任务退出后立即接续一次新签名的全量任务。
+        if let Ok(latest_config) = AcemcpTool::get_acemcp_config().await {
+            if build_index_scope_hash(&latest_config) != build_index_scope_hash(&config_clone) {
+                log_important!(
+                    info,
+                    "检测到索引任务执行期间 ACE 配置已变更，提交新签名全量任务: project_root={}",
+                    normalized_root_clone
+                );
+                let _ = launch_index_worker(
+                    &latest_config,
+                    &normalized_root_clone,
+                    true,
+                    IndexJobMode::Full,
+                    None,
+                );
+            } else if task_succeeded {
+                // 当前任务收集文件后发生的新变更，合并为一轮后继任务，避免异步排队吞掉监听事件。
+                let rerun_mode = jobs::get_job(&normalized_root_clone)
+                    .and_then(|job| job.rerun_mode)
+                    .map(|mode| IndexJobMode::from_str(&mode));
+                if let Some(rerun_mode) = rerun_mode {
+                    let _ = launch_index_worker(
+                        &latest_config,
+                        &normalized_root_clone,
+                        true,
+                        rerun_mode,
+                        None,
+                    );
+                }
+            }
+        }
     });
 
     Ok(BackgroundIndexLaunchState::Started)
@@ -722,15 +993,78 @@ pub async fn ensure_initial_index_background(
     let state = get_initial_index_state(project_root);
 
     match state {
-        InitialIndexState::Missing | InitialIndexState::Idle | InitialIndexState::Failed => {
+        InitialIndexState::Missing
+        | InitialIndexState::Idle
+        | InitialIndexState::Failed
+        | InitialIndexState::Synced
+        | InitialIndexState::Indexing => {
+            // 启动函数会先核对 manifest；存在未完成任务时即使状态为 indexing 也会恢复。
             let _ = start_background_index(config, project_root, false).await?;
-            Ok(())
-        }
-        InitialIndexState::Synced | InitialIndexState::Indexing => {
-            // 已经完成或正在进行，无需操作
-            Ok(())
         }
     }
+    Ok(())
+}
+
+/// MCP 进程启动时恢复清单中未完成的任务；已完成任务不会重复上传。
+pub async fn resume_index_jobs() -> anyhow::Result<()> {
+    let pending_jobs = jobs::resumable_jobs();
+    if pending_jobs.is_empty() {
+        return Ok(());
+    }
+    let config = AcemcpTool::get_acemcp_config().await?;
+    let Some(current_scope_hash) = build_index_scope_hash(&config) else {
+        log_important!(warn, "恢复 ACE 索引任务暂缓：当前配置缺少 base_url 或 token");
+        return Ok(());
+    };
+    for job in pending_jobs {
+        let status = get_project_status(&job.project_root);
+        if should_hold_on_auth_failure(&config, &job.project_root, &status) {
+            log_important!(
+                info,
+                "恢复索引任务暂缓：Token 认证失败，project_root={}, job_id={}",
+                job.project_root,
+                job.job_id
+            );
+            continue;
+        }
+        if current_scope_hash != job.scope_hash {
+            // 中文说明：清单签名落后于当前 ACE 配置时交给全量 worker 接管；不先删除旧清单，避免与并行进程竞态。
+            let _ = start_background_index_with_mode(
+                &config,
+                &job.project_root,
+                true,
+                IndexJobMode::Full,
+                None,
+            )
+            .await?;
+            continue;
+        }
+        let _ = start_background_index_with_mode(
+            &config,
+            &job.project_root,
+            false,
+            IndexJobMode::from_str(&job.mode),
+            None,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+/// 文件监听只负责排队，上传由统一后台任务执行，确保同样具备批次断点与事件。
+pub(crate) async fn enqueue_incremental_index(
+    config: &AcemcpConfig,
+    project_root: &str,
+) -> anyhow::Result<()> {
+    let _ = start_background_index_with_mode(
+        config,
+        project_root,
+        true,
+        IndexJobMode::Incremental,
+        None,
+    )
+    .await?;
+    Ok(())
 }
 
 // ---------------- 整合 temp 逻辑：索引、上传、检索 ----------------
@@ -825,13 +1159,7 @@ pub(crate) fn should_skip_auto_index_for_auth_failure(
 }
 
 fn has_local_blob_names(project_root: &str) -> bool {
-    let projects_path = home_projects_file();
-    let projects: ProjectsFile = if projects_path.exists() {
-        let data = fs::read_to_string(&projects_path).unwrap_or_default();
-        serde_json::from_str(&data).unwrap_or_default()
-    } else {
-        ProjectsFile::default()
-    };
+    let projects = load_projects_file();
 
     let normalized_root = normalize_project_path(
         &PathBuf::from(project_root)
@@ -929,6 +1257,60 @@ pub(crate) fn home_projects_file() -> PathBuf {
     data_dir.join("projects.json")
 }
 
+fn write_json_atomically<T: Serialize>(path: &Path, value: &T) -> Result<()> {
+    let data = serde_json::to_string_pretty(value)?;
+    let tmp_path = path.with_extension(format!("json.tmp-{}", uuid::Uuid::new_v4()));
+    let backup_path = path.with_extension("json.bak");
+    fs::write(&tmp_path, &data)?;
+    // Windows 目标文件已存在时 rename 可能失败；先保留备份，确保突然退出仍可恢复。
+    let had_original = path.exists();
+    if had_original {
+        let _ = fs::remove_file(&backup_path);
+        if let Err(error) = fs::rename(path, &backup_path) {
+            log::warn!("备份 ACE 索引状态失败，将退回直接写入: {}", error);
+            fs::write(path, data)?;
+            let _ = fs::remove_file(&tmp_path);
+            return Ok(());
+        }
+    }
+    if let Err(rename_error) = fs::rename(&tmp_path, path) {
+        log::warn!("原子替换 ACE 索引状态失败，将尝试恢复备份: {}", rename_error);
+        if had_original && backup_path.exists() {
+            let _ = fs::rename(&backup_path, path);
+        }
+        fs::write(path, data)?;
+        let _ = fs::remove_file(&tmp_path);
+    } else if had_original {
+        let _ = fs::remove_file(&backup_path);
+    }
+    Ok(())
+}
+
+fn load_projects_file() -> ProjectsFile {
+    let path = home_projects_file();
+    load_json_with_backup(&path)
+}
+
+fn save_projects_file(projects: &ProjectsFile) -> Result<()> {
+    write_json_atomically(&home_projects_file(), projects)
+}
+
+fn load_json_with_backup<T>(path: &Path) -> T
+where
+    T: DeserializeOwned + Default,
+{
+    let backup_path = path.with_extension("json.bak");
+    for candidate in [path, backup_path.as_path()] {
+        let Ok(data) = fs::read_to_string(candidate) else {
+            continue;
+        };
+        if let Ok(value) = serde_json::from_str(&data) {
+            return value;
+        }
+    }
+    T::default()
+}
+
 /// 获取项目索引状态文件路径
 fn home_projects_status_file() -> PathBuf {
     let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
@@ -942,38 +1324,22 @@ fn load_projects_status() -> ProjectsIndexStatus {
     let status_path = home_projects_status_file();
     log_debug!("📂 [load_projects_status] 状态文件路径: {:?}", status_path);
 
-    if status_path.exists() {
-        let data = fs::read_to_string(&status_path).unwrap_or_default();
-        log_debug!(
-            "📄 [load_projects_status] 读取到状态文件，大小: {} 字节",
-            data.len()
-        );
-
-        match serde_json::from_str::<ProjectsIndexStatus>(&data) {
-            Ok(status) => {
-                log_debug!(
-                    "✅ [load_projects_status] 解析成功，项目数: {}",
-                    status.projects.len()
-                );
-                status
-            }
-            Err(e) => {
-                log_debug!("⚠️ [load_projects_status] 解析失败: {}", e);
-                ProjectsIndexStatus::default()
-            }
-        }
-    } else {
+    let status = load_json_with_backup::<ProjectsIndexStatus>(&status_path);
+    if status.projects.is_empty() && !status_path.exists() {
         log_debug!("📭 [load_projects_status] 状态文件不存在，返回空列表");
-        ProjectsIndexStatus::default()
+    } else {
+        log_debug!(
+            "✅ [load_projects_status] 状态清单读取完成，项目数: {}",
+            status.projects.len()
+        );
     }
+    status
 }
 
 /// 保存所有项目的索引状态
 fn save_projects_status(status: &ProjectsIndexStatus) -> Result<()> {
     let status_path = home_projects_status_file();
-    let data = serde_json::to_string_pretty(status)?;
-    fs::write(status_path, data)?;
-    Ok(())
+    write_json_atomically(&status_path, status)
 }
 
 /// 更新指定项目的索引状态
@@ -981,6 +1347,9 @@ fn update_project_status<F>(project_root: &str, updater: F) -> Result<()>
 where
     F: FnOnce(&mut ProjectIndexStatus),
 {
+    let _guard = projects_status_lock()
+        .lock()
+        .map_err(|_| anyhow::anyhow!("获取 projects_status.json 写入锁失败"))?;
     let mut all_status = load_projects_status();
     // 使用 normalize_project_path 去除 Windows 扩展路径前缀
     let normalized_root = normalize_project_path(
@@ -1024,8 +1393,64 @@ fn get_project_status(project_root: &str) -> ProjectIndexStatus {
             status.project_root = normalized_root;
             status
         });
+    reconcile_project_status_with_job(&mut status);
     enrich_project_scope_state(&mut status);
     status
+}
+
+/// 读取状态时以任务清单检查点重新校正，避免进程突然退出后继续展示旧进度。
+fn reconcile_project_status_with_job(status: &mut ProjectIndexStatus) {
+    let Some(job) = jobs::get_job(&status.project_root) else {
+        return;
+    };
+    status.job_id = Some(job.job_id.clone());
+    status.total_batches = job.total_batches;
+    status.completed_batches = job.completed_batches;
+    status.job_updated_at = Some(job.updated_at.clone());
+    if job.total_blobs > 0 {
+        status.total_files = job.total_blobs;
+        status.indexed_files = job.completed_blobs.min(job.total_blobs);
+        status.pending_files = job.total_blobs.saturating_sub(status.indexed_files);
+        status.progress = calculate_index_progress(status.indexed_files, status.total_files);
+    }
+    match job.status.as_str() {
+        JOB_QUEUED | JOB_COLLECTING | JOB_UPLOADING => {
+            status.status = IndexStatus::Indexing;
+            status.last_error = job.last_error.clone();
+        }
+        JOB_PAUSED => {
+            // 可恢复暂停保留当前断点，但不再显示为永久失败或持续旋转。
+            status.status = IndexStatus::Paused;
+            if status.last_failure_time.is_none() {
+                status.last_failure_time = Some(job.updated_at.clone());
+            }
+            status.last_error = job.last_error.clone();
+        }
+        JOB_FAILED => {
+            status.status = IndexStatus::Failed;
+            if status.last_failure_time.is_none() {
+                status.last_failure_time = Some(job.updated_at.clone());
+            }
+            if let Some(job_error) = job.last_error.clone() {
+                if is_ace_auth_failure_error(&job_error) {
+                    status.last_failure_scope_hash = Some(job.scope_hash.clone());
+                }
+                status.last_error = Some(job_error);
+            }
+        }
+        JOB_COMPLETED => {
+            if status.indexed_files >= status.total_files {
+                status.status = IndexStatus::Synced;
+                status.progress = 100;
+                status.pending_files = 0;
+                status.last_error = None;
+                if status.last_success_time.is_none() {
+                    status.last_success_time = Some(job.updated_at.clone());
+                }
+            }
+        }
+        _ => {}
+    }
 }
 
 /// 读取文件内容，支持多种编码检测
@@ -1423,17 +1848,126 @@ fn collect_file_statuses(
     Ok(files_status)
 }
 
-/// 只执行索引更新，不进行搜索
-/// 返回值：成功上传的 blob 名称列表
+fn calculate_index_progress(completed: usize, total: usize) -> u8 {
+    if total == 0 {
+        return 0;
+    }
+    ((completed.saturating_mul(100) / total).min(100)) as u8
+}
+
+fn ensure_index_job(
+    normalized_root: &str,
+    mode: IndexJobMode,
+    scope_hash: &str,
+) -> anyhow::Result<IndexJob> {
+    if let Some(job) = jobs::get_job(normalized_root) {
+        if job.is_resumable()
+            && job.mode == mode.as_str()
+            && job.scope_hash == scope_hash
+            && job.config_fingerprint == scope_hash
+        {
+            return Ok(job);
+        }
+    }
+    jobs::create_job(
+        normalized_root,
+        mode.as_str(),
+        scope_hash,
+        scope_hash,
+    )
+}
+
+fn persist_confirmed_blob_names(
+    normalized_root: &str,
+    existing_hashes: &HashSet<String>,
+    uploaded_names: &[String],
+) -> anyhow::Result<Vec<String>> {
+    let _guard = projects_file_lock()
+        .lock()
+        .map_err(|_| anyhow::anyhow!("获取 projects.json 写入锁失败"))?;
+    // 每批写入前重新加载，避免并行子项目拿旧快照覆盖其他项目的进度。
+    let mut projects = load_projects_file();
+    let mut confirmed = existing_hashes.iter().cloned().collect::<Vec<_>>();
+    confirmed.extend(uploaded_names.iter().cloned());
+    confirmed.sort();
+    confirmed.dedup();
+    projects
+        .0
+        .insert(normalized_root.to_string(), confirmed.clone());
+    save_projects_file(&projects)?;
+    Ok(confirmed)
+}
+
+fn mark_index_job_error(
+    project_root_path: &str,
+    normalized_root: &str,
+    message: &str,
+    failed_batch: Option<usize>,
+    failed_blobs: usize,
+    auth_scope_hash: Option<&str>,
+) {
+    let error_message = message.to_string();
+    let resumable_failure = failed_batch.is_some() && auth_scope_hash.is_none();
+    let event_type = if resumable_failure { "paused" } else { "failed" };
+    let _ = jobs::update_job(
+        normalized_root,
+        event_type,
+        Some(error_message.clone()),
+        |job| {
+            job.status = if resumable_failure {
+                JOB_PAUSED.to_string()
+            } else {
+                JOB_FAILED.to_string()
+            };
+            job.last_error = Some(error_message.clone());
+            if let Some(batch) = failed_batch {
+                if !job.failed_batches.contains(&batch) {
+                    job.failed_batches.push(batch);
+                }
+            }
+        },
+    );
+    let progress_job = jobs::get_job(normalized_root);
+    let _ = update_project_status(project_root_path, |status| {
+        let resumable = progress_job
+            .as_ref()
+            .map(|job| job.status == JOB_PAUSED)
+            .unwrap_or(false);
+        status.status = if resumable {
+            IndexStatus::Paused
+        } else {
+            IndexStatus::Failed
+        };
+        if let Some(job) = &progress_job {
+            status.total_files = job.total_blobs;
+            status.indexed_files = job.completed_blobs.min(job.total_blobs);
+            status.pending_files = job.total_blobs.saturating_sub(status.indexed_files);
+            status.progress = calculate_index_progress(status.indexed_files, status.total_files);
+        }
+        status.failed_files = failed_blobs;
+        status.last_error = Some(error_message.clone());
+        status.last_failure_time = Some(chrono::Utc::now());
+        status.last_failure_scope_hash = auth_scope_hash.map(str::to_string);
+    });
+}
+
+/// 只执行索引更新，不进行搜索。默认按增量任务执行。
 pub(crate) async fn update_index(
     config: &AcemcpConfig,
     project_root_path: &str,
+) -> anyhow::Result<Vec<String>> {
+    update_index_with_mode(config, project_root_path, IndexJobMode::Incremental).await
+}
+
+async fn update_index_with_mode(
+    config: &AcemcpConfig,
+    project_root_path: &str,
+    mode: IndexJobMode,
 ) -> anyhow::Result<Vec<String>> {
     let base_url = config
         .base_url
         .clone()
         .ok_or_else(|| anyhow::anyhow!("未配置 base_url"))?;
-    // 严格校验 base_url
     let has_scheme = base_url.starts_with("http://") || base_url.starts_with("https://");
     let has_host = base_url.trim().len() > "https://".len();
     if !has_scheme || !has_host {
@@ -1444,396 +1978,445 @@ pub(crate) async fn update_index(
         .clone()
         .ok_or_else(|| anyhow::anyhow!("未配置 token"))?;
     let current_scope_hash = require_index_scope_hash(config)?;
-    let batch_size = config.batch_size.unwrap_or(10) as usize;
-    let max_lines = config.max_lines_per_blob.unwrap_or(800) as usize;
+    let batch_size = (config.batch_size.unwrap_or(10) as usize).max(1);
+    let max_lines = (config.max_lines_per_blob.unwrap_or(800) as usize).max(1);
     let text_exts = config.text_extensions.clone().unwrap_or_default();
     let exclude_patterns = config.exclude_patterns.clone().unwrap_or_default();
-
-    // 更新状态：开始索引
-    let _ = update_project_status(project_root_path, |status| {
-        status.status = IndexStatus::Indexing;
-        status.progress = 0;
-        // 新一轮索引开始时清理上一次失败提示，避免旧的 Token 告警干扰当前状态展示。
-        status.last_error = None;
-        status.last_failure_scope_hash = None;
-    });
-
-    // 日志：基础配置
-    log_important!(info, "=== 开始索引代码库 ===");
-    log_important!(info,
-        "Acemcp配置: base_url={}, batch_size={}, max_lines_per_blob={}, text_exts数量={}, exclude_patterns数量={}",
-        base_url,
-        batch_size,
-        max_lines,
-        text_exts.len(),
-        exclude_patterns.len()
-    );
-    log_important!(info, "项目路径: {}", project_root_path);
-
-    // 收集 blob（根据扩展名与排除规则，简化版 .gitignore 支持）
-    log_important!(info, "开始收集代码文件...");
-    let blobs = collect_blobs(project_root_path, &text_exts, &exclude_patterns, max_lines)?;
-    if blobs.is_empty() {
-        // 更新状态：失败
-        let _ = update_project_status(project_root_path, |status| {
-            status.status = IndexStatus::Failed;
-            status.last_error = Some("未在项目中找到可索引的文本文件".to_string());
-            status.last_failure_time = Some(chrono::Utc::now());
-            status.last_failure_scope_hash = None;
-        });
-        anyhow::bail!("未在项目中找到可索引的文本文件");
-    }
-
-    // 更新状态：文件收集完成
-    let _ = update_project_status(project_root_path, |status| {
-        status.total_files = blobs.len();
-        status.progress = 20;
-    });
-
-    // 加载 projects.json
-    let projects_path = home_projects_file();
-    let mut projects: ProjectsFile = if projects_path.exists() {
-        let data = fs::read_to_string(&projects_path).unwrap_or_default();
-        serde_json::from_str(&data).unwrap_or_default()
-    } else {
-        ProjectsFile::default()
-    };
-
-    // 使用 normalize_project_path 去除 Windows 扩展路径前缀
     let normalized_root = normalize_project_path(
         &PathBuf::from(project_root_path)
             .canonicalize()
             .unwrap_or_else(|_| PathBuf::from(project_root_path))
             .to_string_lossy(),
     );
-    let mut existing_blob_names: std::collections::HashSet<String> = projects
+    ensure_index_job(&normalized_root, mode, &current_scope_hash)?;
+
+    let job = jobs::update_job(&normalized_root, "collecting", None, |job| {
+        job.status = JOB_COLLECTING.to_string();
+        job.last_error = None;
+        job.failed_batches.clear();
+    })?
+    .ok_or_else(|| anyhow::anyhow!("ACE 索引任务检查点不存在"))?;
+    let _ = update_project_status(project_root_path, |status| {
+        status.status = IndexStatus::Indexing;
+        status.progress = 0;
+        status.last_error = None;
+        status.last_failure_scope_hash = None;
+        status.failed_files = 0;
+    });
+
+    log_important!(info, "=== 开始索引代码库 ===");
+    log_important!(
+        info,
+        "ACE索引任务: job_id={}, mode={}, project_root={}, batch_size={}, max_lines_per_blob={}",
+        job.job_id,
+        mode.as_str(),
+        normalized_root,
+        batch_size,
+        max_lines
+    );
+
+    let blobs = match collect_blobs(project_root_path, &text_exts, &exclude_patterns, max_lines) {
+        Ok(blobs) if !blobs.is_empty() => blobs,
+        Ok(_) => {
+            let message = "未在项目中找到可索引的文本文件";
+            mark_index_job_error(
+                project_root_path,
+                &normalized_root,
+                message,
+                None,
+                0,
+                None,
+            );
+            anyhow::bail!(message);
+        }
+        Err(error) => {
+            let message = format!("收集索引文件失败: {}", error);
+            mark_index_job_error(
+                project_root_path,
+                &normalized_root,
+                &message,
+                None,
+                0,
+                None,
+            );
+            return Err(error);
+        }
+    };
+
+    // 固定排序保证进程重启后重新分批时仍能稳定核对断点。
+    let mut blob_entries = blobs
+        .iter()
+        .cloned()
+        .map(|blob| (sha256_hex(&blob.path, &blob.content), blob))
+        .collect::<Vec<_>>();
+    blob_entries.sort_by(|left, right| left.0.cmp(&right.0));
+    let all_blob_hashes = blob_entries
+        .iter()
+        .map(|(hash, _)| hash.clone())
+        .collect::<HashSet<_>>();
+
+    let projects = load_projects_file();
+    let mut existing_blob_names = projects
         .0
         .get(&normalized_root)
         .cloned()
         .unwrap_or_default()
         .into_iter()
-        .collect();
+        .collect::<HashSet<_>>();
     let project_status = get_project_status(project_root_path);
-    let scope_changed = is_index_scope_stale(
-        &project_status,
-        Some(current_scope_hash.as_str()),
-        !existing_blob_names.is_empty(),
-    );
+    let scope_changed = mode == IndexJobMode::Full
+        || is_index_scope_stale(
+            &project_status,
+            Some(current_scope_hash.as_str()),
+            !existing_blob_names.is_empty(),
+        );
     if scope_changed {
         log_important!(
             info,
-            "检测到 ACE 索引空间已变更，将按全量重建处理: project_root={}",
+            "检测到 ACE 索引空间或索引参数已变更，将按全量重建处理: project_root={}",
             normalized_root
         );
         existing_blob_names.clear();
     }
 
-    // 计算所有 blob 的哈希值，建立哈希到 blob 的映射
-    let mut blob_hash_map: std::collections::HashMap<String, BlobItem> =
-        std::collections::HashMap::new();
-    for blob in &blobs {
-        let hash = sha256_hex(&blob.path, &blob.content);
-        blob_hash_map.insert(hash.clone(), blob.clone());
-    }
-
-    // 分离已存在和新增加的 blob（与 Python 版本保持一致）
-    let all_blob_hashes: std::collections::HashSet<String> =
-        blob_hash_map.keys().cloned().collect();
-    let existing_hashes: std::collections::HashSet<String> = all_blob_hashes
+    let checkpoint_hashes = job
+        .completed_blob_hashes
+        .iter()
+        .filter(|hash| all_blob_hashes.contains(*hash))
+        .cloned()
+        .collect::<HashSet<_>>();
+    let checkpoint_names = job
+        .uploaded_blob_names
+        .iter()
+        .filter(|name| all_blob_hashes.contains(*name))
+        .cloned()
+        .collect::<Vec<_>>();
+    let existing_hashes = all_blob_hashes
         .intersection(&existing_blob_names)
         .cloned()
-        .collect();
-    let new_hashes: std::collections::HashSet<String> = all_blob_hashes
-        .difference(&existing_blob_names)
-        .cloned()
-        .collect();
-
-    // 需要上传的新 blob
-    let new_blobs: Vec<BlobItem> = new_hashes
+        .collect::<HashSet<_>>();
+    let mut completed_hashes = existing_hashes.clone();
+    completed_hashes.extend(checkpoint_hashes.iter().cloned());
+    let new_entries = blob_entries
         .iter()
-        .filter_map(|h| blob_hash_map.get(h).cloned())
-        .collect();
+        .filter(|(hash, _)| !completed_hashes.contains(hash))
+        .cloned()
+        .collect::<Vec<_>>();
+    let max_confirmed_batch_count = if checkpoint_hashes.is_empty() {
+        0
+    } else {
+        (checkpoint_hashes.len() + batch_size - 1) / batch_size
+    };
+    let completed_batch_count = job.completed_batches.min(max_confirmed_batch_count);
+    let remaining_batches = (new_entries.len() + batch_size - 1) / batch_size;
+    let total_batches = completed_batch_count.saturating_add(remaining_batches);
 
-    log_important!(info, "=== 索引统计 ===");
+    jobs::update_job(&normalized_root, "uploading", None, |job| {
+        job.status = JOB_UPLOADING.to_string();
+        job.total_blobs = blobs.len();
+        job.completed_blobs = completed_hashes.len();
+        job.completed_blob_hashes = checkpoint_hashes.iter().cloned().collect();
+        job.uploaded_blob_names = checkpoint_names.clone();
+        job.total_batches = total_batches;
+        job.completed_batches = completed_batch_count;
+        job.last_error = None;
+    })?
+    .ok_or_else(|| anyhow::anyhow!("ACE 索引任务检查点不存在"))?;
+    let _ = update_project_status(project_root_path, |status| {
+        status.status = IndexStatus::Indexing;
+        status.total_files = blobs.len();
+        status.indexed_files = completed_hashes.len();
+        status.pending_files = blobs.len().saturating_sub(completed_hashes.len());
+        status.failed_files = 0;
+        status.progress = calculate_index_progress(status.indexed_files, status.total_files);
+    });
+
     log_important!(
         info,
-        "收集到blobs总数: {}, 既有blobs: {}, 新增blobs: {}, 需要上传: {}",
+        "ACE断点核对: total_blobs={}, projects_confirmed={}, checkpoint_confirmed={}, remaining={}, progress={}％",
         blobs.len(),
         existing_hashes.len(),
-        new_hashes.len(),
-        new_blobs.len()
+        completed_hashes.len().saturating_sub(existing_hashes.len()),
+        new_entries.len(),
+        calculate_index_progress(completed_hashes.len(), blobs.len())
     );
 
-    // 创建 HTTP 客户端（支持代理）
     let client = create_acemcp_client(config)?;
-
-    // 批量上传新增 blobs
-    let mut uploaded_names: Vec<String> = Vec::new();
-    let mut failed_batches: Vec<usize> = Vec::new();
-
-    if !new_blobs.is_empty() {
-        let total_batches = (new_blobs.len() + batch_size - 1) / batch_size;
-        log_important!(info, "=== 开始批量上传代码索引 ===");
+    let mut uploaded_this_run = Vec::new();
+    for (batch_offset, batch_entries) in new_entries.chunks(batch_size).enumerate() {
+        let batch_number = completed_batch_count + batch_offset + 1;
+        let batch = batch_entries
+            .iter()
+            .map(|(_, blob)| blob.clone())
+            .collect::<Vec<_>>();
+        let batch_hashes = batch_entries
+            .iter()
+            .map(|(hash, _)| hash.clone())
+            .collect::<Vec<_>>();
+        let url = format!("{}/batch-upload", base_url);
         log_important!(
             info,
-            "目标端点: {}/batch-upload, 总批次: {}, 每批上限: {}, 总blobs: {}",
-            base_url,
+            "上传批次 {}/{}: project_root={}, blobs={}",
+            batch_number,
             total_batches,
-            batch_size,
-            new_blobs.len()
+            normalized_root,
+            batch.len()
         );
+        let payload = serde_json::json!({"blobs": &batch});
+        let response = retry_request(
+            || async {
+                let response = client
+                    .post(&url)
+                    .header(AUTHORIZATION, format!("Bearer {}", token))
+                    .header(CONTENT_TYPE, "application/json")
+                    .json(&payload)
+                    .send()
+                    .await?;
+                let status = response.status();
+                if !status.is_success() {
+                    let body = response.text().await.unwrap_or_default();
+                    anyhow::bail!("HTTP {} {}", status, body);
+                }
+                Ok(response.json::<serde_json::Value>().await?)
+            },
+            3,
+            1.0,
+        )
+        .await;
 
-        log_important!(info, "=== 批量上传代码索引 ===");
-
-        for i in 0..total_batches {
-            let start = i * batch_size;
-            let end = usize::min(start + batch_size, new_blobs.len());
-            let batch = &new_blobs[start..end];
-            let url = format!("{}/batch-upload", base_url);
-
-            log_important!(
-                info,
-                "上传批次 {}/{}: url={}, blobs={}",
-                i + 1,
-                total_batches,
-                url,
-                batch.len()
-            );
-
-            // 详细记录每个 blob 的信息
-            for (idx, blob) in batch.iter().enumerate() {
-                // 注意：这里的 path 可能包含项目结构信息，默认降级到 debug，避免日志膨胀
-                log_debug!(
-                    "  批次 {} - Blob {}/{}: path={}, content_length={}",
-                    i + 1,
-                    idx + 1,
+        let returned_names = match response {
+            Ok(value) => value
+                .get("blob_names")
+                .and_then(|value| value.as_array())
+                .map(|values| {
+                    values
+                        .iter()
+                        .filter_map(|value| value.as_str().map(str::to_string))
+                        .collect::<Vec<_>>()
+                })
+                .filter(|names| !names.is_empty()),
+            Err(error) => {
+                let error_message = error.to_string();
+                let auth_failure = is_ace_auth_failure_error(&error_message);
+                let display_message = if auth_failure {
+                    ACE_AUTH_FAILURE_MESSAGE.to_string()
+                } else {
+                    format!("批次 {} 上传失败: {}", batch_number, error_message)
+                };
+                mark_index_job_error(
+                    project_root_path,
+                    &normalized_root,
+                    &display_message,
+                    Some(batch_number),
                     batch.len(),
-                    blob.path,
-                    blob.content.len()
+                    auth_failure.then_some(current_scope_hash.as_str()),
                 );
+                return Err(anyhow::anyhow!(display_message));
             }
+        };
 
-            let payload = serde_json::json!({"blobs": batch});
-            // 避免对 payload 执行 to_string（会序列化并复制大量代码内容）
-            // 这里仅记录一个近似大小（字符数），用于排查性能问题
-            let approx_chars: usize = batch.iter().map(|b| b.path.len() + b.content.len()).sum();
-            log_debug!(
-                "批次载荷概要: blobs={}, approx_chars={}",
+        let Some(returned_names) = returned_names else {
+            let message = format!("批次 {} 响应中缺少可用的 blob_names", batch_number);
+            mark_index_job_error(
+                project_root_path,
+                &normalized_root,
+                &message,
+                Some(batch_number),
                 batch.len(),
-                approx_chars
+                None,
             );
+            anyhow::bail!(message);
+        };
 
-            match retry_request(
-                || async {
-                    let r = client
-                        .post(&url)
-                        .header(AUTHORIZATION, format!("Bearer {}", token))
-                        .header(CONTENT_TYPE, "application/json")
-                        .json(&payload)
-                        .send()
-                        .await?;
-
-                    let status = r.status();
-                    log_important!(info, "HTTP响应状态: {}", status);
-
-                    if !status.is_success() {
-                        let body = r.text().await.unwrap_or_default();
-                        anyhow::bail!("HTTP {} {}", status, body);
-                    }
-
-                    let v: serde_json::Value = r.json().await?;
-                    // 只记录摘要，避免把响应全文（可能较大）写入日志
-                    let keys: Vec<String> = v
-                        .as_object()
-                        .map(|m| m.keys().cloned().collect())
-                        .unwrap_or_default();
-                    let blob_names_len = v
-                        .get("blob_names")
-                        .and_then(|x| x.as_array())
-                        .map(|arr| arr.len())
-                        .unwrap_or(0);
-                    log_important!(
-                        info,
-                        "上传响应摘要: keys={:?}, blob_names={}",
-                        keys,
-                        blob_names_len
-                    );
-                    Ok(v)
-                },
-                3,
-                1.0,
-            )
-            .await
-            {
-                Ok(value) => {
-                    if let Some(arr) = value.get("blob_names").and_then(|v| v.as_array()) {
-                        let mut batch_names: Vec<String> = Vec::new();
-                        for v in arr {
-                            if let Some(s) = v.as_str() {
-                                batch_names.push(s.to_string());
-                            }
-                        }
-
-                        if batch_names.is_empty() {
-                            log_important!(info, "批次 {} 返回了空的blob名称列表", i + 1);
-                            failed_batches.push(i + 1);
-                        } else {
-                            uploaded_names.extend(batch_names.clone());
-                            log_important!(
-                                info,
-                                "批次 {} 上传成功，获得 {} 个blob名称",
-                                i + 1,
-                                batch_names.len()
-                            );
-                            // 详细记录每个上传成功的 blob 名称
-                            for (idx, name) in batch_names.iter().enumerate() {
-                                // 默认降级到 debug，避免日志文件过大
-                                log_debug!(
-                                    "  批次 {} - 上传成功 Blob {}/{}: name={}",
-                                    i + 1,
-                                    idx + 1,
-                                    batch_names.len(),
-                                    name
-                                );
-                            }
-                        }
-                    } else {
-                        log_important!(info, "批次 {} 响应中缺少blob_names字段", i + 1);
-                        failed_batches.push(i + 1);
-                    }
-                }
-                Err(e) => {
-                    let error_message = e.to_string();
-                    log_important!(info, "批次 {} 上传失败: {}", i + 1, error_message);
-                    if is_ace_auth_failure_error(&error_message) {
-                        log_important!(info, "检测到 ACE API 认证失败，立即停止后续批次上传: project_root={}, batch={}", project_root_path, i + 1);
-                        mark_project_auth_failure(
-                            project_root_path,
-                            Some(current_scope_hash.as_str()),
-                        );
-                        return Err(anyhow::anyhow!(ACE_AUTH_FAILURE_MESSAGE));
-                    }
-                    failed_batches.push(i + 1);
-                }
-            }
+        // ACE 返回值在既有协议中就是本地 blob 哈希；逐项核对后只确认真实命中的部分。
+        let returned_name_set = returned_names.into_iter().collect::<HashSet<_>>();
+        let confirmed_batch_hashes = batch_hashes
+            .iter()
+            .filter(|hash| returned_name_set.contains(*hash))
+            .cloned()
+            .collect::<Vec<_>>();
+        if confirmed_batch_hashes.is_empty() {
+            let message = format!("批次 {} 返回的 blob_names 与本批哈希不匹配", batch_number);
+            mark_index_job_error(
+                project_root_path,
+                &normalized_root,
+                &message,
+                Some(batch_number),
+                batch.len(),
+                None,
+            );
+            anyhow::bail!(message);
         }
-
-        // 上传结果总结
-        log_important!(info, "=== 上传结果总结 ===");
-        if !failed_batches.is_empty() {
-            log_important!(
-                info,
-                "上传完成，但有失败的批次: {:?}, 成功上传blobs: {}",
-                failed_batches,
-                uploaded_names.len()
-            );
-        } else {
-            log_important!(
-                info,
-                "所有批次上传成功，共上传 {} 个blobs",
-                uploaded_names.len()
-            );
-        }
-        let uploaded_files = summarize_blob_file_paths(&new_blobs, 8);
-        log_important!(
-            info,
-            "成功上传文件摘要: project={}, files={}, sample={:?}",
-            project_root_path,
-            uploaded_files.total,
-            uploaded_files.sample
+        let confirmed_batch_set = confirmed_batch_hashes
+            .iter()
+            .cloned()
+            .collect::<HashSet<_>>();
+        uploaded_this_run.extend(
+            batch_entries
+                .iter()
+                .filter(|(hash, _)| confirmed_batch_set.contains(hash))
+                .map(|(_, blob)| blob.clone()),
         );
-    } else {
-        log_important!(info, "没有新的blob需要上传，使用已有索引");
-    }
+        let missing_blobs = batch_hashes
+            .len()
+            .saturating_sub(confirmed_batch_hashes.len());
+        let batch_fully_confirmed = missing_blobs == 0;
+        let updated_job = jobs::update_job(
+            &normalized_root,
+            if batch_fully_confirmed {
+                "batch_completed"
+            } else {
+                "batch_partial"
+            },
+            Some(format!(
+                "批次 {} 已确认 {} / {} 个 blobs",
+                batch_number,
+                confirmed_batch_hashes.len(),
+                batch_hashes.len()
+            )),
+            |job| {
+                job.status = JOB_UPLOADING.to_string();
+                if batch_fully_confirmed {
+                    job.completed_batches = batch_number;
+                }
+                job.completed_blob_hashes
+                    .extend(confirmed_batch_hashes.clone());
+                job.completed_blob_hashes.sort();
+                job.completed_blob_hashes.dedup();
+                job.uploaded_blob_names
+                    .extend(confirmed_batch_hashes.clone());
+                job.uploaded_blob_names.sort();
+                job.uploaded_blob_names.dedup();
+                let mut confirmed_hashes = existing_hashes.clone();
+                confirmed_hashes.extend(job.completed_blob_hashes.iter().cloned());
+                job.completed_blobs = confirmed_hashes.len().min(job.total_blobs);
+                if batch_fully_confirmed {
+                    job.failed_batches.retain(|batch| *batch != batch_number);
+                } else if !job.failed_batches.contains(&batch_number) {
+                    job.failed_batches.push(batch_number);
+                }
+                job.last_error = None;
+            },
+        )?
+        .ok_or_else(|| anyhow::anyhow!("ACE 索引任务检查点不存在"))?;
 
-    // 合并并保存 projects.json（与 Python 版本保持一致）
-    // 只保留当前项目中仍然存在的 blob 的哈希值（自动删除已删除的 blob）
-    let all_blob_names: Vec<String> = existing_hashes
-        .into_iter()
-        .chain(uploaded_names.into_iter())
-        .collect();
-    projects
-        .0
-        .insert(normalized_root.clone(), all_blob_names.clone());
-    if let Ok(s) = serde_json::to_string_pretty(&projects) {
-        let _ = fs::write(projects_path, s);
-    }
-
-    // 使用合并后的 blob_names（与 Python 版本保持一致）
-    let blob_names = all_blob_names;
-    if blob_names.is_empty() {
-        log_important!(info, "索引后未找到 blobs，项目路径: {}", normalized_root);
-        // 更新状态：失败
+        // 先写任务断点，再把已确认 blob 投影到 projects.json；任一步失败都不会误报完成。
+        persist_confirmed_blob_names(
+            &normalized_root,
+            &existing_hashes,
+            &updated_job.uploaded_blob_names,
+        )?;
         let _ = update_project_status(project_root_path, |status| {
-            status.status = IndexStatus::Failed;
-            status.last_error = Some("索引后未找到 blobs".to_string());
-            status.last_failure_time = Some(chrono::Utc::now());
-            status.last_failure_scope_hash = None;
+            status.status = IndexStatus::Indexing;
+            status.total_files = updated_job.total_blobs;
+            status.indexed_files = updated_job.completed_blobs;
+            status.pending_files = status.total_files.saturating_sub(status.indexed_files);
+            status.failed_files = 0;
+            status.progress = calculate_index_progress(status.indexed_files, status.total_files);
+            status.last_error = None;
         });
-        anyhow::bail!("索引后未找到 blobs");
+        if !batch_fully_confirmed {
+            let message = format!(
+                "批次 {} 仅确认 {} / {} 个 blobs，将从缺失部分继续",
+                batch_number,
+                confirmed_batch_hashes.len(),
+                batch_hashes.len()
+            );
+            mark_index_job_error(
+                project_root_path,
+                &normalized_root,
+                &message,
+                Some(batch_number),
+                missing_blobs,
+                None,
+            );
+            anyhow::bail!(message);
+        }
     }
 
-    // 检查是否是首次成功索引（用于 ji 集成）
-    let is_first_success = {
-        let status = get_project_status(project_root_path);
-        status.last_success_time.is_none()
-    };
+    let final_job = jobs::get_job(&normalized_root)
+        .ok_or_else(|| anyhow::anyhow!("ACE 索引任务在完成前丢失"))?;
+    if final_job.completed_blobs != blobs.len() {
+        let message = format!(
+            "索引检查点核对失败: 已确认 {} / 总计 {}",
+            final_job.completed_blobs,
+            blobs.len()
+        );
+        mark_index_job_error(
+            project_root_path,
+            &normalized_root,
+            &message,
+            None,
+            blobs.len().saturating_sub(final_job.completed_blobs),
+            None,
+        );
+        anyhow::bail!(message);
+    }
 
-    // 提取最近增量索引的文件路径（从 new_blobs 中获取，最多 5 个）
-    // 说明：按路径排序并做文件级去重，保证展示稳定且不带 chunk 后缀
-    let mut recent_files: Vec<String> = new_blobs
+    let blob_names = persist_confirmed_blob_names(
+        &normalized_root,
+        &existing_hashes,
+        &final_job.uploaded_blob_names,
+    )?;
+    if blob_names.is_empty() {
+        let message = "索引后未找到 blobs";
+        mark_index_job_error(
+            project_root_path,
+            &normalized_root,
+            message,
+            None,
+            0,
+            None,
+        );
+        anyhow::bail!(message);
+    }
+
+    let is_first_success = get_project_status(project_root_path)
+        .last_success_time
+        .is_none();
+    let mut recent_files = uploaded_this_run
         .iter()
-        .map(|b| strip_chunk_suffix(&b.path).to_string())
-        .collect();
+        .map(|blob| strip_chunk_suffix(&blob.path).to_string())
+        .collect::<Vec<_>>();
     recent_files.sort();
     recent_files.dedup();
     recent_files.truncate(5);
 
-    // 更新状态：索引成功完成
+    jobs::update_job(
+        &normalized_root,
+        "completed",
+        Some(format!("索引完成，共 {} 个 blobs", blobs.len())),
+        |job| {
+            job.status = JOB_COMPLETED.to_string();
+            job.completed_blobs = blobs.len();
+            job.last_error = None;
+            job.failed_batches.clear();
+        },
+    )?
+    .ok_or_else(|| anyhow::anyhow!("ACE 索引任务在完成时丢失"))?;
     let _ = update_project_status(project_root_path, |status| {
         status.status = IndexStatus::Synced;
         status.progress = 100;
+        status.total_files = blobs.len();
         status.indexed_files = blobs.len();
         status.pending_files = 0;
+        status.failed_files = 0;
         status.last_success_time = Some(chrono::Utc::now());
         status.last_error = None;
         status.last_failure_scope_hash = None;
         status.index_scope_hash = Some(current_scope_hash.clone());
         status.is_stale = false;
         status.stale_reason = None;
-        // 仅在有新增文件时更新最近索引列表
         if !recent_files.is_empty() {
             status.recent_indexed_files = recent_files;
         }
     });
 
-    // 首次成功索引时，写入 ji 记忆
     if is_first_success {
         let _ = write_index_memory_to_ji(project_root_path, config);
     }
-
     log_important!(info, "索引更新完成，共 {} 个 blobs", blob_names.len());
     Ok(blob_names)
-}
-
-struct UploadedFileSummary {
-    total: usize,
-    sample: Vec<String>,
-}
-
-fn summarize_blob_file_paths(blobs: &[BlobItem], limit: usize) -> UploadedFileSummary {
-    let mut files: Vec<String> = blobs
-        .iter()
-        .map(|blob| strip_chunk_suffix(&blob.path).to_string())
-        .collect();
-    files.sort();
-    files.dedup();
-    let total = files.len();
-    files.truncate(limit);
-    UploadedFileSummary {
-        total,
-        sample: files,
-    }
 }
 
 /// 将索引配置信息写入 ji（记忆）工具
@@ -1893,13 +2476,7 @@ async fn search_only(
     let current_scope_hash = require_index_scope_hash(config)?;
 
     // 从 projects.json 读取已有的 blob 名称
-    let projects_path = home_projects_file();
-    let projects: ProjectsFile = if projects_path.exists() {
-        let data = fs::read_to_string(&projects_path).unwrap_or_default();
-        serde_json::from_str(&data).unwrap_or_default()
-    } else {
-        ProjectsFile::default()
-    };
+    let projects = load_projects_file();
 
     // 使用 normalize_project_path 去除 Windows 扩展路径前缀
     let normalized_root = normalize_project_path(
@@ -1925,7 +2502,14 @@ async fn search_only(
     );
 
     if scope_changed {
-        let launch_state = start_background_index(config, project_root_path, true).await?;
+        let launch_state = start_background_index_with_mode(
+            config,
+            project_root_path,
+            true,
+            IndexJobMode::Full,
+            None,
+        )
+        .await?;
         let message = match launch_state {
             BackgroundIndexLaunchState::Started => {
                 "检测到 API 配置已变更，当前项目索引已在后台重建，请稍后重试。"

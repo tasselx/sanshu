@@ -15,6 +15,8 @@ pub struct AppConfig {
     pub mcp_config: McpConfig, // MCP工具配置
     #[serde(default = "default_telegram_config")]
     pub telegram_config: TelegramConfig, // Telegram Bot配置
+    #[serde(default = "default_wechat_config")]
+    pub wechat_config: WechatConfig, // 微信 iLink Bot配置
     #[serde(default = "default_custom_prompt_config")]
     pub custom_prompt_config: CustomPromptConfig, // 自定义prompt配置
     #[serde(default = "default_shortcut_config")]
@@ -139,10 +141,11 @@ pub struct McpConfig {
     pub acemcp_proxy_username: Option<String>, // 代理用户名（可选）
     pub acemcp_proxy_password: Option<String>, // 代理密码（可选）
     // Sou 多后端配置
-    pub sou_default_backend: Option<String>, // "auto" | "ace" | "fast_context" | "both"
+    pub sou_default_backend: Option<String>, // "auto" | "ace" | "fast_context" | "local" | "both"
     pub sou_auto_order: Option<Vec<String>>, // auto 模式下的后端优先级
     pub sou_include_backend_headers: Option<bool>, // 是否在结果中标注后端来源
     pub sou_include_failed_backend_errors: Option<bool>, // 部分成功时是否附加失败后端诊断
+    pub sou_local_enabled: Option<bool>,     // 是否启用 SQLite FTS5 / rg 本地兜底
     // Fast Context 配置
     pub fast_context_command: Option<String>, // 兼容旧配置：Rust 原生 fast-context 已不再使用
     pub fast_context_script_path: Option<String>, // 兼容旧配置：Rust 原生 fast-context 已不再使用
@@ -263,6 +266,20 @@ pub struct TelegramConfig {
     pub api_base_url: String, // Telegram API基础URL
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct WechatConfig {
+    #[serde(default)]
+    pub enabled: bool, // 是否在每次 zhi 请求时发送微信通知
+    #[serde(default = "default_wechat_notification_mode")]
+    pub notification_mode: String, // 通知策略：always / smart / manual
+    /// 微信通知图片主题：auto / paper / midnight。
+    #[serde(default = "default_wechat_notification_image_theme")]
+    pub notification_image_theme: String,
+    /// 规范化项目根路径到展示别名的本地映射。
+    #[serde(default)]
+    pub project_aliases: HashMap<String, String>,
+}
+
 /// 代理配置
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ProxyConfig {
@@ -308,6 +325,7 @@ impl Default for AppConfig {
             reply_config: default_reply_config(),
             mcp_config: default_mcp_config(),
             telegram_config: default_telegram_config(),
+            wechat_config: default_wechat_config(),
             custom_prompt_config: default_custom_prompt_config(),
             shortcut_config: default_shortcut_config(),
             proxy_config: default_proxy_config(),
@@ -367,9 +385,14 @@ pub fn default_mcp_config() -> McpConfig {
         acemcp_proxy_password: None,
         // Sou 多后端默认配置
         sou_default_backend: Some("auto".to_string()),
-        sou_auto_order: Some(vec!["ace".to_string(), "fast_context".to_string()]),
+        sou_auto_order: Some(vec![
+            "ace".to_string(),
+            "fast_context".to_string(),
+            "local".to_string(),
+        ]),
         sou_include_backend_headers: Some(true),
         sou_include_failed_backend_errors: Some(true),
+        sou_local_enabled: Some(true),
         // Fast Context 默认配置：协议与本地命令执行已迁移为 Rust 原生实现
         fast_context_command: Some("node".to_string()),
         fast_context_script_path: None,
@@ -413,6 +436,23 @@ pub fn default_telegram_config() -> TelegramConfig {
         hide_frontend_popup: default_telegram_hide_frontend_popup(),
         api_base_url: default_telegram_api_base_url(),
     }
+}
+
+pub fn default_wechat_config() -> WechatConfig {
+    WechatConfig {
+        enabled: false,
+        notification_mode: default_wechat_notification_mode(),
+        notification_image_theme: default_wechat_notification_image_theme(),
+        project_aliases: HashMap::new(),
+    }
+}
+
+pub fn default_wechat_notification_mode() -> String {
+    "always".to_string()
+}
+
+pub fn default_wechat_notification_image_theme() -> String {
+    "auto".to_string()
 }
 
 pub fn default_custom_prompt_config() -> CustomPromptConfig {
