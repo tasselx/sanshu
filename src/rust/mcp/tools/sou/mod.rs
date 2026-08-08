@@ -15,9 +15,11 @@ use crate::mcp::tools::acemcp::types::AcemcpRequest;
 use crate::mcp::tools::AcemcpTool;
 
 pub(crate) mod fast_context;
+pub(crate) mod local;
 
 const BACKEND_ACE: &str = "ace";
 const BACKEND_FAST_CONTEXT: &str = "fast_context";
+const BACKEND_LOCAL: &str = "local";
 const BACKEND_AUTO: &str = "auto";
 const BACKEND_BOTH: &str = "both";
 const BACKEND_DEFAULT: &str = "default";
@@ -51,6 +53,7 @@ struct SouRuntimeConfig {
     auto_order: Vec<String>,
     include_backend_headers: bool,
     include_failed_backend_errors: bool,
+    local_enabled: bool,
     fast_context: FastContextConfig,
 }
 
@@ -69,6 +72,11 @@ struct FastContextConfig {
 struct BackendRunResult {
     backend: String,
     text: String,
+    hit_count: usize,
+    duration_ms: u64,
+    engine: Option<String>,
+    index_state: Option<String>,
+    fallback_reason: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -94,8 +102,8 @@ impl SouTool {
                 },
                 "backend": {
                     "type": "string",
-                    "enum": ["default", "auto", "ace", "fast_context", "both"],
-                    "description": "可选搜索后端。default 使用配置；auto 按优先级自动回退；both 同时返回 ACE 与 fast-context。"
+                    "enum": ["default", "auto", "ace", "fast_context", "local", "both"],
+                    "description": "可选搜索后端。default 使用配置；auto 按优先级自动回退；local 使用本地 FTS5/rg；both 同时返回 ACE 与 fast-context。"
                 },
                 "tree_depth": {
                     "type": "number",
@@ -115,7 +123,7 @@ impl SouTool {
                 },
                 "timeout_ms": {
                     "type": "number",
-                    "description": "fast-context 单次请求超时毫秒数。"
+                    "description": "auto 模式远端后端总预算；显式 fast-context 模式下为单次请求超时毫秒数。"
                 },
                 "exclude_paths": {
                     "type": "array",
@@ -130,7 +138,7 @@ impl SouTool {
             Tool {
                 name: Cow::Borrowed("sou"),
                 description: Some(Cow::Borrowed(
-                    "代码上下文检索工具。支持 ACE、fast-context、自动回退与双后端合并返回。\n\n查询建议：\n- 代码标识符通常为英文，使用中文时建议混入英文类名/函数名/文件名（如 GestureRecognizer、ImageCodec、ClipboardService）。\n- 长中文描述容易让模型空 answer；如果第一次返回 0 结果，请拆成更具体的子问题或显式给出英文关键词重试。\n- 给出模块/目录提示（如 'gesture 模块' / 'src/capture/'）有助于快速定位。",
+                    "代码上下文检索工具。支持 ACE、fast-context、本地 FTS5/rg 兜底、自动回退与双后端合并返回。\n\n查询建议：\n- 代码标识符通常为英文，使用中文时建议混入英文类名/函数名/文件名（如 GestureRecognizer、ImageCodec、ClipboardService）。\n- 长中文描述容易让模型空 answer；如果第一次返回 0 结果，请拆成更具体的子问题或显式给出英文关键词重试。\n- 给出模块/目录提示（如 'gesture 模块' / 'src/capture/'）有助于快速定位。",
                 )),
                 input_schema: Arc::new(schema_map),
                 annotations: None,
@@ -158,12 +166,13 @@ impl SouTool {
         );
 
         match strategy.as_str() {
-            BACKEND_ACE => {
-                result_to_call_tool(run_ace(&request).await.map_err(|e| BackendRunError {
+            BACKEND_ACE => result_to_call_tool(
+                run_ace(&request).await.map_err(|e| BackendRunError {
                     backend: BACKEND_ACE.to_string(),
                     message: e,
-                }))
-            }
+                }),
+                BACKEND_ACE,
+            ),
             BACKEND_FAST_CONTEXT => result_to_call_tool(
                 run_fast_context(
                     &request,
@@ -175,7 +184,18 @@ impl SouTool {
                     backend: BACKEND_FAST_CONTEXT.to_string(),
                     message: e,
                 }),
+                BACKEND_FAST_CONTEXT,
             ),
+            BACKEND_LOCAL if config.local_enabled => result_to_call_tool(
+                run_local(&request, &config.fast_context)
+                    .await
+                    .map_err(|e| BackendRunError {
+                        backend: BACKEND_LOCAL.to_string(),
+                        message: e,
+                    }),
+                BACKEND_LOCAL,
+            ),
+            BACKEND_LOCAL => Ok(error_result("Local搜索失败: 本地兜底已禁用".to_string())),
             BACKEND_BOTH => run_both(&request, &config).await,
             BACKEND_AUTO => run_auto(&request, &config).await,
             other => Ok(error_result(format!("sou搜索失败: 未知后端策略 {}", other))),
@@ -197,6 +217,10 @@ impl SouTool {
                 )
                 .await?,
             ],
+            BACKEND_LOCAL if config.local_enabled => {
+                vec![run_local(&request, &config.fast_context).await?]
+            }
+            BACKEND_LOCAL => return Err("Local搜索失败: 本地兜底已禁用".to_string()),
             BACKEND_AUTO => vec![run_auto_result(&request, &config).await.map_err(|errors| {
                 format_backend_errors("sou搜索失败: 所有后端均不可用", &errors)
             })?],
@@ -238,6 +262,7 @@ impl SouRuntimeConfig {
             auto_order: normalize_auto_order(mcp.sou_auto_order),
             include_backend_headers: mcp.sou_include_backend_headers.unwrap_or(true),
             include_failed_backend_errors: mcp.sou_include_failed_backend_errors.unwrap_or(true),
+            local_enabled: mcp.sou_local_enabled.unwrap_or(true),
             fast_context: FastContextConfig {
                 api_key: mcp.fast_context_api_key.and_then(|s| {
                     if s.trim().is_empty() {
@@ -305,6 +330,7 @@ fn normalize_backend(value: &str) -> Option<String> {
         BACKEND_AUTO => Some(BACKEND_AUTO.to_string()),
         BACKEND_ACE | "acemcp" | "augment" => Some(BACKEND_ACE.to_string()),
         BACKEND_FAST_CONTEXT | "fastcontext" | "fast" => Some(BACKEND_FAST_CONTEXT.to_string()),
+        BACKEND_LOCAL | "offline" | "rg" => Some(BACKEND_LOCAL.to_string()),
         BACKEND_BOTH | "all" | "merge" => Some(BACKEND_BOTH.to_string()),
         _ => None,
     }
@@ -313,12 +339,18 @@ fn normalize_backend(value: &str) -> Option<String> {
 fn normalize_auto_order(value: Option<Vec<String>>) -> Vec<String> {
     let mut seen = HashSet::new();
     let mut out = Vec::new();
-    for backend in
-        value.unwrap_or_else(|| vec![BACKEND_ACE.to_string(), BACKEND_FAST_CONTEXT.to_string()])
-    {
+    for backend in value.unwrap_or_else(|| {
+        vec![
+            BACKEND_ACE.to_string(),
+            BACKEND_FAST_CONTEXT.to_string(),
+            BACKEND_LOCAL.to_string(),
+        ]
+    }) {
         if let Some(normalized) = normalize_backend(&backend) {
-            if matches!(normalized.as_str(), BACKEND_ACE | BACKEND_FAST_CONTEXT)
-                && seen.insert(normalized.clone())
+            if matches!(
+                normalized.as_str(),
+                BACKEND_ACE | BACKEND_FAST_CONTEXT | BACKEND_LOCAL
+            ) && seen.insert(normalized.clone())
             {
                 out.push(normalized);
             }
@@ -328,6 +360,9 @@ fn normalize_auto_order(value: Option<Vec<String>>) -> Vec<String> {
         out.push(BACKEND_ACE.to_string());
         out.push(BACKEND_FAST_CONTEXT.to_string());
     }
+    if seen.insert(BACKEND_LOCAL.to_string()) {
+        out.push(BACKEND_LOCAL.to_string());
+    }
     out
 }
 
@@ -336,7 +371,11 @@ async fn run_auto(
     config: &SouRuntimeConfig,
 ) -> Result<CallToolResult, McpError> {
     match run_auto_result(request, config).await {
-        Ok(result) => Ok(success_result(result.text)),
+        Ok(result) => Ok(backend_success_result(
+            result,
+            BACKEND_AUTO,
+            config.include_failed_backend_errors,
+        )),
         Err(errors) => Ok(error_result(format_backend_errors(
             "sou搜索失败: 所有后端均不可用",
             &errors,
@@ -349,23 +388,72 @@ async fn run_auto_result(
     config: &SouRuntimeConfig,
 ) -> Result<BackendRunResult, Vec<BackendRunError>> {
     let mut errors = Vec::new();
+    let remote_backend_count = config
+        .auto_order
+        .iter()
+        .filter(|backend| matches!(backend.as_str(), BACKEND_ACE | BACKEND_FAST_CONTEXT))
+        .count()
+        .max(1) as u64;
+    let total_remote_budget_ms = request
+        .timeout_ms
+        .unwrap_or(config.fast_context.timeout_ms)
+        .clamp(1000, 300000);
+    let per_remote_timeout_ms = (total_remote_budget_ms / remote_backend_count).max(1000);
+
     for backend in &config.auto_order {
         log_important!(info, "[sou] auto 尝试后端: {}", backend);
         let result = match backend.as_str() {
-            BACKEND_ACE => run_ace(request).await,
+            BACKEND_ACE => match tokio::time::timeout(
+                Duration::from_millis(per_remote_timeout_ms),
+                run_ace(request),
+            )
+            .await
+            {
+                Ok(result) => result,
+                Err(_) => Err(format!(
+                    "ACE 自动回退预算超时（{}ms），继续尝试下一后端",
+                    per_remote_timeout_ms
+                )),
+            },
             BACKEND_FAST_CONTEXT => {
-                run_fast_context(
-                    request,
-                    &config.fast_context,
-                    config.include_backend_headers,
+                match tokio::time::timeout(
+                    Duration::from_millis(per_remote_timeout_ms),
+                    run_fast_context(
+                        request,
+                        &config.fast_context,
+                        config.include_backend_headers,
+                    ),
                 )
                 .await
+                {
+                    Ok(result) => result,
+                    Err(_) => Err(format!(
+                        "FastContext 自动回退预算超时（{}ms），继续尝试下一后端",
+                        per_remote_timeout_ms
+                    )),
+                }
             }
+            BACKEND_LOCAL if config.local_enabled => run_local(request, &config.fast_context).await,
+            BACKEND_LOCAL => Err("本地兜底已禁用".to_string()),
             _ => continue,
         };
 
         match result {
-            Ok(ok) => {
+            Ok(ok) if ok.hit_count == 0 && backend != BACKEND_LOCAL => {
+                log_important!(info, "[sou] auto 后端无命中，继续回退: {}", ok.backend);
+                errors.push(BackendRunError {
+                    backend: backend.clone(),
+                    message: "返回 0 个代码片段".to_string(),
+                });
+            }
+            Ok(mut ok) => {
+                if !errors.is_empty() {
+                    let prior = format_backend_errors("", &errors);
+                    ok.fallback_reason = Some(match ok.fallback_reason.take() {
+                        Some(current) => format!("{}；{}", prior, current),
+                        None => prior,
+                    });
+                }
                 log_important!(info, "[sou] auto 后端成功: {}", ok.backend);
                 return Ok(ok);
             }
@@ -393,12 +481,12 @@ async fn run_both(
     }
 
     let mut text = outputs
-        .into_iter()
+        .iter()
         .map(|result| {
             if config.include_backend_headers {
                 format!("### sou backend: {}\n\n{}", result.backend, result.text)
             } else {
-                result.text
+                result.text.clone()
             }
         })
         .collect::<Vec<_>>()
@@ -409,7 +497,23 @@ async fn run_both(
         text.push_str(&format_backend_errors("", &errors));
     }
 
-    Ok(success_result(text))
+    let total_hits = outputs.iter().map(|result| result.hit_count).sum::<usize>();
+    let total_duration_ms = outputs
+        .iter()
+        .map(|result| result.duration_ms)
+        .max()
+        .unwrap_or_default();
+    Ok(success_result_with_metadata(
+        text,
+        serde_json::json!({
+            "requested_backend": BACKEND_BOTH,
+            "actual_backend": BACKEND_BOTH,
+            "degraded": !errors.is_empty(),
+            "hit_count": total_hits,
+            "duration_ms": total_duration_ms,
+            "fallback_reason": if errors.is_empty() { None } else { Some(format_backend_errors("", &errors)) },
+        }),
+    ))
 }
 
 async fn run_both_results(
@@ -459,9 +563,10 @@ async fn run_both_results(
 
 fn result_to_call_tool(
     result: Result<BackendRunResult, BackendRunError>,
+    requested_backend: &str,
 ) -> Result<CallToolResult, McpError> {
     match result {
-        Ok(ok) => Ok(success_result(ok.text)),
+        Ok(ok) => Ok(backend_success_result(ok, requested_backend, true)),
         Err(err) => Ok(error_result(format!(
             "{}搜索失败: {}",
             backend_display(&err.backend),
@@ -471,6 +576,7 @@ fn result_to_call_tool(
 }
 
 async fn run_ace(request: &SouRequest) -> Result<BackendRunResult, String> {
+    let started_at = Instant::now();
     let result = AcemcpTool::search_context(AcemcpRequest {
         project_root_path: request.project_root_path.clone(),
         query: request.query.clone(),
@@ -485,7 +591,38 @@ async fn run_ace(request: &SouRequest) -> Result<BackendRunResult, String> {
 
     Ok(BackendRunResult {
         backend: BACKEND_ACE.to_string(),
+        hit_count: parse_sou_sections(&text, BACKEND_ACE).len(),
+        duration_ms: started_at.elapsed().as_millis() as u64,
+        engine: None,
+        index_state: None,
+        fallback_reason: None,
         text,
+    })
+}
+
+async fn run_local(
+    request: &SouRequest,
+    defaults: &FastContextConfig,
+) -> Result<BackendRunResult, String> {
+    let output = local::search(local::LocalSearchOptions {
+        project_root: PathBuf::from(&request.project_root_path),
+        query: request.query.clone(),
+        max_results: request.max_results.unwrap_or(defaults.max_results) as usize,
+        exclude_paths: request
+            .exclude_paths
+            .clone()
+            .unwrap_or_else(|| defaults.exclude_paths.clone()),
+    })
+    .await
+    .map_err(|error| error.to_string())?;
+    Ok(BackendRunResult {
+        backend: BACKEND_LOCAL.to_string(),
+        text: output.text,
+        hit_count: output.hit_count,
+        duration_ms: output.duration_ms,
+        engine: Some(output.engine),
+        index_state: Some(output.index_state),
+        fallback_reason: output.fallback_reason,
     })
 }
 
@@ -620,12 +757,18 @@ async fn run_fast_context_once(
 
     Ok(BackendRunResult {
         backend: BACKEND_FAST_CONTEXT.to_string(),
+        hit_count: parse_sou_sections(&text, BACKEND_FAST_CONTEXT).len(),
+        duration_ms: started_at.elapsed().as_millis() as u64,
+        engine: None,
+        index_state: None,
+        fallback_reason: None,
         text,
     })
 }
 
 fn should_retry_fast_context_search(message: &str) -> bool {
     message.contains("未获得合法工具调用")
+        || message.contains("未知工具调用")
         || message.contains("未获得合法 answer")
         || message.contains("已达到最大轮次")
         || message.contains("未返回可解析响应")
@@ -828,6 +971,16 @@ fn parse_sou_sections(text: &str, default_backend: &str) -> Vec<SouSection> {
         if line.starts_with("The following code sections were retrieved:") {
             continue;
         }
+        if line.starts_with("[sou metadata]")
+            || line.starts_with("[sou fallback]")
+            || line.starts_with("[sou-local]")
+            || line.starts_with("[sou-local fallback]")
+            || line.starts_with("[fast-context stats]")
+            || line.starts_with("[fast-context config]")
+            || line.starts_with("grep keywords:")
+        {
+            continue;
+        }
         if current_location.is_some() {
             current_lines.push(line.trim_end().to_string());
         }
@@ -897,13 +1050,66 @@ fn is_ace_unavailable_text(text: &str) -> bool {
         || normalized.contains("配置已变更")
 }
 
-fn success_result(text: String) -> CallToolResult {
+fn backend_success_result(
+    result: BackendRunResult,
+    requested_backend: &str,
+    include_fallback_text: bool,
+) -> CallToolResult {
+    let degraded = result.fallback_reason.is_some();
+    let mut text = result.text.clone();
+    text.push_str(&format!(
+        "\n[sou metadata] requested_backend={}, actual_backend={}, degraded={}, hit_count={}, duration_ms={}{}{}",
+        requested_backend,
+        result.backend,
+        degraded,
+        result.hit_count,
+        result.duration_ms,
+        result
+            .engine
+            .as_deref()
+            .map(|value| format!(", engine={}", value))
+            .unwrap_or_default(),
+        result
+            .index_state
+            .as_deref()
+            .map(|value| format!(", index_state={}", value))
+            .unwrap_or_default()
+    ));
+    if include_fallback_text {
+        if let Some(reason) = result.fallback_reason.as_deref() {
+            text.push_str(&format!("\n[sou fallback] {}", diagnostic_summary(reason)));
+        }
+    }
+    success_result_with_metadata(
+        text,
+        serde_json::json!({
+            "requested_backend": requested_backend,
+            "actual_backend": result.backend,
+            "degraded": degraded,
+            "hit_count": result.hit_count,
+            "duration_ms": result.duration_ms,
+            "engine": result.engine,
+            "index_state": result.index_state,
+            "fallback_reason": result.fallback_reason,
+        }),
+    )
+}
+
+fn success_result_with_metadata(text: String, metadata: serde_json::Value) -> CallToolResult {
     CallToolResult {
         content: vec![Content::text(text)],
-        is_error: None,
+        is_error: Some(false),
         meta: None,
-        structured_content: None,
+        structured_content: Some(metadata),
     }
+}
+
+fn diagnostic_summary(message: &str) -> String {
+    let single_line = message.split_whitespace().collect::<Vec<_>>().join(" ");
+    if single_line.chars().count() <= 320 {
+        return single_line;
+    }
+    format!("{}...", single_line.chars().take(320).collect::<String>())
 }
 
 fn error_result(text: String) -> CallToolResult {
@@ -934,6 +1140,7 @@ fn backend_display(backend: &str) -> &'static str {
     match backend {
         BACKEND_ACE => "ACE",
         BACKEND_FAST_CONTEXT => "FastContext",
+        BACKEND_LOCAL => "Local",
         _ => "sou",
     }
 }
@@ -1010,6 +1217,9 @@ mod tests {
         assert!(should_retry_fast_context_search(
             "fast-context 已达到最大轮次但未获得 answer"
         ));
+        assert!(should_retry_fast_context_search(
+            "fast-context 返回未知工具调用: readfile"
+        ));
         assert!(
             !should_retry_fast_context_search("RATE_LIMITED: Fast Context 当前限流，请稍后重试"),
             "限流类错误不应触发独立兜底重试，避免扩大远端压力"
@@ -1037,5 +1247,88 @@ mod tests {
         assert_eq!(sections[0].backend, "ace");
         assert_eq!(sections[0].location, "E:/demo/panel.vue:8-16");
         assert_eq!(sections[0].excerpt, "const state = ref(false)");
+    }
+
+    #[test]
+    fn legacy_auto_order_appends_local_fallback() {
+        assert_eq!(
+            normalize_auto_order(Some(vec!["fast_context".to_string(), "ace".to_string(),])),
+            vec![
+                "fast_context".to_string(),
+                "ace".to_string(),
+                "local".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn typed_sections_exclude_backend_diagnostics_from_excerpt() {
+        let text = "Path: E:/demo/local.rs\nLines: L2-L3\nL2:fn local_search() {}\n[sou-local] engine=fts5, index_state=ready\n[sou metadata] actual_backend=local\n";
+        let sections = parse_sou_sections(text, "local");
+
+        assert_eq!(sections.len(), 1);
+        assert_eq!(sections[0].excerpt, "L2:fn local_search() {}");
+    }
+
+    #[tokio::test]
+    async fn explicit_local_backend_returns_hits_and_structured_metadata() {
+        let temp = tempdir().expect("Local 路由临时项目应创建成功");
+        fs::write(
+            temp.path().join("local_search.rs"),
+            "pub struct LocalIndexStatus;\nfn backend_success_result() {}\n",
+        )
+        .expect("Local 路由测试源码应写入成功");
+        let request = SouRequest {
+            project_root_path: temp.path().to_string_lossy().to_string(),
+            query: "LocalIndexStatus backendSuccessResult".to_string(),
+            backend: Some(BACKEND_LOCAL.to_string()),
+            tree_depth: None,
+            max_turns: None,
+            max_results: Some(5),
+            max_commands: None,
+            timeout_ms: None,
+            exclude_paths: Some(Vec::new()),
+        };
+        let defaults = FastContextConfig {
+            api_key: None,
+            tree_depth: 3,
+            max_turns: 4,
+            max_results: 10,
+            max_commands: 8,
+            timeout_ms: 30_000,
+            exclude_paths: Vec::new(),
+        };
+
+        let output = local::search_for_test(
+            local::LocalSearchOptions {
+                project_root: PathBuf::from(&request.project_root_path),
+                query: request.query.clone(),
+                max_results: request.max_results.unwrap_or(defaults.max_results) as usize,
+                exclude_paths: request
+                    .exclude_paths
+                    .clone()
+                    .unwrap_or_else(|| defaults.exclude_paths.clone()),
+            },
+            temp.path().join("route-index.sqlite3"),
+        )
+        .await
+        .expect("Local 路由应完成搜索");
+        let result = BackendRunResult {
+            backend: BACKEND_LOCAL.to_string(),
+            text: output.text,
+            hit_count: output.hit_count,
+            duration_ms: output.duration_ms,
+            engine: Some(output.engine),
+            index_state: Some(output.index_state),
+            fallback_reason: output.fallback_reason,
+        };
+        assert!(result.hit_count >= 1);
+        let call_result = backend_success_result(result, BACKEND_LOCAL, true);
+        let metadata = call_result
+            .structured_content
+            .expect("Local 路由应返回结构化元数据");
+        assert_eq!(metadata["actual_backend"], BACKEND_LOCAL);
+        assert!(metadata["hit_count"].as_u64().unwrap_or_default() >= 1);
+        assert_eq!(call_result.is_error, Some(false));
     }
 }

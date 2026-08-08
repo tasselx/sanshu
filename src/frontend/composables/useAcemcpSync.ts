@@ -78,6 +78,8 @@ export function useAcemcpSync() {
         return '空闲'
       case 'indexing':
         return `索引中 ${status.progress}%`
+      case 'paused':
+        return `等待恢复 ${status.progress}%`
       case 'synced':
         return '已同步'
       case 'failed':
@@ -95,6 +97,8 @@ export function useAcemcpSync() {
         return 'i-carbon-circle-dash text-gray-400'
       case 'indexing':
         return 'i-carbon-in-progress text-blue-500 animate-spin'
+      case 'paused':
+        return 'i-carbon-pause-outline text-amber-500'
       case 'synced':
         return 'i-carbon-checkmark-filled text-green-500'
       case 'failed':

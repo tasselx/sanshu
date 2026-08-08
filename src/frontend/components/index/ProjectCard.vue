@@ -58,6 +58,13 @@ const statusConfig = computed(() => {
       glowColor: 'rgba(59, 130, 246, 0.4)',
       borderColor: 'border-blue-500/40',
     },
+    paused: {
+      text: '等待恢复',
+      type: 'warning' as const,
+      icon: 'i-carbon-pause-outline',
+      glowColor: 'rgba(245, 158, 11, 0.3)',
+      borderColor: 'border-amber-500/40',
+    },
     synced: {
       text: '已完成',
       type: 'success' as const,
@@ -220,14 +227,15 @@ function formatAbsoluteTime(timeStr: string | null): string {
       </div>
 
       <!-- 进度条（仅索引中时显示） -->
-      <div v-if="project.status === 'indexing'" class="progress-section">
+      <div v-if="project.status === 'indexing' || project.status === 'paused'" class="progress-section">
         <n-progress
           type="line"
           :percentage="project.progress"
           :show-indicator="true"
           :height="6"
           :border-radius="3"
-          processing
+          :processing="project.status === 'indexing'"
+          :status="project.status === 'paused' ? 'warning' : 'info'"
           class="cyber-progress"
         />
       </div>

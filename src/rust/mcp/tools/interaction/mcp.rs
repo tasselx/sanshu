@@ -147,6 +147,7 @@ impl InteractionTool {
             },
             is_markdown: request.render_markdown,
             project_root_path: Some(request.workspace),
+            agent_label: request.agent_label,
             // 透传 UI/UX 上下文控制信号
             uiux_intent: request.uiux_intent,
             uiux_context_policy: request.uiux_context_policy,

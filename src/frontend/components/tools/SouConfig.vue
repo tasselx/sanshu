@@ -45,10 +45,11 @@ const config = ref({
   // 嵌套项目索引配置
   index_nested_projects: true, // 是否自动索引嵌套的 Git 子项目（默认启用）
   // sou 多后端配置
-  sou_default_backend: 'auto' as 'auto' | 'ace' | 'fast_context' | 'both',
-  sou_auto_order: ['ace', 'fast_context'] as string[],
+  sou_default_backend: 'auto' as 'auto' | 'ace' | 'fast_context' | 'local' | 'both',
+  sou_auto_order: ['ace', 'fast_context', 'local'] as string[],
   sou_include_backend_headers: true,
   sou_include_failed_backend_errors: true,
+  sou_local_enabled: true,
   uiux_knowledge_backend: 'auto' as 'auto' | 'fast_context' | 'local',
   // fast-context 配置
   fast_context_api_key: '',
@@ -62,15 +63,23 @@ const config = ref({
 
 const loadingConfig = ref(false)
 const showProxyModal = ref(false)
-const lastSavedConnection = ref({
-  base_url: '',
-  token: '',
-})
+const lastSavedIndexSignature = ref('')
+
+function buildIndexSignature(value: typeof config.value): string {
+  return JSON.stringify({
+    base_url: normalizeBaseUrl(value.base_url),
+    token: (value.token || '').trim(),
+    batch_size: value.batch_size,
+    max_lines_per_blob: value.max_lines_per_blob,
+    text_extensions: [...value.text_extensions].map(item => item.trim().toLowerCase()).sort(),
+    exclude_patterns: [...value.exclude_patterns].map(item => item.trim().toLowerCase()).sort(),
+  })
+}
 // 调试状态
 const debugProjectRoot = ref('')
 const debugQuery = ref('')
 const debugLoading = ref(false)
-const debugBackend = ref<'default' | 'auto' | 'ace' | 'fast_context' | 'both'>('default')
+const debugBackend = ref<'default' | 'auto' | 'ace' | 'fast_context' | 'local' | 'both'>('default')
 const debugUseManualInput = ref(false) // 是否使用手动输入模式
 const debugProjectOptions = ref<{ label: string, value: string }[]>([]) // 项目选择选项
 const debugProjectOptionsLoading = ref(false) // 加载项目列表中
@@ -86,6 +95,22 @@ interface DebugSearchResult {
   result_count?: number
   project_path: string
   query: string
+  actual_backend?: string
+  degraded: boolean
+  engine?: string
+  index_state?: string
+  fallback_reason?: string
+}
+
+interface LocalIndexStatus {
+  project_root: string
+  index_path: string
+  state: 'missing' | 'building' | 'ready' | 'error'
+  indexed_files: number
+  indexed_chunks: number
+  sync_running: boolean
+  pending_changes: boolean
+  last_error?: string
 }
 
 interface FastContextApiKeyDetectionResult {
@@ -102,6 +127,9 @@ const debugResultData = ref<DebugSearchResult | null>(null)
 const detectingFastContextKey = ref(false)
 const fastContextKeyStatus = ref('')
 const fastContextKeyStatusType = ref<'success' | 'warning' | 'error' | 'info'>('info')
+const localIndexStatus = ref<LocalIndexStatus | null>(null)
+const localIndexLoading = ref(false)
+const localIndexSyncing = ref(false)
 
 interface ExtensionGroup {
   id: string
@@ -301,15 +329,17 @@ const excludeOptions = ref([
 
 const backendOptions = [
   { label: '默认配置', value: 'default' },
-  { label: '自动回退（ACE → fast-context）', value: 'auto' },
+  { label: '自动回退（ACE → Fast → Local）', value: 'auto' },
   { label: '仅 ACE / Augment', value: 'ace' },
   { label: '仅 fast-context', value: 'fast_context' },
+  { label: '仅 Local（FTS5 / rg）', value: 'local' },
   { label: '双后端合并', value: 'both' },
 ]
 
 const autoOrderOptions = [
   { label: 'ACE / Augment', value: 'ace' },
   { label: 'fast-context', value: 'fast_context' },
+  { label: 'Local（FTS5 / rg）', value: 'local' },
 ]
 
 const backendConfigOptions = backendOptions.filter(item => item.value !== 'default')
@@ -318,6 +348,13 @@ const uiuxKnowledgeBackendOptions = [
   { label: '优先 Fast Context', value: 'fast_context' },
   { label: '仅本地 Markdown（A/B 基线）', value: 'local' },
 ]
+const backendNameMap: Record<string, string> = {
+  ace: 'ACE',
+  fast_context: 'Fast Context',
+  local: 'Local',
+  auto: '自动',
+  both: '双后端',
+}
 
 const selectedExtensionSet = computed(() => new Set(config.value.text_extensions || []))
 const selectedPresetCount = computed(() =>
@@ -354,16 +391,46 @@ const fastContextEnabledInStrategy = computed(() => {
     || (backend === 'auto' && config.value.sou_auto_order.includes('fast_context'))
 })
 
+const localEnabledInStrategy = computed(() => {
+  if (!config.value.sou_local_enabled)
+    return false
+  const backend = config.value.sou_default_backend
+  return backend === 'local'
+    || (backend === 'auto' && config.value.sou_auto_order.includes('local'))
+})
+
+const localIndexStateLabel = computed(() => {
+  if (!localIndexStatus.value)
+    return '未读取'
+  return {
+    missing: '未建立',
+    building: '同步中',
+    ready: '可用',
+    error: '异常',
+  }[localIndexStatus.value.state]
+})
+
+const localIndexTagType = computed<'default' | 'info' | 'success' | 'error'>(() => {
+  switch (localIndexStatus.value?.state) {
+    case 'ready': return 'success'
+    case 'building': return 'info'
+    case 'error': return 'error'
+    default: return 'default'
+  }
+})
+
 const backendStrategySummary = computed(() => {
   switch (config.value.sou_default_backend) {
     case 'ace':
       return '当前默认仅使用 ACE / Augment 后端。'
     case 'fast_context':
       return '当前默认仅使用 fast-context，ACE 连接配置可留空。'
+    case 'local':
+      return '当前默认仅使用 Local；热索引走 FTS5，索引未就绪时即时使用 rg。'
     case 'both':
       return '当前默认同时返回 ACE 与 fast-context 的合并结果。'
     default:
-      return '当前默认 ACE 优先，ACE 失败或索引不可用时自动切换到 fast-context。'
+      return `当前自动顺序：${config.value.sou_auto_order.map(value => backendNameMap[value] || value).join(' → ')}。`
   }
 })
 
@@ -381,6 +448,11 @@ interface DebugStatusItem {
 const debugBackendLabel = computed(() =>
   backendOptions.find(item => item.value === debugBackend.value)?.label || '默认配置',
 )
+
+const debugActualBackendLabel = computed(() => {
+  const actual = debugResultData.value?.actual_backend
+  return actual ? (backendNameMap[actual] || actual) : debugBackendLabel.value
+})
 
 const debugCanRun = computed(() =>
   debugProjectRoot.value.trim().length > 0 && debugQuery.value.trim().length > 0,
@@ -423,6 +495,18 @@ const debugStatusItems = computed<DebugStatusItem[]>(() => {
       tone: debugProjectOptions.value.length > 0 ? 'success' : 'warning',
     },
     {
+      key: 'local-index',
+      label: 'Local 索引',
+      value: localIndexStateLabel.value,
+      detail: localIndexStatus.value
+        ? `${localIndexStatus.value.indexed_files} 文件 · ${localIndexStatus.value.indexed_chunks} 分块`
+        : '选择项目后读取状态',
+      icon: 'i-carbon-search-locate',
+      tone: localIndexStatus.value?.state === 'ready'
+        ? 'success'
+        : (localIndexStatus.value?.state === 'error' ? 'danger' : 'neutral'),
+    },
+    {
       key: 'last-debug',
       label: '上次调试',
       value: lastResult ? (lastResult.success ? '成功' : '失败') : '未执行',
@@ -453,7 +537,7 @@ const debugResultSubtitle = computed(() => {
   if (!debugResultData.value)
     return ''
 
-  return `${formatDebugTime(debugResultData.value.response_time)} · ${debugBackendLabel.value}`
+  return `${formatDebugTime(debugResultData.value.response_time)} · ${debugActualBackendLabel.value}`
 })
 
 // --- 操作函数 ---
@@ -466,6 +550,11 @@ async function loadAcemcpConfig() {
   loadingConfig.value = true
   try {
     const res = await invoke('get_acemcp_config') as any
+    const souAutoOrder = Array.isArray(res.sou_auto_order)
+      ? [...res.sou_auto_order]
+      : ['ace', 'fast_context', 'local']
+    if (!souAutoOrder.includes('local'))
+      souAutoOrder.push('local')
 
     config.value = {
       base_url: res.base_url || '',
@@ -486,9 +575,10 @@ async function loadAcemcpConfig() {
       index_nested_projects: res.index_nested_projects ?? true,
       // sou 多后端配置
       sou_default_backend: res.sou_default_backend || 'auto',
-      sou_auto_order: res.sou_auto_order || ['ace', 'fast_context'],
+      sou_auto_order: souAutoOrder,
       sou_include_backend_headers: res.sou_include_backend_headers ?? true,
       sou_include_failed_backend_errors: res.sou_include_failed_backend_errors ?? true,
+      sou_local_enabled: res.sou_local_enabled ?? true,
       uiux_knowledge_backend: res.uiux_knowledge_backend || 'auto',
       // fast-context 配置
       fast_context_api_key: res.fast_context_api_key || '',
@@ -503,10 +593,7 @@ async function loadAcemcpConfig() {
       // 中文说明：配置页首次加载时依次尝试 Devin 与 Windsurf 登录库，失败时保留手动填写入口。
       await detectFastContextApiKey(false)
     }
-    lastSavedConnection.value = {
-      base_url: normalizeBaseUrl(res.base_url || ''),
-      token: (res.token || '').trim(),
-    }
+    lastSavedIndexSignature.value = buildIndexSignature(config.value)
 
     // 确保选项存在
     const extSet = new Set(extOptions.value.map(o => o.value))
@@ -605,10 +692,8 @@ async function saveConfig() {
       }
     }
 
-    const nextBaseUrl = normalizeBaseUrl(config.value.base_url)
-    const nextToken = (config.value.token || '').trim()
-    const connectionChanged = lastSavedConnection.value.base_url !== nextBaseUrl
-      || lastSavedConnection.value.token !== nextToken
+    const nextIndexSignature = buildIndexSignature(config.value)
+    const indexConfigChanged = lastSavedIndexSignature.value !== nextIndexSignature
 
     await invoke('save_acemcp_config', {
       args: {
@@ -633,6 +718,7 @@ async function saveConfig() {
         souAutoOrder: config.value.sou_auto_order,
         souIncludeBackendHeaders: config.value.sou_include_backend_headers,
         souIncludeFailedBackendErrors: config.value.sou_include_failed_backend_errors,
+        souLocalEnabled: config.value.sou_local_enabled,
         uiuxKnowledgeBackend: config.value.uiux_knowledge_backend,
         // fast-context 配置
         fastContextApiKey: config.value.fast_context_api_key,
@@ -644,13 +730,10 @@ async function saveConfig() {
         fastContextExcludePaths: config.value.fast_context_exclude_paths,
       },
     })
-    lastSavedConnection.value = {
-      base_url: nextBaseUrl,
-      token: nextToken,
-    }
+    lastSavedIndexSignature.value = nextIndexSignature
     message.success('配置已保存')
-    if (connectionChanged) {
-      message.warning('检测到 ACE 配置变更，现有索引将在下次搜索时自动重建', {
+    if (indexConfigChanged) {
+      message.warning('检测到 ACE 索引配置变更，已有项目已提交后台全量重建', {
         duration: 5000,
       })
     }
@@ -689,6 +772,49 @@ async function testConnection() {
 }
 
 /** 加载调试用项目选择列表 */
+async function refreshLocalIndexStatus(showFeedback = false) {
+  const projectRoot = debugProjectRoot.value.trim()
+  if (!projectRoot) {
+    localIndexStatus.value = null
+    return
+  }
+  localIndexLoading.value = true
+  try {
+    localIndexStatus.value = await invoke<LocalIndexStatus>('get_sou_local_index_status', {
+      projectRootPath: projectRoot,
+    })
+  }
+  catch (error) {
+    localIndexStatus.value = null
+    if (showFeedback)
+      message.error(`读取 Local 索引状态失败: ${error}`)
+  }
+  finally {
+    localIndexLoading.value = false
+  }
+}
+
+async function syncLocalIndex() {
+  const projectRoot = debugProjectRoot.value.trim()
+  if (!projectRoot) {
+    message.warning('请先填写需要建立 Local 索引的项目路径')
+    return
+  }
+  localIndexSyncing.value = true
+  try {
+    localIndexStatus.value = await invoke<LocalIndexStatus>('rebuild_sou_local_index', {
+      projectRootPath: projectRoot,
+    })
+    message.success(`Local 索引同步完成：${localIndexStatus.value.indexed_files} 文件`)
+  }
+  catch (error) {
+    message.error(`Local 索引同步失败: ${error}`)
+  }
+  finally {
+    localIndexSyncing.value = false
+  }
+}
+
 async function loadDebugProjectOptions() {
   debugProjectOptionsLoading.value = true
   try {
@@ -704,6 +830,7 @@ async function loadDebugProjectOptions() {
     if (list.length > 0 && !debugProjectRoot.value) {
       debugProjectRoot.value = list[0].value
     }
+    await refreshLocalIndexStatus(false)
   }
   catch (e) {
     console.error('加载项目列表失败:', e)
@@ -738,6 +865,7 @@ async function runToolDebug() {
     else {
       message.error(result.error || '调试失败')
     }
+    await refreshLocalIndexStatus(false)
   }
   catch (e: any) {
     const msg = e?.message || String(e)
@@ -750,6 +878,7 @@ async function runToolDebug() {
       total_duration_ms: 0,
       project_path: debugProjectRoot.value,
       query: debugQuery.value,
+      degraded: false,
     }
     message.error(`调试异常: ${msg}`)
   }
@@ -911,6 +1040,13 @@ watch(() => config.value.text_extensions, (list) => {
   }
 }, { deep: true })
 
+let localStatusTimer: ReturnType<typeof setTimeout> | undefined
+watch(debugProjectRoot, () => {
+  if (localStatusTimer)
+    clearTimeout(localStatusTimer)
+  localStatusTimer = setTimeout(() => refreshLocalIndexStatus(false), 350)
+})
+
 // 组件挂载
 onMounted(async () => {
   if (props.active) {
@@ -1046,8 +1182,8 @@ defineExpose({ saveConfig })
             <ConfigSection title="切换策略" description="配置默认后端、主动切换入口和双后端合并返回">
               <n-space vertical size="medium">
                 <n-alert type="success" :bordered="false">
-                  推荐默认策略：ACE 优先，失败或索引不可用时自动切换到 fast-context。
-                  MCP 调用时也可以通过 <code>backend</code> 主动指定 ace、fast_context 或 both。
+                  推荐默认策略：ACE → Fast Context → Local。远端失败或返回零片段时继续回退，Local 零命中作为最终结果。
+                  MCP 调用时也可以通过 <code>backend</code> 主动指定 ace、fast_context、local 或 both。
                 </n-alert>
 
                 <n-grid :x-gap="24" :y-gap="16" :cols="2">
@@ -1068,10 +1204,10 @@ defineExpose({ saveConfig })
                         v-model:value="config.sou_auto_order"
                         :options="autoOrderOptions"
                         multiple
-                        :max-tag-count="2"
+                        :max-tag-count="3"
                       />
                       <template #feedback>
-                        <span class="form-feedback">默认保持 ACE 在前，ACE 失败后切 fast-context。</span>
+                        <span class="form-feedback">旧配置缺少 Local 时，后端会自动把 Local 补到末尾。</span>
                       </template>
                     </n-form-item>
                   </n-grid-item>
@@ -1087,7 +1223,7 @@ defineExpose({ saveConfig })
                   </template>
                 </n-form-item>
 
-                <n-grid :x-gap="24" :y-gap="16" :cols="3">
+                <n-grid :x-gap="24" :y-gap="16" :cols="4">
                   <n-grid-item>
                     <n-form-item label="启用 ACE">
                       <n-tag :type="aceEnabledInStrategy ? 'success' : 'default'" :bordered="false">
@@ -1103,6 +1239,13 @@ defineExpose({ saveConfig })
                     </n-form-item>
                   </n-grid-item>
                   <n-grid-item>
+                    <n-form-item label="启用 Local">
+                      <n-tag :type="localEnabledInStrategy ? 'success' : 'default'" :bordered="false">
+                        {{ localEnabledInStrategy ? '会参与检索' : '默认不参与' }}
+                      </n-tag>
+                    </n-form-item>
+                  </n-grid-item>
+                  <n-grid-item>
                     <n-form-item label="主动切换调试">
                       <n-select
                         v-model:value="debugBackend"
@@ -1112,7 +1255,7 @@ defineExpose({ saveConfig })
                   </n-grid-item>
                 </n-grid>
 
-                <n-grid :x-gap="24" :y-gap="16" :cols="2">
+                <n-grid :x-gap="24" :y-gap="16" :cols="3">
                   <n-grid-item>
                     <n-form-item label="显示后端来源">
                       <n-switch v-model:value="config.sou_include_backend_headers" />
@@ -1123,7 +1266,53 @@ defineExpose({ saveConfig })
                       <n-switch v-model:value="config.sou_include_failed_backend_errors" />
                     </n-form-item>
                   </n-grid-item>
+                  <n-grid-item>
+                    <n-form-item label="Local 本地兜底">
+                      <n-switch v-model:value="config.sou_local_enabled" />
+                    </n-form-item>
+                  </n-grid-item>
                 </n-grid>
+              </n-space>
+            </ConfigSection>
+
+            <ConfigSection title="Local 索引" description="SQLite FTS5 热索引；未就绪或异常时即时退回 rg / Rust 扫描">
+              <n-space vertical size="medium">
+                <n-grid :x-gap="24" :y-gap="16" :cols="2">
+                  <n-grid-item>
+                    <n-form-item label="索引状态">
+                      <n-space align="center">
+                        <n-tag :type="localIndexTagType" :bordered="false">
+                          {{ localIndexStateLabel }}
+                        </n-tag>
+                        <span v-if="localIndexStatus" class="form-feedback">
+                          {{ localIndexStatus.indexed_files }} 文件 / {{ localIndexStatus.indexed_chunks }} 分块
+                        </span>
+                      </n-space>
+                    </n-form-item>
+                  </n-grid-item>
+                  <n-grid-item>
+                    <n-form-item label="项目路径">
+                      <n-input v-model:value="debugProjectRoot" placeholder="选择已索引项目或填写绝对路径" clearable />
+                    </n-form-item>
+                  </n-grid-item>
+                </n-grid>
+                <n-alert v-if="localIndexStatus?.last_error" type="error" :bordered="false">
+                  {{ localIndexStatus.last_error }}
+                </n-alert>
+                <div class="flex justify-end gap-2">
+                  <n-button secondary :loading="localIndexLoading" :disabled="!debugProjectRoot" @click="refreshLocalIndexStatus(true)">
+                    <template #icon>
+                      <div class="i-carbon-renew" />
+                    </template>
+                    刷新状态
+                  </n-button>
+                  <n-button type="primary" :loading="localIndexSyncing" :disabled="!debugProjectRoot" @click="syncLocalIndex">
+                    <template #icon>
+                      <div class="i-carbon-data-base" />
+                    </template>
+                    同步索引
+                  </n-button>
+                </div>
               </n-space>
             </ConfigSection>
 
@@ -1585,10 +1774,18 @@ defineExpose({ saveConfig })
                     </div>
                     <div class="metric-item">
                       <div class="metric-value metric-value--small">
-                        {{ debugBackendLabel }}
+                        {{ debugActualBackendLabel }}
                       </div>
                       <div class="metric-label">
-                        本次后端
+                        实际后端
+                      </div>
+                    </div>
+                    <div class="metric-item">
+                      <div class="metric-value metric-value--small">
+                        {{ debugResultData.degraded ? '已降级' : '直达' }}
+                      </div>
+                      <div class="metric-label">
+                        执行路径
                       </div>
                     </div>
                   </div>
@@ -1612,6 +1809,10 @@ defineExpose({ saveConfig })
                         <span class="info-label">发送时间</span>
                         <span class="info-value">{{ formatDebugTime(debugResultData.request_time) }}</span>
                       </div>
+                      <div v-if="debugResultData.engine" class="info-row">
+                        <span class="info-label">Local 引擎</span>
+                        <span class="info-value">{{ debugResultData.engine }} / {{ debugResultData.index_state || '-' }}</span>
+                      </div>
                     </div>
                   </div>
 
@@ -1623,12 +1824,20 @@ defineExpose({ saveConfig })
                     </div>
                     <div class="section-content">
                       <n-alert
-                        v-if="debugResultData.success"
+                        v-if="debugResultData.success && debugResultData.actual_backend === 'fast_context'"
                         type="info"
                         :bordered="false"
                         class="compact-alert mb-2"
                       >
                         fast-context 的 Path/Lines/L行号 是三术按 answer 文件范围本地读取后生成的 ACE 兼容格式，不是 fast-context 原生直出文本。
+                      </n-alert>
+                      <n-alert
+                        v-if="debugResultData.degraded && debugResultData.fallback_reason"
+                        type="warning"
+                        :bordered="false"
+                        class="compact-alert mb-2"
+                      >
+                        {{ debugResultData.fallback_reason }}
                       </n-alert>
                       <div v-if="debugResultData.error" class="error-content">
                         {{ debugResultData.error }}

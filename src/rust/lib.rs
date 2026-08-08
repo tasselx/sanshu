@@ -5,6 +5,7 @@ pub mod constants;
 pub mod mcp;
 pub mod network;
 pub mod telegram;
+pub mod wechat;
 pub mod ui;
 pub mod utils;
 

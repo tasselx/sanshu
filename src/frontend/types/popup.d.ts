@@ -6,6 +6,7 @@ export interface McpRequest {
   predefined_options?: string[]
   is_markdown?: boolean
   project_root_path?: string
+  agent_label?: string
   uiux_intent?: 'none' | 'beautify' | 'page_refactor' | 'uiux_search'
   uiux_context_policy?: 'auto' | 'force' | 'forbid'
   uiux_reason?: string
