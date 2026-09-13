@@ -50,7 +50,7 @@ pub struct MemoryConfigRequest {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct JiyiRequest {
     #[schemars(
-        description = "操作类型：记忆(添加) | 回忆(查询) | 整理(去重) | 列表(全部记忆) | 预览相似(检测相似度) | 配置(获取/更新) | 删除(移除记忆)"
+        description = "操作类型：记忆(添加) | 回忆(查询) | 整理(去重) | 预览整理(候选预览) | 应用整理(按计划清理) | 备份列表 | 恢复备份 | 导出备份 | 列表(全部记忆) | 预览相似(检测相似度) | 配置(获取/更新) | 删除(移除记忆)"
     )]
     pub action: String,
     #[schemars(description = "项目路径（必需）")]
