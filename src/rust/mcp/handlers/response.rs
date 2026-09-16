@@ -93,8 +93,29 @@ pub fn parse_mcp_response(response: &str) -> Result<Vec<Content>, McpError> {
 }
 
 /// 解析 MCP 响应内容，并在新结构化响应中保留 structured_content。
+/// 是否为取消信号。
+///
+/// 中文说明（2026-09-14）：GUI 的 send_mcp_response 把 JS 字符串 'CANCELLED' 经 serde 写出，
+/// stdout 上实际是带引号的 JSON 字符串 `"CANCELLED"`；旧版只认裸文本，带引号形式会掉进
+/// 纯文本分支、把字面量 "CANCELLED" 当成用户输入交给 AI。两种形式都要识别。
+pub fn is_cancel_signal(response: &str) -> bool {
+    const MARKERS: [&str; 2] = ["CANCELLED", "用户取消了操作"];
+    let raw = response.trim();
+    if MARKERS.contains(&raw) {
+        return true;
+    }
+    match serde_json::from_str::<serde_json::Value>(raw) {
+        Ok(serde_json::Value::String(s)) => MARKERS.contains(&s.trim()),
+        Ok(serde_json::Value::Object(map)) => map
+            .get("cancelled")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+        _ => false,
+    }
+}
+
 pub fn parse_mcp_response_with_structured(response: &str) -> Result<ParsedMcpResponse, McpError> {
-    if response.trim() == "CANCELLED" || response.trim() == "用户取消了操作" {
+    if is_cancel_signal(response) {
         log_debug!("[parse_mcp_response] 收到取消信号");
         // 中文说明：把「取消/弹窗关闭」改写为「继续等待」语义，避免 AI 把它当成对话结束信号
         // 而提前收尾（从而导致 IDE/客户端把下一条消息计为新一轮对话次数）。
@@ -538,7 +559,12 @@ mod tests {
     fn cancelled_response_instructs_ai_to_keep_waiting() {
         // 中文说明：取消/弹窗关闭场景必须返回「继续等待」语义，
         // 避免被 AI 当成对话结束信号、导致客户端把下一条消息计为新一轮次数。
-        for raw in ["CANCELLED", "用户取消了操作"] {
+        for raw in [
+            "CANCELLED",
+            "用户取消了操作",
+            "\"CANCELLED\"",
+            "{\"cancelled\":true}",
+        ] {
             let text = extract_text(raw);
             assert!(
                 text.contains("请再次调用") && text.contains("zhi"),

@@ -1,0 +1,152 @@
+# 核心契约（不可违反）
+
+1. **代码哲学**：严格遵循 KISS / YAGNI / SOLID；不做过度设计、不加用不到的抽象。
+2. **强制交互**：允许 stop 的唯一条件是最后一次调用的工具是 `zhi`，且该次返回文本本身就是「完成/结束/done/stop」类明确收工。
+   用户输入框里的任务/追问、自己觉得做完了、**assistant 正文向用户发问/征求确认/请用户回复**（看行为不看字眼）、纯问答、没调过其它 sanshu 工具、评估模板写了 AUTONOMOUS，全都不算收工。
+   AUTONOMOUS 只免中途确认，停手前仍必须 `zhi`。
+   **最后一条可见输出必须是 `zhi` 调用本身**，不能是 markdown 总结；禁止用收尾/告别/汇总或任何「请用户表态」的正文收尾，禁止用正文向用户提问。
+   **收工硬门槛**：想停就必须 `zhi`，与本轮是否调过 `ji`/`sou`/`uiux` 无关。
+   **上一枪作废**：zhi 带回的只要不是明确收工，一律视为新指令（含 JSON / 纯文本 / choices）；处理完后必须再调一次 `zhi`。上一枪只算「接到活」，不算收工。
+   **不要被压缩历史骗**：transcript 里看不到 `zhi` 不代表可以停；纯文本回复也算用户回复。
+   **收工前结清 Cursor 后台任务队列**：记录每个后台 Shell 任务 ID，逐个等待、读取或取消，直到客户端明确返回 `completed`、`failed` 或 `cancelled` 终态；任一任务 ID 没有终态就禁止调收工 `zhi`。仅 `kill`/`pkill` 底层进程、看到产物存在或后续命令成功都不算终态，Cursor 仍可能保留完成事件并以 `backgroundTaskCompletionAction` 自动新开 request。
+   **唯一例外**：收工 `zhi` 已返回「完成/结束」后，收到系统注入的「后台任务已完成 / Briefly inform the user about the task result」消息时，一句正文说明去向即可结束，不要再调 `zhi`；用户手写内容不适用。
+3. **证据优先**：任何分析必须基于真实搜索/读取到的代码；先用 `sou` 语义定位，再用 Read/Grep 确认实现，严禁臆测。
+4. **知识权威**：需要框架/库的最新文档时优先用 `context7`；需要理解任意 GitHub 仓库的架构和实现时用 `deepwiki`；两者互补，避免训练数据过时。
+5. **持久化记忆**：对话开始时调用 `ji`（`action: "回忆"`）加载项目记忆；只有用户原始输入明确说「请记住」，或 `zhi` 返回的 `structured_content.context_blocks` 标记 `memory_policy=save` 时，才允许总结后存储为合适分类；`memory_policy=never` 的本轮上下文禁止写入记忆。
+6. **输出规范**：注释/日志默认中文；修改点必须有中文注释解释意图（why）；引用代码给出 `文件路径:行号`。
+
+---
+
+# 工具使用指南
+
+### 三术 (zhi)
+
+**何时使用：**
+
+- 多方案抉择：列出所有候选并标注推荐项
+- 计划变更 / 任务完成：请求用户确认
+- 本轮即将 stop 时的收尾确认（与是否调过其它 sanshu 工具无关；AUTONOMOUS 也不免）
+- zhi 带回新指令后的再次收尾确认（上一枪不算收工；处理完必须再弹一次）
+- 本轮最后一条可见输出必须是 `zhi` 调用本身，不能用 markdown 总结或正文提问代替
+
+**如何使用：**
+
+- **必须传 `workspace`**（当前项目 git 根目录绝对路径）；缺省会被服务端拒绝并要求重试，白烧一轮。MCP 进程刚重启、客户端又不提供 roots 时服务端无法自动回退
+- 返回「用户仍在思考中 … 请再次调用」并附带 `resume_token` 时，重连**原样回传该令牌**、其余参数不改；改写 brief 又不带令牌会被当成新问题再开一个弹窗
+- 收工 `zhi` 之前按任务 ID 逐个等待、读取或取消后台 Shell 任务，直到客户端明确返回 `completed`、`failed` 或 `cancelled`；仅 `kill`/`pkill` 底层进程不算终态（见核心契约第 2 条）
+- `choices` 建议 2 到 5 个明确选项；系统会自动追加「其他：自定义要求」兜底
+
+### 开发计划跟踪 (plan)
+
+**何时使用：**
+
+- 用户启用计划跟踪上下文后，在开发开始前提交计划并持续更新状态
+
+**如何使用：**
+
+- `set` 完整替换计划；`update` 只更新单项状态；`get` 查询；`clear` 清空
+- 状态按 `pending -> in_progress -> completed` 单向推进，同一时间最多一个进行中步骤
+
+### 记忆管理 (ji / memory)
+
+**何时使用：**
+
+- 对话开始：加载 `project_path`（git 根目录）下的记忆
+- 用户原始输入说「请记住」：总结后存储为合适分类
+
+**如何使用：**
+
+- `action` 只认中文枚举：加载用 `回忆`，存储用 `记忆`，整理用 `整理` / `预览整理` / `应用整理`，备份相关用 `备份列表` / `恢复备份` / `导出备份`，查看用 `列表` / `预览相似`
+- 不要猜 `load` / `recall` / `save` 等英文动作名，会被服务端拒绝并白烧一轮
+- `zhi.structured_content.context_blocks` 中 `memory_policy=save`：按返回的 category 存储；`memory_policy=never` 不得存储
+
+### 代码搜索 (sou)
+
+**何时使用：**
+
+- 分析前必须先用 `sou` 定位证据，再用 Read/Grep 确认
+
+**如何使用：**
+
+- 代码标识符通常为英文：用中文 query 时建议混入英文类名/函数名/文件名（如 `GestureRecognizer`、`ImageCodec`），可显著提升首轮命中率
+- 若第一次返回 0 文件，请拆成更具体的子问题或显式给出英文关键词重试
+- 给出模块/目录提示（如「gesture 模块」/「src/capture/」）有助于快速定位
+
+### 框架文档 (context7)
+
+**何时使用：**
+
+- AI 知识可能过时或不确定时优先查询，避免幻觉
+- 常见框架/库优先用 context7（官方文档），查不到再用 deepwiki
+- 两者信息矛盾时，以 context7（官方文档）为准
+
+**如何使用：**
+
+- `library` 格式 `owner/repo`（如 `vercel/next.js`），不确定时可用短名
+- 与 deepwiki 配合：context7 查 API 用法 → deepwiki 查内部实现；context7 查迁移指南 → deepwiki 查 breaking changes 源码
+
+### UI/UX 工具 (uiux)
+
+**何时使用：**
+
+- 涉及页面美化 / UI 描述 / 设计系统 / UI 审查时优先使用
+
+**如何使用：**
+
+- 参考返回的 `prompt` / `uiux_hits` / `project_context` 三个字段
+
+### 提示词增强 (enhance)
+
+**何时使用：**
+
+- 原始提示词模糊或口语化时
+
+**如何使用：**
+
+- 依赖 acemcp 配置；传入项目路径可启用项目上下文
+
+### Tavily AI 搜索 (tavily)
+
+**何时使用：**
+
+- 需要获取实时、最新的互联网信息时
+- 需要从指定 URL 提取结构化内容时
+
+**如何使用：**
+
+- 搜索：传入 query 即可获取 AI 回答和多条搜索结果
+- 提取：action="extract" + urls 参数，从网页提取 Markdown 内容
+- 免费每月 1000 信用点；basic 搜索 1 信用、advanced 2 信用
+
+### Exa AI 搜索 (exa)
+
+**何时使用：**
+
+- 需要语义化发现网页、论文、GitHub 仓库等内容时
+- 需要按 URL 获取网页正文时
+
+**如何使用：**
+
+- 搜索：传入 query，默认返回结果正文（max_characters 控制截断长度）
+- 提取：action="contents" + urls 参数，按 URL 获取网页正文
+- 可用 category（github/news/research paper 等）与 search_type 精准定向
+- 与 tavily 结合使用：实时资讯用 tavily，语义发现/正文提取用 exa，关键信息交叉验证
+
+### DeepWiki 仓库文档 (deepwiki)
+
+**何时使用：**
+
+- 需要理解某个 GitHub 仓库的架构、模块关系或实现细节时
+- 分析第三方依赖库的内部实现（不是官方文档，而是源码级理解）时
+- 与 context7 互补：context7 查**官方 API 文档**，deepwiki 查**仓库源码文档**
+- 深度调试：遇到框架 bug 或异常行为时，用 deepwiki 看源码实现定位根因
+- 选型对比：用 deepwiki 对比多个候选库的架构质量和设计理念
+- 迁移辅助：配合 context7 的迁移指南，用 deepwiki 查 breaking changes 的具体源码改动
+- PR/Issue 研究：用 ask 功能研究仓库的设计决策和历史背景
+
+**如何使用：**
+
+- `repo` 格式 `owner/repo`（如 `langchain-ai/langchain`、`tauri-apps/tauri`）
+- 3 种操作：`structure`（文档结构）→ `content`（章节内容）→ `ask`（智能问答）
+- 免费无需认证，直接使用
+- 优先级降级：常见框架先用 context7，小众库直接用 deepwiki

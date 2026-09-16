@@ -26,6 +26,8 @@ use tokio::process::Command;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
+use crate::mcp::utils::safe_truncate_clean;
+
 const API_BASE: &str = "https://server.self-serve.windsurf.com/exa.api_server_pb.ApiServerService";
 const AUTH_BASE: &str = "https://server.self-serve.windsurf.com/exa.auth_pb.AuthService";
 const WS_APP: &str = "windsurf";
@@ -434,20 +436,29 @@ pub async fn search(opts: SearchOptions) -> Result<SearchResult> {
             }
             let turns_left = (total_api_calls + compensated_turns).saturating_sub(turn + 1);
             if should_retry_unparsed_response(&text, unparsed_response_retried, turns_left) {
+                let sample = unparsed_sample_dir()
+                    .and_then(|dir| dump_unparsed_sample(&dir, &response, &text, turn + 1, "retry").ok());
                 log::warn!(
-                    "[fast-context] 未解析到合法工具调用，触发补偿重试: turn={}, turns_left={}, contains_tool_marker={}",
+                    "[fast-context] 未解析到合法工具调用，触发补偿重试: turn={}, turns_left={}, diag=[{}], sample={}, preview={}",
                     turn + 1,
                     turns_left,
-                    text.contains("[TOOL_CALLS]")
+                    unparsed_response_diagnostic(&text),
+                    sample.as_deref().map(Path::display).map(|p| p.to_string()).unwrap_or_else(|| "-".to_string()),
+                    unparsed_text_preview(&text)
                 );
                 unparsed_response_retried = true;
                 messages.push(ChatMessage::new(1, unparsed_response_retry_prompt(&text)));
                 turn += 1;
                 continue;
             }
+            let sample = unparsed_sample_dir()
+                .and_then(|dir| dump_unparsed_sample(&dir, &response, &text, turn + 1, "degraded").ok());
             log::warn!(
-                "[fast-context] 未解析到合法工具调用，搜索退化失败: length={}",
-                text.len()
+                "[fast-context] 未解析到合法工具调用，搜索退化失败: length={}, diag=[{}], sample={}, preview={}",
+                text.len(),
+                unparsed_response_diagnostic(&text),
+                sample.as_deref().map(Path::display).map(|p| p.to_string()).unwrap_or_else(|| "-".to_string()),
+                unparsed_text_preview(&text)
             );
             return Err(anyhow!(
                 "fast-context 未获得合法工具调用: {}",
@@ -1073,6 +1084,83 @@ fn build_chat_message(message: &ChatMessage) -> ProtobufEncoder {
     }
 
     msg
+}
+
+/// 未解析响应样本最多保留的份数（.bin/.txt 成对），超出按时间淘汰最旧。
+const UNPARSED_SAMPLE_KEEP: usize = 30;
+/// 样本文件名内的单调序号，避免同一毫秒内多次落盘互相覆盖。
+static UNPARSED_SAMPLE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// 未解析响应样本目录：与 sanshu-mcp.log 同级的 `fast-context-samples/`。
+///
+/// 中文说明（2026-09-14）：8 月以来 60 次 sou 调用里 37 次触发过「未解析到合法工具调用」补偿重试，
+/// 但失败时的原文从未被记录，分不清是模型提前收尾还是 Connect 帧解码拆错。
+/// 这里把原始帧（.bin）和解码文本（.txt）落盘，攒够样本后再决定修解码器还是做部分抢救。
+fn unparsed_sample_dir() -> Option<PathBuf> {
+    dirs::config_dir().map(|dir| {
+        dir.join("sanshu")
+            .join("log")
+            .join("fast-context-samples")
+    })
+}
+
+/// 把一次未解析响应落盘为 `<毫秒时间戳>-<序号>-turn<N>-<原因>.bin/.txt`，返回不带扩展名的路径。
+fn dump_unparsed_sample(
+    dir: &Path,
+    response: &[u8],
+    text: &str,
+    turn: usize,
+    reason: &str,
+) -> std::io::Result<PathBuf> {
+    fs::create_dir_all(dir)?;
+    let stamp = SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let seq = UNPARSED_SAMPLE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let base = dir.join(format!("{stamp}-{seq:04}-turn{turn}-{reason}"));
+    fs::write(base.with_extension("bin"), response)?;
+    fs::write(base.with_extension("txt"), text)?;
+    prune_unparsed_samples(dir, UNPARSED_SAMPLE_KEEP);
+    Ok(base)
+}
+
+/// 只保留最新 `keep_pairs` 份样本；文件名以毫秒时间戳开头，按名字排序即按时间排序。
+fn prune_unparsed_samples(dir: &Path, keep_pairs: usize) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    let mut bins: Vec<PathBuf> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().map(|ext| ext == "bin").unwrap_or(false))
+        .collect();
+    if bins.len() <= keep_pairs {
+        return;
+    }
+    bins.sort();
+    for path in bins.iter().take(bins.len() - keep_pairs) {
+        let _ = fs::remove_file(path);
+        let _ = fs::remove_file(path.with_extension("txt"));
+    }
+}
+
+/// 日志用预览：保留头 240 字与尾 200 字。JSON 截断点几乎总在尾部，只截头会把关键信息截掉。
+fn unparsed_text_preview(text: &str) -> String {
+    const HEAD: usize = 240;
+    const TAIL: usize = 200;
+    let total = text.chars().count();
+    if total <= HEAD + TAIL {
+        return safe_truncate_clean(text, HEAD + TAIL);
+    }
+    let head: String = text.chars().take(HEAD).collect();
+    let tail: String = text.chars().skip(total - TAIL).collect();
+    format!(
+        "{} …[省略 {} 字]… {}",
+        safe_truncate_clean(&head, HEAD),
+        total - HEAD - TAIL,
+        safe_truncate_clean(&tail, TAIL)
+    )
 }
 
 fn parse_response(data: &[u8]) -> Result<Option<ParsedToolCall>> {
@@ -3261,6 +3349,45 @@ fn jwt_exp(token: &str) -> Option<u64> {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn dump_unparsed_sample_writes_pair_and_prunes_oldest() {
+        let dir = tempdir().expect("tempdir");
+        let mut bases = Vec::new();
+        for i in 0..(UNPARSED_SAMPLE_KEEP + 3) {
+            let base = dump_unparsed_sample(dir.path(), b"\x00raw", &format!("text-{i}"), 2, "retry")
+                .expect("dump ok");
+            assert!(base.with_extension("bin").exists());
+            assert!(base.with_extension("txt").exists());
+            bases.push(base);
+        }
+        let remaining = fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .filter(|e| e.path().extension().map(|x| x == "bin").unwrap_or(false))
+            .count();
+        assert_eq!(remaining, UNPARSED_SAMPLE_KEEP, "只保留最新 N 份");
+        // 最早的 3 份（.bin 与 .txt）应被淘汰，最新一份保留
+        for base in &bases[..3] {
+            assert!(!base.with_extension("bin").exists());
+            assert!(!base.with_extension("txt").exists());
+        }
+        assert!(bases.last().unwrap().with_extension("txt").exists());
+    }
+
+    #[test]
+    fn unparsed_text_preview_keeps_head_and_tail() {
+        let short = "[TOOL_CALLS]restricted_exec[ARGS]{\"a\":1}";
+        assert_eq!(unparsed_text_preview(short), short);
+
+        let body = "x".repeat(1000);
+        let text = format!("HEAD-START {body} TAIL-END");
+        let preview = unparsed_text_preview(&text);
+        assert!(preview.starts_with("HEAD-START"), "保留开头: {preview}");
+        assert!(preview.ends_with("TAIL-END"), "保留结尾: {preview}");
+        assert!(preview.contains("省略"), "标注省略: {preview}");
+        assert!(preview.chars().count() < 500, "预览应被压缩: {}", preview.chars().count());
+    }
 
     #[test]
     fn protobuf_varint_round_trip() {

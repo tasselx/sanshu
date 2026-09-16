@@ -185,7 +185,7 @@
 - **多会话隔离**（2026-06）：弹窗按「workspace + 内容指纹」键控，同一项目开多个会话不再互相串台抢答
 - **孤儿回复找回**（2026-06）：AI 停止轮询后用户才提交的回复会持久化到 `~/.sanshu/orphan_replies/`，下次 zhi 调用自动附带提示，不再静默丢失
 - **防 token 膨胀**（2026-06）：交互历史按字段截断落盘（4000 字符）；用户回复超 50K 字符时附「只引用关键片段」提示，避免大段粘贴在后续对话中反复计费
-- **Cursor Hooks 配套**：`scripts/cursor-hooks/` 提供按会话隔离的 stop/postToolUse hook（防 AI 提前收尾、防跨窗口误拦），安装方式见该目录 README
+- **Cursor Hooks 配套**：`scripts/cursor-hooks/` 仅保留 Shell 的 RTK 预处理，不修改工具返回，也不在 agent 结束时注入续跑请求；安装方式见该目录 README
 
 <div align="center">
   <img src="screenshots/popup.png" alt="Zhi Popup Interaction" width="700" />

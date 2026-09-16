@@ -161,6 +161,10 @@ pub async fn handle_system_exit_request(
 
 /// 执行实际的退出操作
 async fn perform_exit(app: AppHandle) -> Result<(), String> {
+    // 中文说明（2026-09-14）：关窗按钮/退出快捷键都汇聚到这里；stdout 模式下先兜底写出
+    // 取消信号，保证 MCP 服务端拿到显式 CANCELLED 而不是空输出。已提交过则此调用为空操作。
+    crate::ui::commands::emit_cancel_if_unanswered("perform_exit");
+
     // 关闭所有窗口
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.close();

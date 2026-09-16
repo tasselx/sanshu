@@ -13,8 +13,11 @@ pub struct ZhiRequest {
     #[schemars(description = "是否按 Markdown 格式处理内容，默认 true")]
     #[serde(default = "default_render_markdown")]
     pub render_markdown: bool,
-    #[schemars(description = "工作区根目录绝对路径（必填）")]
-    pub workspace: String,
+    #[schemars(
+        description = "工作区根目录绝对路径（请务必提供；缺省时仅当客户端提供唯一 root 才会自动回退）"
+    )]
+    #[serde(default)]
+    pub workspace: Option<String>,
     #[schemars(description = "AI 实例显示名称（可选，未提供时按请求短码回退）")]
     #[serde(default)]
     pub agent_label: Option<String>,
@@ -27,6 +30,11 @@ pub struct ZhiRequest {
     #[schemars(description = "UI/UX 上下文追加原因（可选）")]
     #[serde(default)]
     pub uiux_reason: Option<String>,
+    #[schemars(
+        description = "重连令牌（可选）：仅当上一次 zhi 返回「继续等待」并给出 resume_token 时原样回传，用于精确重连同一弹窗；首次提问不要填"
+    )]
+    #[serde(default)]
+    pub resume_token: Option<String>,
 }
 
 fn default_render_markdown() -> bool {

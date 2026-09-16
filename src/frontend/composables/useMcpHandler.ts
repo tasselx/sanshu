@@ -2,6 +2,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { ref } from 'vue'
 import { renderWechatNotificationImages } from '../utils/wechatNotificationImage'
+import { cancelMcpResponse, resetMcpSubmission, submitMcpResponse } from './useMcpSubmission'
 
 export type WechatNotificationPhase
   = | 'idle'
@@ -214,9 +215,9 @@ export function useMcpHandler() {
   async function handleMcpResponse(response: any) {
     try {
       resetWechatNotification()
-      // 通过Tauri命令发送响应并退出应用
-      await invoke('send_mcp_response', { response })
-      await invoke('exit_app')
+      // 中文说明（2026-09-14）：弹窗组件已通过 submitMcpResponse 发送并退出，这里再调一次
+      // 会因 phase=submitted 被跳过；仅当发射方没有自行提交时才真正发送，保持单一入口。
+      await submitMcpResponse(response)
     }
     catch (error) {
       console.error('MCP响应处理失败:', error)
@@ -229,9 +230,9 @@ export function useMcpHandler() {
   async function handleMcpCancel() {
     try {
       resetWechatNotification()
-      // 发送取消信息并退出应用
-      await invoke('send_mcp_response', { response: 'CANCELLED' })
-      await invoke('exit_app')
+      // 中文说明（2026-09-14）：已提交则只退出、发送中则不动作、未提交才送出 CANCELLED，
+      // 避免提交成功后关窗再补发一次 CANCELLED 触发后端「重复提交」告警。
+      await cancelMcpResponse()
     }
     catch (error) {
       // 静默处理MCP取消错误
@@ -275,6 +276,8 @@ export function useMcpHandler() {
 
     // 根据配置决定是否显示前端弹窗
     if (shouldShowFrontendPopup) {
+      // 新请求到达，重置提交状态
+      resetMcpSubmission()
       // 设置请求数据和显示状态
       mcpRequest.value = request
       showMcpPopup.value = true

@@ -156,3 +156,18 @@ fn parse_icon_popup_response(response_str: &str) -> Result<IconPopupResponse> {
     );
     anyhow::bail!("解析图标保存响应失败：输出不是有效的结构化 JSON")
 }
+
+#[cfg(test)]
+mod exit_cancel_tests {
+    use super::*;
+
+    /// GUI 退出兜底在 --icon-request 模式写出的取消形态必须被本解析器识别为用户取消。
+    #[test]
+    fn exit_fallback_cancel_payload_parses_as_cancelled() {
+        let r = parse_icon_popup_response(r#"{"status":"cancelled"}"#).expect("parse");
+        assert_eq!(r.status, "cancelled");
+        assert_eq!(r.saved_count, 0);
+        // 空输出同样视为取消（窗口直接关闭的旧路径）
+        assert_eq!(parse_icon_popup_response("").expect("parse").status, "cancelled");
+    }
+}

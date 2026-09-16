@@ -13,7 +13,8 @@ use rmcp::service::Peer;
 use rmcp::RoleServer;
 
 use crate::mcp::handlers::{
-    parse_mcp_response_with_structured, poll_or_start_popup, take_orphan_reply_notice,
+    is_cancel_signal, parse_mcp_response_with_structured, poll_or_start_popup,
+    take_orphan_reply_for_request, take_orphan_reply_notice,
     PopupPoll, POPUP_POLL_WINDOW, RESPONSE_LEN_WARN_THRESHOLD,
 };
 use crate::mcp::utils::safe_truncate_clean;
@@ -48,6 +49,60 @@ const BRIEF_LEN_WARN_THRESHOLD: usize = 4000;
 static ZHI_CALL_CADENCE: Lazy<Mutex<HashMap<String, (u64, Instant)>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
+/// 向客户端请求 `roots/list` 的最长等待。
+///
+/// 中文说明：rmcp 0.12 的 `Peer::list_roots` 本身没有超时；客户端若声明了能力却不回复，
+/// zhi 会在弹窗与心跳都未启动的阶段无限期挂起。3 秒足够覆盖本地 IDE 的正常往返。
+const ROOTS_LIST_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// 把 workspace 参数归一：trim 后为空视为未提供；去掉末尾路径分隔符（保留文件系统根）。
+///
+/// 中文说明（2026-09-14）：显式传入、roots 回退、上次 workspace 三条来源都经这里，
+/// 保证 `/project` 与 `/project/` 归一为同一值——弹窗重连 key 含 workspace，尾分隔符不一致
+/// 会让不带令牌的重连对不上 key。
+fn normalize_workspace(workspace: Option<String>) -> Option<String> {
+    let w = workspace?.trim().to_string();
+    if w.is_empty() {
+        return None;
+    }
+    Some(strip_trailing_separators(&w))
+}
+
+/// 去掉末尾的 `/`（Windows 上还包括 `\`），但保留 `/`、`C:\`、`C:/` 这类根路径。
+fn strip_trailing_separators(path: &str) -> String {
+    let mut s = path.to_string();
+    loop {
+        let last = s.chars().last();
+        let is_sep = matches!(last, Some('/')) || (cfg!(windows) && matches!(last, Some('\\')));
+        if !is_sep || s.len() <= 1 {
+            break;
+        }
+        // 盘符根 "C:\" / "C:/"：长度 3 且第二个字节是冒号
+        if s.len() == 3 && s.as_bytes()[1] == b':' {
+            break;
+        }
+        s.pop();
+    }
+    s
+}
+
+/// 把 MCP roots 的 `file://` URI 转成本地路径。
+///
+/// 中文说明：走标准 URL 解析而非裸剥前缀——`%20` 等百分号编码要解码，
+/// Windows 的 `file:///C:/x` 要还原成盘符路径，`file://localhost/` 主机形式也要接受。
+/// 非 file 协议或无法映射为本地路径的一律返回 None。
+fn root_uri_to_path(uri: &str) -> Option<std::path::PathBuf> {
+    let url = url::Url::parse(uri).ok()?;
+    if url.scheme() != "file" {
+        return None;
+    }
+    let path = url.to_file_path().ok()?;
+    if path.as_os_str().is_empty() {
+        return None;
+    }
+    Some(path)
+}
+
 /// 代码审阅记录工具
 ///
 /// 汇总审阅内容、候选处理项与结构化反馈
@@ -60,6 +115,86 @@ impl InteractionTool {
         let request_id = generate_request_id();
         // 中文说明：无 peer 的入口（CLI/测试等）不发送 progress 心跳。
         Self::zhi_with_request_id(request, request_id, None, None).await
+    }
+
+    /// 缺省 workspace 时的回退：仅当客户端提供**唯一**本地 root 时采用。
+    ///
+    /// 中文说明（2026-09-15）：
+    ///   0) 先把空串/纯空白归一为 None，避免 `Some("")` 绕过分发层的 is_none 检查；
+    ///   1) 已带非空 workspace → 去尾分隔符后沿用，不覆盖 AI 的显式选择；
+    ///   2) 否则、且客户端声明了 roots 能力，请求 `roots/list`（带 ROOTS_LIST_TIMEOUT 超时，
+    ///      rmcp 默认不超时而此时弹窗与心跳都未启动）；恰有一个本地目录 root 时采用；
+    ///      多个 root 不猜，返回候选列表交由分发层提示 AI 明确指定。
+    /// 不再回退到「本进程上次 workspace」：一个 MCP 进程会服务多个工作区，漏传时归到上一个
+    /// 项目会污染弹窗 key、历史、索引与孤儿回复，为省一次参数重试冒串项目的风险不值得。
+    /// 此函数只读不抛错，任何失败都静默降级为 None。
+    /// 返回值：多 roots 无法判定时的候选列表（正常为空），供分发层写进指引。
+    pub async fn resolve_workspace(request: &mut ZhiRequest, peer: &Peer<RoleServer>) -> Vec<String> {
+        request.workspace = normalize_workspace(request.workspace.take());
+        if request.workspace.is_some() {
+            return Vec::new();
+        }
+
+        let client_supports_roots = peer
+            .peer_info()
+            .map(|info| info.capabilities.roots.is_some())
+            .unwrap_or(false);
+        if !client_supports_roots {
+            log_debug!("[zhi] 客户端未声明 roots 能力，跳过 roots 回退");
+            return Vec::new();
+        }
+
+        match tokio::time::timeout(ROOTS_LIST_TIMEOUT, peer.list_roots()).await {
+            Ok(Ok(result)) => {
+                let mut candidates: Vec<String> = Vec::new();
+                for root in &result.roots {
+                    let Some(p) = root_uri_to_path(&root.uri) else { continue };
+                    if !p.is_dir() {
+                        log_debug!(
+                            "[zhi] roots 条目不是本地目录，跳过: uri={}, path={}",
+                            root.uri,
+                            p.display()
+                        );
+                        continue;
+                    }
+                    if let Some(n) = normalize_workspace(Some(p.to_string_lossy().into_owned())) {
+                        if !candidates.contains(&n) {
+                            candidates.push(n);
+                        }
+                    }
+                }
+                match candidates.len() {
+                    0 => Vec::new(),
+                    1 => {
+                        let path = candidates.remove(0);
+                        log_important!(info, "[zhi] workspace 缺省，已从客户端唯一 root 回退: {}", path);
+                        request.workspace = Some(path);
+                        Vec::new()
+                    }
+                    _ => {
+                        log_important!(
+                            warn,
+                            "[zhi] workspace 缺省且客户端有 {} 个 roots，不猜归属，交由 AI 明确指定: {:?}",
+                            candidates.len(),
+                            candidates
+                        );
+                        candidates
+                    }
+                }
+            }
+            Ok(Err(e)) => {
+                log_debug!("[zhi] roots/list 请求失败: {}", e);
+                Vec::new()
+            }
+            Err(_) => {
+                log_important!(
+                    warn,
+                    "[zhi] roots/list 超过 {}s 未响应，放弃 roots 回退",
+                    ROOTS_LIST_TIMEOUT.as_secs()
+                );
+                Vec::new()
+            }
+        }
     }
 
     /// 带 request_id 的 zhi 调用入口
@@ -75,6 +210,10 @@ impl InteractionTool {
         // 中文说明：客户端在 tools/call 的 _meta.progressToken 中提供的进度令牌（可能为空）。
         client_progress_token: Option<ProgressToken>,
     ) -> Result<CallToolResult, McpError> {
+        // 中文说明（2026-09-14）：workspace 已由 MCP 分发层 resolve_workspace 尽力回退；
+        // 到这里若仍为 None，则以空串占位（GUI/节流仅用于展示与统计，不影响弹窗功能）。
+        let workspace = normalize_workspace(request.workspace.clone()).unwrap_or_default();
+
         // 记录 UI/UX 上下文控制信号，便于审计排查
         if request.uiux_intent.is_some()
             || request.uiux_context_policy.is_some()
@@ -95,7 +234,7 @@ impl InteractionTool {
             request.brief.len(),
             safe_truncate_clean(&request.brief, 200),
             request.choices.len(),
-            request.workspace.as_str()
+            workspace.as_str()
         );
 
         // 中文说明（2026-06-07 调优）：brief 过长时打 warn 诊断，提示上游"精简 brief / 合并 zhi"；
@@ -115,7 +254,7 @@ impl InteractionTool {
         {
             let now = Instant::now();
             if let Ok(mut map) = ZHI_CALL_CADENCE.lock() {
-                let entry = map.entry(request.workspace.clone()).or_insert((0, now));
+                let entry = map.entry(workspace.clone()).or_insert((0, now));
                 entry.0 = entry.0.saturating_add(1);
                 let gap_secs = now.duration_since(entry.1).as_secs();
                 entry.1 = now;
@@ -123,7 +262,7 @@ impl InteractionTool {
                 log_important!(
                     info,
                     "[zhi] 节流监控: workspace={:?}, 第 {} 次 zhi 调用, 距上次={}s（间隔越短=越像保活/汇报空转，每次都重发整段上下文烧 token）",
-                    request.workspace.as_str(),
+                    workspace.as_str(),
                     nth,
                     gap_secs
                 );
@@ -135,7 +274,15 @@ impl InteractionTool {
 
         // 中文说明（2026-06-11）：workspace 随后会移交给 popup_request，先留一份用于
         // Done 时检索本 workspace 的「孤儿回复」（无人轮询时用户才提交的历史回答）。
-        let workspace_for_notice = request.workspace.clone();
+        let workspace_for_notice = workspace.clone();
+
+        // 中文说明（2026-09-14）：AI 从上一次 Pending 结果拿到的弹窗身份令牌，用于精确重连。
+        let resume_token = request
+            .resume_token
+            .as_deref()
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .map(str::to_string);
 
         let popup_request = PopupRequest {
             id: request_id.clone(),
@@ -146,7 +293,7 @@ impl InteractionTool {
                 Some(choices)
             },
             is_markdown: request.render_markdown,
-            project_root_path: Some(request.workspace),
+            project_root_path: Some(workspace),
             agent_label: request.agent_label,
             // 透传 UI/UX 上下文控制信号
             uiux_intent: request.uiux_intent,
@@ -229,7 +376,15 @@ impl InteractionTool {
         // 放入阻塞线程池，避免阻塞 tokio 运行时，也保证上面的心跳任务能并行推进。
         // abort_flag 在心跳检测到连接断开时置 false，使轮询提前退出。
         let popup_outcome =
-            tokio::task::spawn_blocking(move || poll_or_start_popup(&popup_request, POPUP_POLL_WINDOW, Some(abort_flag_for_poll))).await;
+            tokio::task::spawn_blocking(move || {
+                poll_or_start_popup(
+                    &popup_request,
+                    POPUP_POLL_WINDOW,
+                    Some(abort_flag_for_poll),
+                    resume_token.as_deref(),
+                )
+            })
+            .await;
 
         // 中文说明：无论弹窗成功、失败还是 join 异常，都要先停掉心跳任务，避免任务泄漏。
         if let Some(handle) = heartbeat {
@@ -276,19 +431,86 @@ impl InteractionTool {
                     meta: None,
                 })
             }
-            Ok(PopupPoll::Pending) => {
-                // 中文说明：本次等待窗口（≈600s）已到但用户还没操作——依赖心跳保活远超 5 分钟，
-                // 弹窗仍开着。回写「继续等待」语义，触发 AI 立即重连同一弹窗，不结束本轮。
+            Ok(PopupPoll::Pending { resume_token }) => {
+                // 中文说明：本次等待窗口已到但用户还没操作——弹窗仍开着。回写「继续等待」语义并
+                // 附带弹窗身份令牌，触发 AI 立即重连同一弹窗，不结束本轮。带令牌重连按身份匹配，
+                // 不再依赖 brief 逐字相同；未带令牌时仍要求参数原样。
                 log_important!(
                     info,
-                    "[zhi] 本次返回 Pending（窗口到、用户未响应，提示 AI 重连续等）: request_id={}",
-                    request_id
+                    "[zhi] 本次返回 Pending（窗口到、用户未响应，提示 AI 携带 resume_token 重连）: request_id={}, resume_token={}",
+                    request_id,
+                    resume_token
                 );
-                Ok(CallToolResult::success(vec![Content::text(
+                Ok(CallToolResult::success(vec![Content::text(format!(
                     "用户仍在思考中，尚未在弹窗中作出选择（本次等待已达上限，弹窗仍开着）。\
-                     请再次调用 `zhi` 工具继续等待用户回复，禁止结束本轮对话或生成最终答复。"
-                        .to_string(),
-                )]))
+                     请立即再次调用 `zhi` 工具继续等待：其余参数原样不改，并额外传入 \
+                     `resume_token`=\"{}\" 以精确重连这同一个弹窗。禁止结束本轮对话或生成最终答复。",
+                    resume_token
+                ))]))
+            }
+            Ok(PopupPoll::TokenExpired { token }) => {
+                // 中文说明（2026-09-15）：令牌失效不降级。给 AI 专门指引，防止它带着同一令牌
+                // 按通用「弹窗失败请重试」指引死循环；若用户在此期间提交过，附孤儿回复路径。
+                log_important!(
+                    warn,
+                    "[zhi] resume_token 已失效，拒绝重连: request_id={}, token={}",
+                    request_id,
+                    token
+                );
+                // 只按该令牌（即弹窗 request_id）精确领取孤儿回复，不动同 workspace 其它弹窗的回复。
+                // 领到的是 GUI 原始响应，走与正常 Done 完全相同的解析路径，区分三种情形：
+                //   有效回复 → 当作该弹窗的用户回答交付（is_error=false，保留 structured_content）；
+                //   取消/关窗 → 用户没给内容，仍需确认；
+                //   未领到   → 无法判定，仍需确认。
+                let header = format!(
+                    "resume_token=\"{}\" 已失效：它对应的弹窗已结束（用户已回复并被另一路调用收走，\
+                     或超过保留期已回收）。不要再携带这个 resume_token 重试。",
+                    token
+                );
+                match take_orphan_reply_for_request(&token) {
+                    Some(orphan) if !is_cancel_signal(&orphan.response) => {
+                        let parsed = parse_mcp_response_with_structured(&orphan.response)?;
+                        let mut content = vec![Content::text(format!(
+                            "{}\n\n以下是该弹窗的用户回复（按 request_id 精确领取，来源文件：{}），请直接采用：",
+                            header,
+                            orphan.path.display()
+                        ))];
+                        content.extend(parsed.content);
+                        Ok(CallToolResult {
+                            content,
+                            is_error: Some(false),
+                            meta: None,
+                            structured_content: parsed.structured_content,
+                        })
+                    }
+                    Some(orphan) => Ok(CallToolResult {
+                        content: vec![Content::text(format!(
+                            "{}\n\n该弹窗记录到的用户操作是「取消/关闭」，没有给出内容（来源文件：{}）。\n\n\
+                             【处理指引】\n\
+                             1) 这不是确认，也不是结束信号；\n\
+                             2) 若仍需用户确认，去掉 resume_token、以新的 brief 重新调用 `zhi`；\n\
+                             3) 禁止因此结束本轮对话。",
+                            header,
+                            orphan.path.display()
+                        ))],
+                        is_error: Some(true),
+                        meta: None,
+                        structured_content: None,
+                    }),
+                    None => Ok(CallToolResult {
+                        content: vec![Content::text(format!(
+                            "{}\n\n未能领取该弹窗的已保存回复——可能已被另一路调用收走、服务进程曾重启、\
+                             文件保存、读取或解析失败，或用户从未提交，无法据此判定用户已确认。\n\n\
+                             【处理指引】\n\
+                             1) 若仍需用户确认，去掉 resume_token、以新的 brief 重新调用 `zhi`；\n\
+                             2) 禁止因此结束本轮对话。",
+                            header
+                        ))],
+                        is_error: Some(true),
+                        meta: None,
+                        structured_content: None,
+                    }),
+                }
             }
             Ok(PopupPoll::Suspended { reconnects, waited_secs }) => {
                 // 重连次数已达上限（默认 5 次），不再要求 AI 重连以节省 token。
@@ -334,5 +556,93 @@ impl InteractionTool {
                 })
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod workspace_fallback_tests {
+    use super::*;
+
+    #[test]
+    fn blank_workspace_normalizes_to_none() {
+        assert_eq!(normalize_workspace(None), None);
+        assert_eq!(normalize_workspace(Some(String::new())), None);
+        assert_eq!(normalize_workspace(Some("   \t".into())), None);
+        assert_eq!(
+            normalize_workspace(Some("  /tmp/ws  ".into())),
+            Some("/tmp/ws".into())
+        );
+    }
+
+    #[test]
+    fn trailing_separators_are_stripped_but_roots_kept() {
+        assert_eq!(strip_trailing_separators("/project/"), "/project");
+        assert_eq!(strip_trailing_separators("/project///"), "/project");
+        assert_eq!(strip_trailing_separators("/"), "/");
+        assert_eq!(
+            normalize_workspace(Some("/project/".into())),
+            normalize_workspace(Some("/project".into()))
+        );
+        if cfg!(windows) {
+            assert_eq!(strip_trailing_separators(r"C:\proj\"), r"C:\proj");
+            assert_eq!(strip_trailing_separators(r"C:\"), r"C:\");
+            assert_eq!(strip_trailing_separators("C:/"), "C:/");
+        }
+    }
+
+    #[test]
+    fn non_file_uri_is_rejected() {
+        assert!(root_uri_to_path("https://example.com/repo").is_none());
+        assert!(root_uri_to_path("not a uri").is_none());
+    }
+
+    /// `file://remotehost/share`：Unix 上无法映射为本地路径；Windows 上 url 会转成 UNC 路径
+    /// `\\remotehost\share`，实现不主动拒绝（后续 is_dir 校验兜底），按平台分别断言。
+    #[cfg(unix)]
+    #[test]
+    fn unix_rejects_remote_host_file_uri() {
+        assert!(root_uri_to_path("file://remotehost/share").is_none());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_maps_remote_host_file_uri_to_unc() {
+        let p = root_uri_to_path("file://remotehost/share").expect("unc path");
+        assert_eq!(p.to_string_lossy(), r"\\remotehost\share");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_file_uri_decodes_percent_encoding() {
+        let p = root_uri_to_path("file:///Users/me/My%20Project").expect("path");
+        assert_eq!(p.to_string_lossy(), "/Users/me/My Project");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_file_uri_accepts_localhost_host() {
+        let p = root_uri_to_path("file://localhost/tmp/ws/").expect("path");
+        assert_eq!(p.to_string_lossy(), "/tmp/ws/");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_file_uri_decodes_percent_encoding() {
+        let p = root_uri_to_path("file:///C:/Users/me/My%20Project").expect("path");
+        assert_eq!(p.to_string_lossy(), r"C:\Users\me\My Project");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_file_uri_accepts_localhost_host() {
+        let p = root_uri_to_path("file://localhost/C:/ws/").expect("path");
+        assert_eq!(p.to_string_lossy(), r"C:\ws\");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_drive_uri_maps_to_drive_path() {
+        let p = root_uri_to_path("file:///C:/Users/me/proj").expect("path");
+        assert_eq!(p.to_string_lossy(), r"C:\Users\me\proj");
     }
 }

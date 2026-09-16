@@ -6,6 +6,7 @@ import { useDialog, useMessage } from 'naive-ui'
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 
 import { useAcemcpSync } from '../../composables/useAcemcpSync'
+import { submitMcpResponse } from '../../composables/useMcpSubmission'
 import { useMcpToolsReactive } from '../../composables/useMcpTools'
 import { getContextPolicyStatus, shouldShowPolicyIndicator } from '../../utils/conditionalContext'
 import PopupActions from './PopupActions.vue'
@@ -468,11 +469,8 @@ async function handleSubmit() {
       await recordZhiHistory()
     }
     else {
-      // 实际发送响应
-      await invoke('send_mcp_response', { response })
-      // 发送成功后记录历史
-      await recordZhiHistory()
-      await invoke('exit_app')
+      // 实际发送响应（唯一提交入口；发送成功后记录历史，再退出）
+      await submitMcpResponse(response, { afterSend: recordZhiHistory })
     }
 
     emit('response', response)
@@ -525,8 +523,7 @@ async function handleContinue() {
     }
     else {
       // 实际发送继续请求
-      await invoke('send_mcp_response', { response })
-      await invoke('exit_app')
+      await submitMcpResponse(response)
     }
 
     emit('response', response)
@@ -581,9 +578,9 @@ async function handleEnhance() {
       await recordZhiHistory(buildLocalEnhanceHistorySummary(rawInput))
     }
     else {
-      await invoke('send_mcp_response', { response })
-      await recordZhiHistory(buildLocalEnhanceHistorySummary(rawInput))
-      await invoke('exit_app')
+      await submitMcpResponse(response, {
+        afterSend: () => recordZhiHistory(buildLocalEnhanceHistorySummary(rawInput)),
+      })
     }
 
     emit('response', response)

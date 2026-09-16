@@ -240,7 +240,14 @@ pub fn build_tauri_app() -> Builder<tauri::Wry> {
 
 /// 运行Tauri应用
 pub fn run_tauri_app() {
-    build_tauri_app()
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+    let app = build_tauri_app()
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+    // 中文说明（2026-09-14）：⌘Q / 系统级退出不经过 perform_exit；在运行时退出事件里再兜底
+    // 一次取消信号（幂等，已写出过则无动作），确保 stdout 模式下任何退出都有显式响应。
+    app.run(|_app_handle, event| {
+        if let tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit = event {
+            crate::ui::commands::emit_cancel_if_unanswered("run_event");
+        }
+    });
 }

@@ -2,12 +2,12 @@ use anyhow::Result;
 use rmcp::model::*;
 use rmcp::{
     model::ErrorData as McpError,
-    service::{RequestContext, ServerInitializeError},
+    service::{NotificationContext, RequestContext, ServerInitializeError},
     transport::stdio,
     RoleServer, ServerHandler, ServiceExt,
 };
 use std::collections::HashMap;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use super::tools::{
     Context7Tool, DeepwikiTool, EnhanceTool, ExaTool, IconTool, InteractionTool, MemoryTool,
@@ -27,6 +27,8 @@ use crate::{log_debug, log_important};
 
 const WINDSURF_ZHI_ALIAS: &str = "work_note";
 const MCP_PROFILE_ENV: &str = "SANSHU_MCP_PROFILE";
+/// 握手完成后补发 tools/list_changed 的延迟，见 `ZhiServer::on_initialized`。
+const TOOL_LIST_CHANGED_DELAY: Duration = Duration::from_millis(1500);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum McpClientProfile {
@@ -127,6 +129,29 @@ impl ZhiServer {
         }
     }
 
+    /// zhi 参数错误时返回给 AI 的修正指引。
+    ///
+    /// 中文说明：zhi 是强制交互入口，参数错误不能以 hard Err 返回——
+    /// 否则 Cursor 等客户端会直接结束本轮、把后续输入计为新一轮 request。
+    /// 改为 success + is_error + 修正指引，让 AI 立刻在同一轮内重试。
+    fn zhi_param_guidance(reason: &str) -> CallToolResult {
+        let guidance = format!(
+            "zhi 参数解析失败: {}\n\n\
+             【处理指引】\n\
+             1) 必填字段：`brief`（string）；`workspace`（工作区绝对路径 string）请务必一并提供；\n\
+             2) 可选字段：`choices`（string 数组）、`render_markdown`（bool）、\
+             `resume_token`（string，仅在上一次 zhi 返回「继续等待」并给出令牌时原样回传）；\n\
+             3) 请按以上 schema 修正后立即重新调用 `zhi`，禁止因此结束本轮对话。",
+            reason
+        );
+        CallToolResult {
+            content: vec![Content::text(guidance)],
+            is_error: Some(true),
+            meta: None,
+            structured_content: None,
+        }
+    }
+
     fn zhi_public_tool_name(&self) -> &'static str {
         if self.mcp_profile.is_windsurf() {
             WINDSURF_ZHI_ALIAS
@@ -158,11 +183,15 @@ impl ZhiServer {
          【强制交互约束】\n\
          1) 任何方案确认、计划变更、任务收尾必须通过本工具向用户展示并等待回复；\n\
          2) 未收到用户明确的「完成/结束/不需要再问」类指令前，禁止主动结束本轮对话；\n\
-         3) 【保活·最重要】若本次返回含「用户仍在思考中」「本次等待已达上限」「弹窗仍开着」\
+         3) 【收尾前置条件】记录本轮每个后台 Shell 任务 ID；调用本工具做任务收尾前，必须逐个等待、\
+         读取或取消，直到客户端明确返回 completed、failed 或 cancelled 终态。任一任务 ID 没有终态就\
+         禁止收尾；仅 kill/pkill 底层进程、看到产物存在或后续命令成功都不算终态，否则 Cursor 仍可能\
+         以 backgroundTaskCompletionAction 自动新建一条 request；\n\
+         4) 【保活·最重要】若本次返回含「用户仍在思考中」「本次等待已达上限」「弹窗仍开着」\
          「请再次调用」「继续等待」「用户暂未给出回应」「用户未提供任何内容」等任一字样，\
          这是正常的防超时保活信号（弹窗还开着、用户没结束），你必须**立即无条件再次调用本工具**\
          继续等待，禁止把它当作失败或结束理由，禁止输出任何收尾/告别/总结类文本作为本轮最后一条消息；\n\
-         4) 若本工具返回错误（参数错误、弹窗失败等），先按错误提示修正后立刻重试，\
+         5) 若本工具返回错误（参数错误、弹窗失败等），先按错误提示修正后立刻重试，\
          不要因一次失败就结束对话。"
     }
 
@@ -171,14 +200,13 @@ impl ZhiServer {
     }
 
     /// 非 zhi 的 sanshu 工具成功返回后追加收尾提醒，降低「调了 ji/sou 却未 zhi 就 stop」概率。
-    /// Cursor stop hook 会拦截这类 turn 并注入 followup（多一条 request）；提示放在工具结果末尾，
-    /// 比仅依赖 workspace rule 更靠近模型决策点。成功且未含相同标记时才追加。
+    /// 提示放在工具结果末尾，比仅依赖 workspace rule 更靠近模型决策点。成功且未含相同标记时才追加。
     fn attach_zhi_closeout_reminder(tool_name: &str, mut result: CallToolResult) -> CallToolResult {
         if Self::is_zhi_entry(tool_name) || result.is_error.unwrap_or(false) {
             return result;
         }
         const MARKER: &str = "【sanshu 收尾】";
-        const FOOTER: &str = "【sanshu 收尾】若本轮任务还可继续请直接干活；若可结束，必须先调用 zhi 做收尾确认，禁止直接结束对话（否则 stop hook 会强制续跑）。";
+        const FOOTER: &str = "【sanshu 收尾】若本轮任务还可继续请直接干活；若可结束，先确认所有后台 Shell 任务 ID 均已取得 completed/failed/cancelled 终态，再调用 zhi 做收尾确认，禁止直接结束对话。";
         let already = result.content.iter().any(|c| {
             c.as_text()
                 .map(|t| t.text.contains(MARKER))
@@ -195,7 +223,12 @@ impl ServerHandler for ZhiServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo {
             protocol_version: ProtocolVersion::V_2024_11_05,
-            capabilities: ServerCapabilities::builder().enable_tools().build(),
+            // 中文说明：声明 tools.listChanged，配合 on_initialized 里补发的 list_changed 通知，
+            // 让 Cursor 这类「启动瞬间重启连接、之后不再重拉工具列表」的客户端能刷新到完整工具集。
+            capabilities: ServerCapabilities::builder()
+                .enable_tools()
+                .enable_tool_list_changed()
+                .build(),
             // 中文说明：MCP 初始化元数据也可能被客户端侧规则扫描，这里保持中性表述。
             server_info: Implementation {
                 name: "sanshu-mcp".to_string(),
@@ -216,6 +249,25 @@ impl ServerHandler for ZhiServer {
         _context: RequestContext<RoleServer>,
     ) -> Result<ServerInfo, McpError> {
         Ok(self.get_info())
+    }
+
+    /// 客户端完成 initialize 握手后补发一次 tools/list_changed。
+    ///
+    /// 中文说明（2026-09-14）：Cursor 启动时会在连接建立后约 40-60ms 内 stop 并重连一次；
+    /// 三术 initialize 只需 ~10ms，首次 tools/list 恰好落在这个窗口里被掐断（Connection closed），
+    /// 而 Cursor 重连后不会再主动重拉工具列表，整个会话就停在「已连接、0 个工具」。
+    /// Cursor 收到 notifications/tools/list_changed 会无条件清缓存并重拉，因此每次握手完成后
+    /// 延迟发一次通知即可自愈；延迟是为了让通知落在那次启动重启之后的连接上。
+    async fn on_initialized(&self, context: NotificationContext<RoleServer>) {
+        let peer = context.peer.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(TOOL_LIST_CHANGED_DELAY).await;
+            match peer.notify_tool_list_changed().await {
+                Ok(()) => log_debug!("已补发 tools/list_changed 通知（握手后 {:?}）", TOOL_LIST_CHANGED_DELAY),
+                // 中文说明：连接已被客户端关闭时发送会失败，属于正常现象，只记 debug。
+                Err(e) => log_debug!("补发 tools/list_changed 失败（连接可能已关闭）: {}", e),
+            }
+        });
     }
 
     async fn list_tools(
@@ -249,14 +301,18 @@ impl ServerHandler for ZhiServer {
                 },
                 "workspace": {
                     "type": "string",
-                    "description": "工作区根目录绝对路径（必填）"
+                    "description": "工作区根目录绝对路径（请务必提供；缺省时仅当客户端提供唯一 root 才会自动回退）"
                 },
                 "agent_label": {
                     "type": "string",
                     "description": "AI 实例显示名称（可选，未提供时按请求短码回退）"
+                },
+                "resume_token": {
+                    "type": "string",
+                    "description": "重连令牌（可选）：仅当上一次 zhi 返回「继续等待」并给出 resume_token 时原样回传，用于精确重连同一弹窗；首次提问不要填"
                 }
             },
-            "required": ["brief", "workspace"]
+            "required": ["brief"]
         });
 
         if let serde_json::Value::Object(schema_map) = zhi_schema {
@@ -474,18 +530,44 @@ impl ServerHandler for ZhiServer {
         let result: Result<CallToolResult, McpError> = match tool_name.as_str() {
             tool if Self::is_zhi_entry(tool) => {
                 match serde_json::from_value::<ZhiRequest>(arguments_value) {
-                    Ok(zhi_request) => {
-                        // 调用三术工具（将 call_id 作为 request.id 贯穿到 GUI/响应）
-                        // 中文说明：把 peer 与客户端下发的 progressToken 一并传入，
-                        // 让 zhi 在等待用户期间按周期推送 progress 心跳，规避客户端 ~30s 工具超时。
-                        let progress_token = _context.meta.get_progress_token();
-                        InteractionTool::zhi_with_request_id(
-                            zhi_request,
-                            call_id.clone(),
-                            Some(_context.peer.clone()),
-                            progress_token,
-                        )
-                        .await
+                    Ok(mut zhi_request) => {
+                        // 中文说明（2026-09-15）：workspace 缺省时仅在客户端提供唯一 root 时回退；
+                        // 多 root 或无 root 一律返回修正指引，不按进程历史猜（会串项目）。
+                        let ambiguous_roots =
+                            InteractionTool::resolve_workspace(&mut zhi_request, &_context.peer).await;
+                        if zhi_request.workspace.is_none() {
+                            log_important!(
+                                warn,
+                                "[MCP] zhi 缺少 workspace 且无法回退: call_id={}, 候选 roots={:?}",
+                                call_id,
+                                ambiguous_roots
+                            );
+                            let reason = if ambiguous_roots.is_empty() {
+                                "缺少 `workspace`（工作区 git 根目录绝对路径），且客户端未提供可用的唯一 root，无法自动回退".to_string()
+                            } else {
+                                format!(
+                                    "缺少 `workspace`，且客户端工作区包含多个项目根目录，无法自动判定归属，请从以下候选中明确指定一个：\n{}",
+                                    ambiguous_roots
+                                        .iter()
+                                        .map(|p| format!("  - {}", p))
+                                        .collect::<Vec<_>>()
+                                        .join("\n")
+                                )
+                            };
+                            Ok(Self::zhi_param_guidance(&reason))
+                        } else {
+                            // 调用三术工具（将 call_id 作为 request.id 贯穿到 GUI/响应）
+                            // 中文说明：把 peer 与客户端下发的 progressToken 一并传入，
+                            // 让 zhi 在等待用户期间按周期推送 progress 心跳，规避客户端 ~30s 工具超时。
+                            let progress_token = _context.meta.get_progress_token();
+                            InteractionTool::zhi_with_request_id(
+                                zhi_request,
+                                call_id.clone(),
+                                Some(_context.peer.clone()),
+                                progress_token,
+                            )
+                            .await
+                        }
                     }
                     Err(e) => {
                         log_important!(
@@ -495,23 +577,7 @@ impl ServerHandler for ZhiServer {
                             tool,
                             e
                         );
-                        // 中文说明：zhi 是强制交互入口，参数错误不能以 hard Err 返回——
-                        // 否则 Cursor 等客户端会直接结束本轮、把后续输入计为新一轮 request。
-                        // 改为 success + is_error + 修正指引，让 AI 立刻在同一轮内重试。
-                        let guidance = format!(
-                            "zhi 参数解析失败: {}\n\n\
-                             【处理指引】\n\
-                             1) 必填字段：`brief`（string）+ `workspace`（绝对路径 string）；\n\
-                             2) 可选字段：`choices`（string 数组）、`render_markdown`（bool）；\n\
-                             3) 请按以上 schema 修正后立即重新调用 `zhi`，禁止因此结束本轮对话。",
-                            e
-                        );
-                        Ok(CallToolResult {
-                            content: vec![Content::text(guidance)],
-                            is_error: Some(true),
-                            meta: None,
-                            structured_content: None,
-                        })
+                        Ok(Self::zhi_param_guidance(&e.to_string()))
                     }
                 }
             }
@@ -781,7 +847,7 @@ impl ServerHandler for ZhiServer {
             )),
         };
 
-        // 非 zhi 成功路径：追加「必须以 zhi 收尾」提示，降低 stop hook 误伤/被迫续跑
+        // 非 zhi 成功路径：追加「后台任务取得终态后必须以 zhi 收尾」提示
         let result = match result {
             Ok(r) => Ok(Self::attach_zhi_closeout_reminder(&tool_name, r)),
             Err(e) => Err(e),
@@ -869,7 +935,7 @@ fn log_startup_watermark() {
 
     log_important!(
         info,
-        "[启动水印] version={} git={} built={} POPUP_POLL_WINDOW={}s MAX_RECONNECTS={}",
+        "[启动水印] version={} git={} built={} POPUP_POLL_WINDOW={}s MAX_POPUP_RECONNECTS={}",
         version,
         git_sha,
         build_time,
@@ -892,4 +958,31 @@ fn start_acemcp_watch_config_sync() {
             watcher_manager.sync_with_persisted_watch_projects().await;
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn zhi_description_requires_background_task_settlement() {
+        let server = ZhiServer {
+            enabled_tools: HashMap::new(),
+            mcp_profile: McpClientProfile::Standard,
+        };
+        let description = server.zhi_public_description();
+
+        assert!(description.contains("completed、failed 或 cancelled 终态"));
+        assert!(description.contains("仅 kill/pkill 底层进程"));
+        assert!(description.contains("backgroundTaskCompletionAction"));
+        assert!(!description.contains("stop hook"));
+
+        let result = ZhiServer::attach_zhi_closeout_reminder(
+            "ji",
+            CallToolResult::success(vec![Content::text("ok")]),
+        );
+        let reminder = result.content[1].as_text().expect("收尾提醒应为文本");
+        assert!(reminder.text.contains("completed/failed/cancelled 终态"));
+        assert!(!reminder.text.contains("stop hook"));
+    }
 }

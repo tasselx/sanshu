@@ -6,7 +6,7 @@
 # 【2026-06-13 修复】原 hooks.json 用 matcher "MCP: " 过滤，但 Glass 模式下工具名是
 # CallMcpTool、Claude 兼容层是 mcp__server__tool，全都匹配不上 → 本 hook 从未生效过
 # （实证：02:18 一段 355K 字符弹窗粘贴原样进入上下文，触发压缩多计一条 request）。
-# 改为不设 matcher，由脚本内部归一化工具名后判断是否 MCP 工具（与 track-zhi.sh 同法）。
+# 改为不设 matcher，由脚本内部归一化工具名后判断是否 MCP 工具。
 
 MAX_LINES=500
 LOG_FILE="/tmp/sanshu-truncate-debug.log"

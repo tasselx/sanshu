@@ -89,7 +89,11 @@ export function useAppInitialization(mcpHandler: ReturnType<typeof import('./use
       isInitializing.value = false
 
       // 自动检查版本更新并弹窗（延后触发，避免阻塞首屏渲染，图标模式下跳过）
-      if (!isIconMode) {
+      // 中文说明（2026-09-14）：MCP 弹窗模式也跳过。每个 zhi 弹窗都是新进程，内存里的
+      // 「1 小时内已检查」缓存不生效，导致每次弹窗都做 IP 地理位置探测、代理扫描、
+      // 更新与公告拉取（8 月以来 518 次弹窗触发了 1012 次地理位置探测，290 次因限流/超时失败）。
+      // 更新检查留给主窗口即可。
+      if (!isIconMode && !isMcp) {
         setTimeout(() => {
           autoCheckUpdate().catch(() => {
             // 静默处理版本检查失败

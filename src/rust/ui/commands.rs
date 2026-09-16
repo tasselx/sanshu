@@ -20,6 +20,75 @@ use tauri::{AppHandle, Manager, State};
 /// 只有真正写入并 flush 成功后才标记，避免先置位后写失败造成 0 条输出。
 static MCP_RESPONSE_EMITTED: std::sync::Mutex<bool> = std::sync::Mutex::new(false);
 
+/// 当前进程是否以 stdout 作为唯一响应通道（--mcp-request / --icon-request / --cli）。
+pub(crate) fn is_stdout_response_mode() -> bool {
+    let args: Vec<String> = std::env::args().collect();
+    let is_cli_mode = args.iter().any(|arg| arg == "--cli");
+    let is_mcp_mode = args.len() >= 3 && args[1] == "--mcp-request";
+    let is_icon_mode = args.len() >= 3 && args[1] == "--icon-request";
+    is_cli_mode || is_mcp_mode || is_icon_mode
+}
+
+/// 幂等地把一段响应写到 stdout：已写过则返回 Ok(false)，成功写入并 flush 返回 Ok(true)。
+///
+/// 中文说明：所有 stdout 响应（提交、取消、退出兜底）都必须经过这里，共享同一把
+/// MCP_RESPONSE_EMITTED 锁，保证进程一生只写出一条响应。
+pub(crate) fn emit_stdout_response_once(response_str: &str) -> Result<bool, String> {
+    let mut emitted = MCP_RESPONSE_EMITTED
+        .lock()
+        .map_err(|e| format!("获取MCP响应写入锁失败: {}", e))?;
+    if *emitted {
+        return Ok(false);
+    }
+    println!("{}", response_str);
+    std::io::Write::flush(&mut std::io::stdout()).map_err(|e| format!("刷新stdout失败: {}", e))?;
+    *emitted = true;
+    Ok(true)
+}
+
+/// 退出前兜底：stdout 模式下若本进程还没写出过任何响应，写出取消信号。
+///
+/// 中文说明（2026-09-14）：关窗按钮、退出快捷键、⌘Q 都直接走 Rust 退出流程，不经过前端的
+/// handleMcpCancel；旧版这些路径以退出码 0 且 stdout 为空结束，MCP 服务端无法区分「用户
+/// 主动关窗」和「GUI 异常退出」。现在每条退出路径都先经这里，用户关窗必然产出显式 CANCELLED。
+/// CLI 模式沿用其既有约定：结构化 {"cancelled":true} + 退出码 2。
+pub(crate) fn emit_cancel_if_unanswered(origin: &str) {
+    if !is_stdout_response_mode() {
+        return;
+    }
+    let args: Vec<String> = std::env::args().collect();
+    let is_cli_mode = args.iter().any(|arg| arg == "--cli");
+    let is_icon_mode = args.len() >= 3 && args[1] == "--icon-request";
+    // 中文说明：三种 stdout 模式的取消形态各自对齐其服务端解析器——
+    // 图标弹窗只认结构化 {"status":"cancelled"}（见 icon_popup.rs parse_icon_popup_response），
+    // CLI 约定 {"cancelled":true}，zhi 弹窗认 "CANCELLED"。
+    let payload = if is_icon_mode {
+        serde_json::json!({ "status": "cancelled" })
+    } else if is_cli_mode {
+        serde_json::json!({ "cancelled": true })
+    } else {
+        serde_json::Value::String("CANCELLED".to_string())
+    };
+    let response_str = match serde_json::to_string(&payload) {
+        Ok(s) => s,
+        Err(e) => {
+            log::warn!("[exit] 序列化取消响应失败: origin={}, error={}", origin, e);
+            return;
+        }
+    };
+    match emit_stdout_response_once(&response_str) {
+        Ok(true) => {
+            log::info!("[exit] 退出前未收到任何响应，已写出取消信号: origin={}", origin);
+            if is_cli_mode {
+                eprintln!("用户取消操作");
+                std::process::exit(2);
+            }
+        }
+        Ok(false) => {}
+        Err(e) => log::warn!("[exit] 写出取消信号失败: origin={}, error={}", origin, e),
+    }
+}
+
 #[tauri::command]
 pub async fn get_app_info() -> Result<String, String> {
     Ok(format!("三术 v{}", env!("CARGO_PKG_VERSION")))
@@ -485,24 +554,15 @@ pub async fn send_mcp_response(
     );
 
     if is_mcp_mode || is_cli_mode || is_icon_mode {
-        // 中文注释：进程级幂等守卫。锁内完成 check/write/flush/mark，
-        // 保证只有「成功写入」后才会吞掉后续重复提交。
-        // MCP/CLI/图标弹窗均走 stdout，需同一守卫防双写。
-        let mut emitted = MCP_RESPONSE_EMITTED
-            .lock()
-            .map_err(|e| format!("获取MCP响应写入锁失败: {}", e))?;
-        if *emitted {
+        // 中文注释：进程级幂等守卫见 emit_stdout_response_once——锁内完成 check/write/flush/mark，
+        // 保证只有「成功写入」后才会吞掉后续重复提交。MCP/CLI/图标弹窗均走 stdout，共用同一守卫。
+        if !emit_stdout_response_once(&response_str)? {
             log::warn!(
                 "[send_mcp_response] 检测到重复提交，stdout 已写入过响应，本次忽略（response_len={}）",
                 response_str.len()
             );
             return Ok(());
         }
-        // MCP/CLI/图标弹窗模式：直接输出到stdout（CLI要求结构化JSON）
-        println!("{}", response_str);
-        std::io::Write::flush(&mut std::io::stdout())
-            .map_err(|e| format!("刷新stdout失败: {}", e))?;
-        *emitted = true;
         if is_cli_mode && is_cancelled {
             // CLI取消：按约定退出码 2
             eprintln!("用户取消操作");
